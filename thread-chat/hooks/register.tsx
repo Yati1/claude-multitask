@@ -18,6 +18,8 @@ const aliases = atom({ plugin: 'thread-chat', key: 'aliases' } as const, {})
 const agentMayCreate = atom({ plugin: 'thread-chat', key: 'agentMayCreate' } as const, false)
 const snaps = atom({ plugin: 'thread-chat', key: 'snaps' } as const, {})
 const recent = atom({ plugin: 'thread-chat', key: 'recent' } as const, [])
+const recentTexts = atom({ plugin: 'thread-chat', key: 'recentTexts' } as const, [])
+const sentTo = atom({ plugin: 'thread-chat', key: 'sentTo' } as const, {})
 
 const CREATE_TOOL = 'mcp__thread-chat__create_thread'
 const AGENT_SWITCH = 'agent-switch'
@@ -99,6 +101,8 @@ type Saved = {
   aliases: Record<string, string>
   snaps: Record<string, string>
   recent: string[]
+  recentTexts: string[]
+  sentTo: Record<string, string>
 }
 
 // Keeps the session's threads, merges, recorded meanings and latest rows for its next run.
@@ -108,6 +112,8 @@ async function save($: EngineInterface) {
     aliases: await read($, aliases),
     snaps: await read($, snaps),
     recent: await read($, recent),
+    recentTexts: await read($, recentTexts),
+    sentTo: await read($, sentTo),
   }
   await $.store.set(storeKey(await $.session.id()), saved)
 }
@@ -122,11 +128,46 @@ async function isRecent($: EngineInterface, ids: string[]): Promise<boolean> {
   return ids.some(id => stems.has(stemOf(id)))
 }
 
+// A reply text's start, as the mark it is matched by: spacing evened out.
+const textMarkOf = (text: string) => text.replace(/\s+/g, ' ').trim().slice(0, 160)
+
+// Whether a drawn reply came since the person's last message: by its id, or by its
+// text where the screen knows it by an id of its own.
+async function isRecentReply($: EngineInterface, id: string, text: string): Promise<boolean> {
+  if (await isRecent($, [id])) return true
+  return (await read($, recentTexts)).includes(textMarkOf(text))
+}
+
 // Whether a row that belongs to no thread is filtered out: while a thread is
 // picked, all but those since the person's last message are.
 async function isFilteredOut($: EngineInterface, ids: string[]): Promise<boolean> {
   if ((await selectedKeys($)).size === 0) return false
   return !(await isRecent($, ids))
+}
+
+// Messages sent with no heading to the one picked thread, until their rows are stored.
+const unsent: { text: string; key: string }[] = []
+
+// The text blocks of a stored row, as one text.
+function textOf(content: readonly { type: string; [field: string]: unknown }[]): string {
+  return content.flatMap(block => (block.type === 'text' && typeof block.text === 'string' ? [block.text] : [])).join('\n')
+}
+
+// The thread a person's message went to without a heading, by its row's id.
+async function sentThreadOf(
+  $: EngineInterface,
+  id: string,
+  list: Thread[],
+  links: Record<string, string>,
+): Promise<Thread | undefined> {
+  const all = await read($, sentTo)
+  const key = all[id] ?? Object.entries(all).find(([row]) => stemOf(row) === stemOf(id))?.[1]
+  return key === undefined ? undefined : threadOf(key, list, links)
+}
+
+// The marks of a stored reply's text blocks, each as a screen may draw it alone.
+function textMarksOf(content: readonly { type: string; [field: string]: unknown }[]): string[] {
+  return content.flatMap(block => (block.type === 'text' && typeof block.text === 'string' ? [textMarkOf(block.text)] : []))
 }
 
 // The ids of the tool calls a stored row makes; each draws as a row of its own.
@@ -136,13 +177,13 @@ function toolCallIds(content: readonly { type: string; [field: string]: unknown 
 
 // Brings the chat's end into view: the latest row the screen knows by its id.
 // Rows that draw nothing of their own (a tool's result, a reminder) are passed over;
-// where nothing scrolls, the chat stays put.
+// where nothing scrolls (the desktop scrolls its chat for no plugin), the chat stays put.
 async function scrollToEnd($: EngineInterface) {
   const ids = (await read($, recent)).slice(-20).reverse()
   try {
     for (const id of ids) {
       const moved = await $.ui.scroll({ to: { requestId: id }, block: 'end' })
-      if (moved.deny === undefined || /person/.test(moved.deny)) return
+      if (moved.deny === undefined || /person|not scrollable/.test(moved.deny)) return
     }
   } catch {
     return
@@ -258,6 +299,42 @@ function drawTag(
   return <Svg source={tag.source} alt={thread.name} width={tag.width} height={tag.height} />
 }
 
+// A Markdown element takes at most this many characters.
+const MARKDOWN_LIMIT = 10000
+
+// Markdown text in pieces a Markdown element takes, split between lines where it can.
+function markdownPieces(text: string): string[] {
+  const clean = text.replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, '')
+  const pieces: string[] = []
+  let piece = ''
+  for (const line of clean.split('\n')) {
+    for (let at = 0; at < Math.max(1, line.length); at += MARKDOWN_LIMIT) {
+      const part = line.slice(at, at + MARKDOWN_LIMIT)
+      const joined = piece === '' ? part : `${piece}\n${part}`
+      if (joined.length <= MARKDOWN_LIMIT) {
+        piece = joined
+      } else {
+        pieces.push(piece)
+        piece = part
+      }
+    }
+  }
+  if (piece !== '') pieces.push(piece)
+  return pieces
+}
+
+// Part of a reply drawn as markdown, as the screen draws a reply's text.
+function drawMarkdown($: EngineInterface, e: Parameters<EngineInterface['ui']['resolve']>[0], text: string): RenderElement {
+  const { Box, Markdown } = $.ui.resolve(e)
+  return (
+    <Box flexDirection="column">
+      {markdownPieces(text).map(piece => (
+        <Markdown text={piece} />
+      ))}
+    </Box>
+  )
+}
+
 // Picks or drops a thread in the filter, and takes the chat back to its end.
 async function toggleThread($: EngineInterface, key: string) {
   await update($, threads, all =>
@@ -340,6 +417,8 @@ export const register: Register = on => {
         await update($, aliases, () => saved.aliases ?? {})
         await update($, snaps, () => saved.snaps ?? {})
         await update($, recent, () => saved.recent ?? [])
+        await update($, recentTexts, () => saved.recentTexts ?? [])
+        await update($, sentTo, () => saved.sentTo ?? {})
       }
     } else {
       // Threads made before saving existed (or since the last save) are kept now.
@@ -354,8 +433,17 @@ export const register: Register = on => {
     // The text goes on as typed, the one version everything reads; what its
     // headings mean is decided now, kept for drawing it, and told to the model.
     const links = { ...(await read($, snaps)), ...(await read($, aliases)) }
-    const { names, meanings } = decideHeadings(e.text, await read($, threads), links)
-    if (names.length === 0) return next(e)
+    const list = await read($, threads)
+    const { names, meanings } = decideHeadings(e.text, list, links)
+    if (names.length === 0) {
+      // With one thread alone picked, a message with no heading goes to that thread.
+      const picked = list.filter(t => t.isSelected)
+      const only = picked.length === 1 ? picked[0] : undefined
+      if (only === undefined) return next(e)
+      unsent.push({ text: e.text.trim(), key: keyOf(only.name) })
+      const note = `This message belongs to the thread "${only.name}": the user wrote it while viewing that thread alone. Reply to it under that thread's heading.`
+      return next({ ...e, context: [...(e.context ?? []), note] })
+    }
     await addThreads($, names, 'user')
     const decided = linksOf(meanings)
     if (Object.keys(decided).length > 0) await update($, snaps, all => ({ ...all, ...decided }))
@@ -375,6 +463,13 @@ export const register: Register = on => {
       const ids = [e.uuid, ...toolCallIds(e.message.content)]
       const isPersonMessage = PERSON.has(e.origin.kind) && (e.door === 'prompt' || e.door === 'delivery')
       await update($, recent, all => (isPersonMessage ? ids : [...all, ...ids]))
+      const marks = e.message.type === 'assistant' ? textMarksOf(e.message.content) : []
+      if (isPersonMessage || marks.length > 0) await update($, recentTexts, all => (isPersonMessage ? [] : [...all, ...marks]))
+      // A message sent to the one picked thread is known by its row from here on.
+      const said = textOf(e.message.content)
+      const sent = isPersonMessage ? unsent.findIndex(u => said.includes(u.text)) : -1
+      const key = sent >= 0 ? unsent.splice(sent, 1)[0]?.key : undefined
+      if (key !== undefined) await update($, sentTo, all => ({ ...all, [e.uuid]: key }))
     }
     return next(e)
   })
@@ -461,7 +556,10 @@ export const register: Register = on => {
     const snapped = await read($, snaps)
     const resolve = (name: string) => personThreadOf(name, list, { ...snapped, ...merged })
     const selected = await selectedKeys($)
-    const sections = splitSections(e.props.text, () => true)
+    const typed = splitSections(e.props.text, () => true)
+    // A message with no heading may have gone to the one thread picked as it was sent.
+    const sentThread = typed.some(s => s.thread !== null) ? undefined : await sentThreadOf($, e.requestId, list, merged)
+    const sections = sentThread === undefined ? typed : [{ thread: sentThread.name, text: e.props.text }]
     if (selected.size === 0 && !sections.some(s => s.thread !== null)) return next(e)
 
     const { Box } = $.ui.resolve(e)
@@ -505,14 +603,23 @@ export const register: Register = on => {
     if (selected.size === 0 && !sections.some(s => s.thread !== null)) return next(e)
 
     const { Box } = $.ui.resolve(e)
-    const isRecentRow = selected.size > 0 && (await isRecent($, [e.requestId]))
+    const isRecentRow = selected.size > 0 && (await isRecentReply($, e.requestId, e.props.text))
     const shown = sections.filter(s => isShown(s, selected, name => threadOf(name, list, merged), isRecentRow))
     if (shown.length === 0) return <Box display="none" />
 
+    // A screen gets one message's text with a drawing, so the engine draws one part
+    // of the reply; the other parts are drawn as markdown, as a reply's text is.
     const parts: RenderElement[] = []
+    let isEngineDrawn = false
     for (const [i, s] of shown.entries()) {
       const isFirstOfReply = e.props.isFirstOfReply && i === 0 && s.thread === null
-      const body = s.text === '' ? undefined : await next({ ...e, props: { ...e.props, text: s.text, isFirstOfReply } })
+      let body: RenderElement | undefined
+      if (s.text !== '' && !isEngineDrawn) {
+        body = await next({ ...e, props: { ...e.props, text: s.text, isFirstOfReply } })
+        isEngineDrawn = true
+      } else if (s.text !== '') {
+        body = drawMarkdown($, e, s.text)
+      }
       if (s.thread === null) {
         if (body !== undefined) parts.push(body)
         continue

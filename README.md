@@ -12,12 +12,12 @@ Mods need a recent Claude Code build with hooks modules available.
 This repo is a plugin marketplace:
 
 ```
-claude plugin marketplace add <path or git URL of this repo>
+claude plugin marketplace add othrayte/claude-multitask
 claude plugin install thread-chat@claude-multitask
 claude plugin install multitask@claude-multitask
 ```
 
-When the marketplace is added from a local folder, the plugins are read from that folder: after editing, run `/reload-plugins`.
+To develop, clone `git@github.com:othrayte/claude-multitask.git` and add the clone's folder as the marketplace instead (`claude plugin marketplace add <clone folder>`). Plugins from a local folder are read in place: after editing, run `/reload-plugins`.
 
 ## Develop
 

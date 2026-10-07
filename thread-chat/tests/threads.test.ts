@@ -327,6 +327,7 @@ test('while filtering, rows of no thread show only since the last message', asyn
   await stored('p2', 'prompt', [{ type: 'text', text: 'what now?' }])
   await stored('a3', 'response', [{ type: 'tool_use', id: 'toolu_new', name: 'Read', input: {} }])
   await stored('a4', 'response', [{ type: 'text', text: 'here goes\n# design\nnext step' }])
+  await stored('a5', 'response', [{ type: 'text', text: 'one more thing' }])
 
   const mount = <T extends object>(target: T) => $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...target } as never)
   const oldChat = await mount({ ...assistantRow('just chatting'), requestId: 'a1' })
@@ -334,6 +335,8 @@ test('while filtering, rows of no thread show only since the last message', asyn
   const newTool = await mount(toolRow('toolu_new'))
   const ask = await mount({ ...userRow('what now?'), requestId: 'p2' })
   const reply = await mount({ ...assistantRow('here goes\n# design\nnext step'), requestId: 'a4' })
+  // the desktop knows a reply by its API message's id, so it is matched by its text
+  const aside = await mount({ ...assistantRow('one more thing'), requestId: 'msg_01abc-t0' })
   const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...BAND })
 
   // (the kit has no chat to scroll, so the move to its end goes unseen here)
@@ -346,10 +349,57 @@ test('while filtering, rows of no thread show only since the last message', asyn
   expect(await ask.find({ text: /what now/ })).toBeDefined()
   expect(await reply.find({ text: /here goes/ })).toBeDefined()
   expect(await tagOf(reply, 'design')).toBeDefined()
+  await aside.redraw()
+  expect(await aside.find({ text: /one more thing/ })).toBeDefined()
 
   // dropping the filter shows everything again
   await band.press({ key: 'thread:design' })
   for (const row of [oldChat, oldTool]) await row.redraw()
   expect(await oldChat.find({ text: /just chatting/ })).toBeDefined()
   expect(await isHidden(oldTool)).toBe(false)
+})
+
+test('with one thread picked, a message with no heading goes to that thread', async ($, on) => {
+  const prompts = engine(on)
+  await $.prompt.submit(say('# design\nhello\n# perf\nfast?'))
+  const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...BAND })
+  await band.press({ key: 'thread:perf' })
+
+  await $.prompt.submit(say('and the cache?'))
+  expect(prompts.at(-1)).toContain('This message belongs to the thread "perf"')
+  await $.session
+    .append({
+      message: { type: 'user', role: 'user', content: [{ type: 'text', text: 'and the cache?' }] },
+      door: 'prompt',
+      origin: { kind: 'composer' },
+      uuid: 'p9',
+    })
+    .catch(() => undefined) // the kit has no transcript to store the row in
+
+  const row = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...userRow('and the cache?'), requestId: 'p9' })
+  expect(await tagOf(row, 'perf')).toBeDefined()
+  // it belongs to perf alone: picking design instead hides it
+  await band.press({ key: 'thread:perf' })
+  await band.press({ key: 'thread:design' })
+  await row.redraw()
+  expect(await row.find({ text: /cache/ })).toBeUndefined()
+
+  // with two picked, a message with no heading stays unthreaded
+  await band.press({ key: 'thread:perf' })
+  await $.prompt.submit(say('both?'))
+  expect(prompts.at(-1)).toBe('both?')
+})
+
+test('a reply of several sections draws one by the engine and the rest as markdown', async ($, on) => {
+  engine(on)
+  await $.prompt.submit(say('# design\na\n# perf\nb'))
+  const reply = await $.ui.mount({
+    plugin: 'thread-chat',
+    surface: 'desktop',
+    ...assistantRow('# design\nuse a queue\n# perf\nit is fine'),
+  })
+  expect(await reply.find({ type: 'Text', text: /use a queue/ })).toBeDefined()
+  const markdown = await reply.findAll({ type: 'Markdown' })
+  expect(markdown.map(m => m.props.text)).toEqual(['it is fine'])
+  expect(await tagOf(reply, 'perf')).toBeDefined()
 })
