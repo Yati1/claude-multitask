@@ -1,5 +1,14 @@
 import { atom, read, update } from 'claude-code'
-import type { AgentStatus, EngineInterface, Register, RenderElement, Timer, TurnCompleteReason } from 'claude-code'
+import type {
+  AgentStatus,
+  EngineInterface,
+  Register,
+  RenderElement,
+  SessionSendAddress,
+  SessionSendResult,
+  Timer,
+  TurnCompleteReason,
+} from 'claude-code'
 
 import type { Thought, ThoughtStatus, Update } from '../types'
 import {
@@ -52,6 +61,9 @@ const GLYPH: Record<ThoughtStatus, string> = { running: '◐', idle: '○', stop
 const FLUSH_MS = 2000
 // How long an interrupted thought gets to end its turn before the message goes anyway.
 const INTERRUPT_GRACE_MS = 4000
+// How often, and how many times, a hand-over looks for the engine to have ended a thought's run.
+const SETTLE_POLL_MS = 250
+const SETTLE_POLLS = 20
 // How many of a thought's progress notes are kept, and how long each may be.
 const NOTES_KEPT = 5
 const NOTE_MAX = 500
@@ -88,11 +100,11 @@ const TOOL_SPECS = [
     inputSchema: {
       type: 'object',
       properties: {
-        thought: { type: 'string', description: 'The thought\'s name' },
+        name: { type: 'string', description: 'The thought\'s name' },
         message: { type: 'string' },
         how: { type: 'string', enum: ['post', 'queue', 'interrupt'], description: 'Default post' },
       },
-      required: ['thought', 'message'],
+      required: ['name', 'message'],
     },
   },
   {
@@ -101,22 +113,26 @@ const TOOL_SPECS = [
     inputSchema: {
       type: 'object',
       properties: {
-        thought: { type: 'string' },
+        name: { type: 'string', description: 'The thought\'s name' },
         index: { type: 'integer', description: '1-based position in its queue; leave out to withdraw all' },
       },
-      required: ['thought'],
+      required: ['name'],
     },
   },
   {
     name: 'stop',
     description: 'Stop a thought for good.',
-    inputSchema: { type: 'object', properties: { thought: { type: 'string' } }, required: ['thought'] },
+    inputSchema: {
+      type: 'object',
+      properties: { name: { type: 'string', description: 'The thought\'s name' } },
+      required: ['name'],
+    },
   },
   {
     name: 'thoughts',
     description:
       'Every thought\'s status, queue, latest progress notes and last report; with a thought\'s name, its recent transcript instead.',
-    inputSchema: { type: 'object', properties: { thought: { type: 'string' } } },
+    inputSchema: { type: 'object', properties: { name: { type: 'string', description: 'The thought\'s name' } } },
   },
 ]
 
@@ -130,6 +146,12 @@ function switchPicture(isOn: boolean): string {
 function str(e: unknown, key: string): string {
   const value = (e as Record<string, unknown>)[key]
   return typeof value === 'string' ? value.trim() : ''
+}
+
+// The thought a call names: every tool takes its name as `name`, as think gives it; an
+// earlier spelling, `thought`, still works.
+function refOf(e: unknown): string {
+  return str(e, 'name') || str(e, 'thought')
 }
 
 function findThought(list: Thought[], ref: string): Thought | undefined {
@@ -258,9 +280,67 @@ async function relayDone($: EngineInterface, t: Thought, report: string, isFaile
   })
 }
 
-async function deliver($: EngineInterface, id: string, text: string) {
-  await patchThought($, id, t => ({ ...t, status: 'running' }))
-  await $.session.send({ to: { agentId: id }, text })
+// Sends a thought a message: to its agent's id, failing that to its name. The answer says
+// whether it got there and why not; a thought that has it runs again, one that has not
+// keeps the status it had.
+async function deliver($: EngineInterface, t: Thought, text: string): Promise<SessionSendResult> {
+  let was: ThoughtStatus = t.status
+  await patchThought($, t.id, one => {
+    was = one.status
+    return { ...one, status: 'running' }
+  })
+  const send = async (to: SessionSendAddress): Promise<SessionSendResult> => {
+    try {
+      return await $.session.send({ to, text })
+    } catch (error) {
+      return { isDelivered: false, reason: error instanceof Error ? error.message : String(error) }
+    }
+  }
+  const byId = await send({ agentId: t.id })
+  const sent = byId.isDelivered || !(await send(t.name)).isDelivered ? byId : { isDelivered: true as const }
+  if (!sent.isDelivered) await patchThought($, t.id, one => (one.status === 'running' ? { ...one, status: was } : one))
+  return sent
+}
+
+// Queues a message for the end of a thought's turn, if it has a turn running that will
+// end: its place in the queue, or 0 when it has none and nothing would hand it over.
+async function queueFor($: EngineInterface, id: string, text: string): Promise<number> {
+  let at = 0
+  await patchThought($, id, one => {
+    if (one.status !== 'running') return one
+    at = one.queued.length + 1
+    return { ...one, queued: [...one.queued, text] }
+  })
+  return at
+}
+
+// The engine's status of a thought's agent once its run no longer counts as running, or
+// after SETTLE_POLLS looks. A message sent while a finished run is still winding down
+// waits for a tool round that never comes, until something else wakes the session; sent
+// once the run has ended, it resumes the thought straight away.
+async function runEnded($: EngineInterface, id: string): Promise<AgentStatus | undefined> {
+  for (let look = 1; ; look++) {
+    const status = (await $.agent.list()).find(a => a.id === id)?.status
+    if (status !== 'running' || look >= SETTLE_POLLS) return status
+    await new Promise<void>(resolve => $.clock.after(SETTLE_POLL_MS, resolve))
+  }
+}
+
+// Hands a thought what waited for its turn to end, once the engine has ended the run.
+// What does not reach it goes back to the front of its queue, and the voice is told.
+async function handOver($: EngineInterface, id: string, waited: string[], text: string) {
+  const ended = await runEnded($, id)
+  const t = (await read($, thoughts)).find(one => one.id === id)
+  if (t === undefined || t.status === 'stopped') return
+  const sent = await deliver($, t, text)
+  if (sent.isDelivered) return
+  await patchThought($, id, one => ({
+    ...one,
+    queued: [...waited, ...one.queued],
+    status: ended === 'running' ? one.status : statusOf(ended ?? 'completed'),
+  }))
+  const what = waited.length === 1 ? 'a message' : `${waited.length} messages`
+  await relay($, list => [...list, { thought: t.name, text: `(${what} did not reach it, still queued for the end of its next turn: ${sent.reason})` }])
 }
 
 async function stopThought($: EngineInterface, id: string) {
@@ -279,38 +359,54 @@ async function unqueue($: EngineInterface, id: string, index: number | undefined
   }))
 }
 
-async function interrupt($: EngineInterface, t: Thought, text: string) {
-  await patchThought($, t.id, one => ({ ...one, interruptWith: text }))
-  let isCut = false
+// Cuts a thought's running turn so the message goes in at once: the cut turn's end (or
+// the grace timer) hands it over. With no turn the engine will cut, the message waits in
+// its queue for the run's end, or goes now when the run has ended. The thought is never
+// stopped: a stopped agent takes no more messages.
+async function interrupt($: EngineInterface, t: Thought, text: string): Promise<string> {
+  let pending = text
   if (t.turnId !== null) {
+    await patchThought($, t.id, one => ({
+      ...one,
+      interruptWith: one.interruptWith === null ? text : `${one.interruptWith}\n\n${text}`,
+    }))
     try {
       await $.turn.abort({ turnId: t.turnId })
-      isCut = true
+      // Normally its turn.complete hands the message over; this covers a turn that never reports.
+      $.clock.after(INTERRUPT_GRACE_MS, () => void handOverInterrupt($, t.id))
+      return `Interrupting ${t.name}; it gets the message as soon as its current turn is cut.`
     } catch {
-      isCut = false
+      // That turn had ended. Unless its end handed the message over, it goes another way.
+      let taken = null as string | null
+      await patchThought($, t.id, one => {
+        taken = one.interruptWith
+        return { ...one, interruptWith: null }
+      })
+      if (taken === null) return `${t.name}'s turn had just ended; it gets the message now.`
+      pending = taken
     }
   }
-  if (!isCut) {
-    try {
-      await $.tool.call({ tool: 'TaskStop', task_id: t.id })
-    } catch {
-      // nothing was running
-    }
+  if ((await $.agent.list()).find(a => a.id === t.id)?.status === 'running') {
+    const at = await queueFor($, t.id, pending)
+    if (at > 0) return `Could not cut ${t.name}'s turn; the message is queued as #${at}, for when that turn ends.`
   }
-  // Normally its turn.complete hands the message over; this covers a turn that never reports.
-  $.clock.after(INTERRUPT_GRACE_MS, () => void handOverInterrupt($, t.id))
+  await runEnded($, t.id)
+  const sent = await deliver($, t, pending)
+  return sent.isDelivered
+    ? `${t.name} had no turn running; it has the message now and resumes.`
+    : `${t.name} did not get the message: ${sent.reason}`
 }
 
 // Hands over the interruption still waiting, if any. Whichever comes second, the cut
 // turn's end or the grace timer, finds none and leaves the thought be: its turn by
 // then may be the one the interruption started, whose id a later interrupt aborts.
 async function handOverInterrupt($: EngineInterface, id: string) {
-  let text: string | null = null
+  let text = null as string | null
   await patchThought($, id, t => {
     text = t.interruptWith
     return text === null ? t : { ...t, interruptWith: null, turnId: null }
   })
-  if (text !== null) await deliver($, id, `Interruption from the voice: ${text}`)
+  if (text !== null) await handOver($, id, [text], `Interruption from the voice: ${text}`)
 }
 
 // The notes a turn's report leaves: its own text arrived as notes too, last.
@@ -339,14 +435,26 @@ async function settleThought($: EngineInterface, id: string, reason: TurnComplet
     }))
   }
   if (!isCut) await relayDone($, t, report, reason === 'error' || reason === 'refusal')
-  if (t.interruptWith !== null) return handOverInterrupt($, id)
-  if (t.queued.length > 0) {
-    const text = t.queued.join('\n\n')
-    await patchThought($, id, one => ({ ...one, queued: [], turnId: null }))
-    return deliver($, id, text)
-  }
+  // What waits for it is read as it stands now, in the same step that settles it, not as
+  // it stood when the turn ended: the voice may have queued or interrupted since.
   const status: ThoughtStatus = reason === 'error' || reason === 'refusal' ? 'failed' : 'idle'
-  await patchThought($, id, one => ({ ...one, status, turnId: null }))
+  let waiting = null as 'interruption' | 'queue' | null
+  let queued: string[] = []
+  await patchThought($, id, one => {
+    if (one.status === 'stopped') return one
+    if (one.interruptWith !== null) {
+      waiting = 'interruption'
+      return one
+    }
+    if (one.queued.length > 0) {
+      waiting = 'queue'
+      queued = one.queued
+      return { ...one, queued: [], turnId: null }
+    }
+    return { ...one, status, turnId: null }
+  })
+  if (waiting === 'interruption') return handOverInterrupt($, id)
+  if (waiting === 'queue') return handOver($, id, queued, queued.join('\n\n'))
 }
 
 // What the voice is told beside the person's message: its whole part once Multitask
@@ -452,33 +560,34 @@ export const register: Register = (on, options) => {
   on('tool.call', { tool: 'mcp__multitask__tell' }, async ($, e) => {
     if (!(await read($, isOn))) return OFF
     const list = await read($, thoughts)
-    const t = findThought(list, str(e, 'thought'))
-    if (t === undefined) return unknownThought(list, str(e, 'thought'))
+    const t = findThought(list, refOf(e))
+    if (t === undefined) return unknownThought(list, refOf(e))
     const message = str(e, 'message')
     if (message === '') return { deny: 'Give a message.' }
     const how = str(e, 'how') || 'post'
-    const isRunning = t.status === 'running'
+    let isRunning = t.status === 'running'
 
     if (how === 'queue' && isRunning) {
-      await patchThought($, t.id, one => ({ ...one, queued: [...one.queued, message] }))
-      return { result: `Queued for ${t.name} as #${t.queued.length + 1}; it reads it when its turn ends.` }
+      const at = await queueFor($, t.id, message)
+      if (at > 0) return { result: `Queued for ${t.name} as #${at}; it reads it when its turn ends.` }
+      isRunning = false // its turn ended meanwhile
     }
-    if (how === 'interrupt' && isRunning) {
-      await interrupt($, t, message)
-      return { result: `Interrupting ${t.name}; it gets the message as soon as its current turn is cut.` }
-    }
-    await deliver($, t.id, message)
+    if (how === 'interrupt' && isRunning) return { result: await interrupt($, t, message) }
+    // With no turn running, its last run may still be winding down: the message goes once it has ended.
+    if (!isRunning) await runEnded($, t.id)
+    const sent = await deliver($, t, message)
+    if (!sent.isDelivered) return { result: `${t.name} did not get the message: ${sent.reason}` }
     return {
       result: isRunning
         ? `Posted to ${t.name}; it reads it at its next step.`
-        : `${t.name} was ${t.status}; it has the message now and resumes.`,
+        : `${t.name} was ${t.status === 'running' ? 'idle' : t.status}; it has the message now and resumes.`,
     }
   })
 
   on('tool.call', { tool: 'mcp__multitask__unqueue' }, async ($, e) => {
     const list = await read($, thoughts)
-    const t = findThought(list, str(e, 'thought'))
-    if (t === undefined) return unknownThought(list, str(e, 'thought'))
+    const t = findThought(list, refOf(e))
+    if (t === undefined) return unknownThought(list, refOf(e))
     const raw = (e as Record<string, unknown>).index
     const index = typeof raw === 'number' ? raw - 1 : undefined
     if (index !== undefined && (index < 0 || index >= t.queued.length)) {
@@ -490,8 +599,8 @@ export const register: Register = (on, options) => {
 
   on('tool.call', { tool: 'mcp__multitask__stop' }, async ($, e) => {
     const list = await read($, thoughts)
-    const t = findThought(list, str(e, 'thought'))
-    if (t === undefined) return unknownThought(list, str(e, 'thought'))
+    const t = findThought(list, refOf(e))
+    if (t === undefined) return unknownThought(list, refOf(e))
     await stopThought($, t.id)
     return { result: `Stopped ${t.name}.` }
   })
@@ -506,7 +615,7 @@ export const register: Register = (on, options) => {
       }),
     )
     const list = await read($, thoughts)
-    const ref = str(e, 'thought')
+    const ref = refOf(e)
     if (ref === '') return { result: describeThoughts(list) }
 
     const t = findThought(list, ref)

@@ -25,7 +25,7 @@ Your tools:
 - stop: end a thought.
 - thoughts: every thought's status, queue, latest progress notes and last report, or one thought's recent transcript.
 
-Updates from your thoughts reach you as messages from the multitask plugin, the way the user's messages reach you. Neither kind needs a reply. Each starts "${RELAY_HEAD}", then one line per update: ${RELAY_NOTES ? '"name: text" is a progress note or report, ' : ''}"name (done): text" the text a turn ended with, "name: done" a turn that ended with nothing more${RELAY_NOTES ? '' : ' (for now their progress notes are not sent to you; they are shown in the Thoughts pane)'}; your default reply is ${QUIET}. For each, choose:
+Updates from your thoughts reach you as messages from the multitask plugin, the way the user's messages reach you. Neither kind needs a reply. Each starts "${RELAY_HEAD}", then one line per update: ${RELAY_NOTES ? '"name: text" is a progress note or report, ' : ''}"name (done): text" the text a turn ended with, "name: done" a turn that ended with nothing more, "name: (...)" a message of yours that did not reach it and why${RELAY_NOTES ? '' : ' (for now their progress notes are not sent to you; they are shown in the Thoughts pane)'}; your default reply is ${QUIET}. For each, choose:
 - Say nothing. Reply with exactly ${QUIET} and nothing else; the user never sees it. This is the default.
 - Steer: post, queue or interrupt a thought, unqueue what is no longer wanted, stop a thought, or start another.
 - Speak to the user, only when something deserves their attention: a result they asked for, a decision only they can make, a problem. Use your own words, briefly.
