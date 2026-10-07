@@ -595,7 +595,7 @@ test('the pill of the one picked thread shows that messages with no heading go t
   const desktop = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...BAND })
   const terminal = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...BAND })
   const marked = async () => ({
-    desktop: (await desktop.findAll({ type: 'Svg' })).filter(p => /go here/.test(String(p.props.alt))).map(p => p.props.alt),
+    desktop: picturesIn(await desktop.drawn()).filter(alt => /go here/.test(alt)),
     terminal: (await terminal.findAll({ type: 'Button' })).filter(b => /➤/.test(String(b.props.label))).map(b => b.props.label),
   })
 
@@ -674,10 +674,10 @@ test('the move picker starts a new thread from a typed name, even with no thread
   // the field, in the same row, and "×" swaps back
   await mine.press({ key: 'tag:' })
   await mine.redraw()
-  const plus = await mine.findAll({ type: 'Svg' })
-  expect(plus.map(p => p.props.alt)).toEqual(['new thread'])
-  expect(String(plus[0]?.props.source)).not.toContain('stroke-dasharray')
-  expect(String(plus[0]?.props.source)).not.toContain('<circle')
+  const plus = restingPictures(await mine.drawn())
+  expect(plus.map(p => p.props?.alt)).toEqual(['new thread'])
+  expect(String(plus[0]?.props?.source)).not.toContain('stroke-dasharray')
+  expect(String(plus[0]?.props?.source)).not.toContain('<circle')
   expect(await mine.find({ key: 'new-thread' })).toBeUndefined()
   await click(mine, 'pick-new')
   await mine.redraw()
@@ -722,7 +722,7 @@ test('the move picker starts a new thread from a typed name, even with no thread
   await more.redraw()
   expect(await tagOf(more, 'ideas')).toBeDefined()
   const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...BAND })
-  expect((await band.findAll({ type: 'Svg' })).map(p => p.props.alt).slice(0, -1)).toEqual(['ideas', 'later on'])
+  expect(picturesIn(await band.drawn()).slice(0, -1)).toEqual(['ideas', 'later on'])
 
   // the terminal's picker has the "+" and its field too; mobile draws neither
   const terminal = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...assistantRow('# ideas\nx'), requestId: 'r2' })
@@ -881,13 +881,18 @@ test('while filtering, a quiet, relay or empty row from before the last message 
   }
 })
 
-// The pictures under `node`, by alt, in drawing order.
-function picturesIn(node: unknown): string[] {
+// The pictures under `node` drawn at rest, in drawing order: none from a Box drawn
+// "none", which only the pointer reveals (a pill's lit picture over it).
+function restingPictures(node: unknown): Drawn[] {
   if (typeof node !== 'object' || node === null) return []
   const n = node as Drawn
-  if (n.type === 'Svg') return [String(n.props?.alt)]
-  return (n.children ?? []).flatMap(picturesIn)
+  if (n.type === 'Svg') return [n]
+  if (n.type === 'Box' && n.props?.display === 'none') return []
+  return (n.children ?? []).flatMap(restingPictures)
 }
+
+// The pictures under `node` drawn at rest, by alt.
+const picturesIn = (node: unknown): string[] => restingPictures(node).map(p => String(p.props?.alt))
 
 // Where a drawing's open move picker sits against the part it is for, seen as
 // addPlacement sees "+ thread", and the pictures in its branch: its pills, and
@@ -983,6 +988,67 @@ test('the "none" pill has no dot and a dashed outline; off the desktop it is dim
   await terminal.redraw()
   expect((await terminal.find({ key: 'pick:' }))?.props.dimColor).toBe(true)
   expect((await terminal.find({ key: 'pick:perf' }))?.props.dimColor).toBeUndefined()
+})
+
+// A desktop pill's pictures, at rest and lit, from the keyed Box that holds it.
+function pillPictures(tree: unknown, key: string) {
+  const box = pathTo(tree, n => n.props?.key === key)?.at(-1)
+  const [rest, lit] = (box?.children ?? []) as Drawn[]
+  const hot = lit?.children?.[0] as Drawn | undefined
+  return {
+    isLitOnHover: lit?.props?.display === 'none' && lit?.hover?.display === 'flex' && lit?.props?.position === 'absolute',
+    rest: rest?.props,
+    hot: hot?.type === 'Svg' ? hot.props : undefined,
+  }
+}
+
+test('what opens the picker or picks a thread lights under the pointer', async ($, on) => {
+  engine(on)
+  await $.prompt.submit(say('# design\na\n# perf\nb'))
+  const [design, perf] = [PALETTE[0], PALETTE[1]]
+
+  // a tag's "▾" lights in its thread's colour with the pointer anywhere on the tag, its
+  // name included (the keyed Box round both); "+ thread" brightens
+  const mine = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...userRow('# design\nhi'), requestId: 'u1' })
+  const tagPath = pathTo(await mine.drawn(), n => n.props?.key === 'tag:design')
+  expect(tagPath?.at(-1)?.hover).toEqual({ color: design })
+  expect(tagPath?.at(-2)?.props?.key).toBe('tagbox:design')
+  expect(picturesIn(tagPath?.at(-2))).toEqual(['design'])
+  const plain = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...userRow('plain words'), requestId: 'u2' })
+  expect(pathTo(await plain.drawn(), isAddThread)?.at(-1)?.hover).toEqual({ color: 'text' })
+
+  // a band pill shows a lit copy of itself over it: the same size, its fill and outline
+  // stronger; picked, its tint deeper; faded, less faded
+  const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...BAND })
+  const idle = pillPictures(await band.drawn(), 'chip:design')
+  expect(idle.isLitOnHover).toBe(true)
+  expect(idle.hot).toMatchObject({ alt: idle.rest?.alt, width: idle.rest?.width, height: idle.rest?.height })
+  expect([String(idle.rest?.source), String(idle.hot?.source)].map(s => /\.bg\{fill:#ffffff(\w\w)/.exec(s)?.[1])).toEqual([
+    '14',
+    '29',
+  ])
+  const terminalBand = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...BAND })
+  await terminalBand.press({ key: 'thread:design' })
+  await band.redraw()
+  const picked = pillPictures(await band.drawn(), 'chip:design')
+  const faded = pillPictures(await band.drawn(), 'chip:perf')
+  expect(String(picked.rest?.source)).toContain(`fill="${design}" fill-opacity="0.2"`)
+  expect(String(picked.hot?.source)).toContain(`fill="${design}" fill-opacity="0.32"`)
+  expect([String(faded.rest?.source), String(faded.hot?.source)].map(s => /opacity="([\d.]+)">/.exec(s)?.[1])).toEqual([
+    '0.45',
+    '0.75',
+  ])
+  expect(String(faded.hot?.source)).toContain(perf)
+  await terminalBand.press({ key: 'thread:design' })
+
+  // so does each of the move picker's pills, "+" included
+  await mine.press({ key: 'tag:design' })
+  await mine.redraw()
+  const tree = await mine.drawn()
+  for (const key of ['choice:pick:perf', 'choice:pick:', 'choice:pick-new']) {
+    const pill = pillPictures(tree, key)
+    expect({ key, isLitOnHover: pill.isLitOnHover, alt: pill.hot?.alt }).toEqual({ key, isLitOnHover: true, alt: pill.rest?.alt })
+  }
 })
 
 test("a reply part's border pads it alike on every side, and its tag meets its text", async ($, on) => {
@@ -1102,10 +1168,15 @@ test('the band keeps one row with 12 threads beside another mod, and nothing the
       expect(wrapping.every(n => elementsOf(n).every(m => !isOther(m) && !controls.some(c => c?.includes(m))))).toBe(true)
     }
 
-    // every Box the pointer reveals is out of the flow, so showing it moves nothing
+    // every Box the pointer reveals is out of the flow, so showing it moves nothing:
+    // on the desktop the two tips, and each pill's lit picture over it
     const reveals = all.filter(n => n.hover?.display === 'flex')
     expect(reveals.filter(n => n.props?.position !== 'absolute')).toEqual([])
-    if (surface === 'desktop') expect(reveals).toHaveLength(2)
+    if (surface === 'desktop') {
+      const picturesShown = (n: Drawn) => (n.children ?? []).flatMap(restingPictures).length
+      expect(reveals.filter(n => picturesShown(n) === 0)).toHaveLength(2)
+      expect(reveals.filter(n => picturesShown(n) === 1)).toHaveLength(12)
+    }
     await band.unmount()
   }
 })
