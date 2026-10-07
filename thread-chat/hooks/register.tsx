@@ -5,6 +5,7 @@ import type { Brief, Thread, ViewRow } from '../types'
 import {
   PALETTE,
   closestThread,
+  headingStart,
   headingsIn,
   holdsQuote,
   isOthersPrompt,
@@ -12,9 +13,10 @@ import {
   nameOf,
   replyQuotesOf,
   rewriteHeadings,
+  splitRunOns,
   splitSections,
 } from './parse'
-import type { Section } from './parse'
+import type { RunOn, Section } from './parse'
 import {
   drawView,
   markOf,
@@ -80,14 +82,61 @@ function resolveHeading(raw: string, list: Thread[], links: Record<string, strin
   return (hit === undefined ? undefined : threadOf(hit, list, links)?.name) ?? name
 }
 
+// Where a heading was typed with its section's first line on the same line: the
+// thread name its text starts with (a thread's, or a merged thread's old one; the
+// longest, as whole words) and the rest of the line. Never for `+name`, a heading
+// that is a thread's or a merged thread's name, or one decided at an earlier send;
+// nor where the whole heading is another thread's name abbreviated or mistyped.
+// Decided by the threads as they stand, at send and at drawing alike: it is not
+// recorded, as a recorded heading would count as a name abbreviations must tell apart.
+function runOnOf(
+  typed: string,
+  list: Thread[],
+  links: Record<string, string>,
+  merged: Record<string, string>,
+): RunOn | undefined {
+  if (typed.startsWith('+')) return undefined
+  const key = keyOf(typed)
+  if (list.some(t => keyOf(t.name) === key) || links[key] !== undefined) return undefined
+  const start = headingStart(typed, [...list.map(t => t.name), ...Object.keys(merged)])
+  if (start === undefined) return undefined
+  const hit = closestThread(typed, [...list.map(t => keyOf(t.name)), ...Object.keys(links)])
+  const other = hit === undefined ? undefined : threadOf(hit, list, links)
+  if (other !== undefined && other !== threadOf(start.name, list, links)) return undefined
+  return start
+}
+
+// A person's message in sections, each heading typed with its first line on the
+// same line split from it first.
+function personSectionsOf(
+  text: string,
+  list: Thread[],
+  snapped: Record<string, string>,
+  merged: Record<string, string>,
+): Section[] {
+  const links = { ...snapped, ...merged }
+  return splitSections(splitRunOns(text, typed => runOnOf(typed, list, links, merged)), () => true)
+}
+
+type Meaning = { typed: string; meant: string; isRunOn?: boolean }
+
 // What the headings of a prompt mean: the thread names, in order, and each
 // heading not written as its thread's exact name (a typo, a start of a name,
-// `+name`) as typed with the thread it means. A heading may also mean a thread
-// introduced earlier in the same prompt.
-function decideHeadings(text: string, list: Thread[], links: Record<string, string>) {
+// `+name`, a name with the first line on its line) as typed with the thread it
+// means. A heading may also mean a thread introduced earlier in the same prompt.
+function decideHeadings(text: string, list: Thread[], links: Record<string, string>, merged: Record<string, string>) {
   let known = list
-  const meanings: { typed: string; meant: string }[] = []
-  const resolved = rewriteHeadings(text, raw => {
+  const meanings: Meaning[] = []
+  // A heading with its first line on its line becomes its thread's heading by its
+  // exact name, so the headings after are read as they would be on their own.
+  const split = splitRunOns(text, typed => {
+    const runOn = runOnOf(typed, list, links, merged)
+    const thread = runOn === undefined ? undefined : threadOf(runOn.name, list, links)
+    if (runOn === undefined || thread === undefined) return undefined
+    meanings.push({ typed, meant: thread.name, isRunOn: true })
+    return { name: thread.name, rest: runOn.rest }
+  })
+  const resolved = rewriteHeadings(split, raw => {
     const meant = resolveHeading(raw, known, links)
     if (raw.startsWith('+') || keyOf(nameOf(raw)) !== keyOf(meant)) meanings.push({ typed: raw, meant })
     known = withThreads(known, [meant], 'user')
@@ -308,10 +357,24 @@ async function scrollToEnd($: EngineInterface) {
 }
 
 // The decisions in `meanings` as links from a typed heading's key to its thread's.
-function linksOf(meanings: { typed: string; meant: string }[]): Record<string, string> {
+// A heading with its first line on its line is decided again where it is drawn.
+function linksOf(meanings: Meaning[]): Record<string, string> {
   return Object.fromEntries(
-    meanings.map(m => [keyOf(nameOf(m.typed)), keyOf(m.meant)]).filter(([typed, meant]) => typed !== meant),
+    meanings
+      .filter(m => m.isRunOn !== true)
+      .map(m => [keyOf(nameOf(m.typed)), keyOf(m.meant)])
+      .filter(([typed, meant]) => typed !== meant),
   )
+}
+
+// A typed line quoted to the model, cut short where long: the model has it whole.
+const clip = (text: string) => (text.length > 48 ? `${text.slice(0, 48).trimEnd()}…` : text)
+
+// What a heading in the person's message means, as the model is told it.
+function meaningNote(m: Meaning): string {
+  if (m.isRunOn === true) return `"#${clip(m.typed)}" is the thread "${m.meant}", its first line typed on the heading's line`
+  if (m.typed.startsWith('+')) return `"#${m.typed}" starts the new thread "${m.meant}"`
+  return `"#${m.typed}" is the thread "${m.meant}"`
 }
 
 // How threads work, and where they stand. It goes beside the person's message: the
@@ -816,7 +879,7 @@ function bubbleText(shown: Section[], resolve: (name: string) => Thread | undefi
 }
 
 // The thread view (pane.tsx) places a section by the rules the chat draws it by.
-const viewDeps: ViewDeps = { threadOf, personThreadOf, placeSection, stemOf }
+const viewDeps: ViewDeps = { threadOf, personThreadOf, personSectionsOf, placeSection, stemOf }
 
 // Keeps the thread view's window on its newest rows as they come, until the person scrolls.
 async function pinViewToEnd($: EngineInterface) {
@@ -923,9 +986,10 @@ export const register: Register = on => {
       return all.length === 0 ? next(e) : next({ ...e, context: [...(e.context ?? []), ...all] })
     }
 
-    const links = { ...(await read($, snaps)), ...(await read($, aliases)) }
+    const merged = await read($, aliases)
+    const links = { ...(await read($, snaps)), ...merged }
     const list = await read($, threads)
-    const { names, meanings } = decideHeadings(e.text, list, links)
+    const { names, meanings } = decideHeadings(e.text, list, links, merged)
     if (names.length === 0) {
       // A reply to parts of earlier replies goes to the thread they came from, even
       // while another is picked: the person pointed at that thread's text.
@@ -951,11 +1015,7 @@ export const register: Register = on => {
     await save($)
     if (meanings.length === 0) return send([])
 
-    return send([
-      `Thread headings in this message, as the user meant them: ${meanings
-        .map(m => (m.typed.startsWith('+') ? `"#${m.typed}" starts the new thread "${m.meant}"` : `"#${m.typed}" is the thread "${m.meant}"`))
-        .join('; ')}.`,
-    ])
+    return send([`Thread headings in this message, as the user meant them: ${meanings.map(meaningNote).join('; ')}.`])
   })
 
   // The rows since the person's last message, noted as they are stored: a filter
@@ -1109,7 +1169,7 @@ export const register: Register = on => {
     const snapped = await read($, snaps)
     const resolve = (name: string) => personThreadOf(name, list, { ...snapped, ...merged })
     const selected = await selectedKeys($)
-    const typed = splitSections(e.props.text, () => true)
+    const typed = personSectionsOf(e.props.text, list, snapped, merged)
     // A message with no heading may have gone to the one thread picked as it was sent.
     const sentThread = typed.some(s => s.thread !== null) ? undefined : await sentThreadOf($, e.requestId, list, merged)
     const sent = sentThread === undefined ? typed : [{ thread: sentThread.name, text: e.props.text }]

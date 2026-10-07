@@ -78,6 +78,51 @@ export function rewriteHeadings(text: string, resolve: (raw: string) => string):
     .join('\n')
 }
 
+// A level-1 heading line of any length, its text starting with a letter or digit:
+// a heading typed with its section's first line on the same line may run past
+// what a heading may hold.
+const RUN_ON = /^#(?!#)[ \t]*([\p{L}\p{N}][^\n]*)$/u
+// Between a name and the words after it on its line: spaces, after a `:`, `-` or
+// the like where one is typed.
+const AFTER_NAME = /^(?:[ \t]*[:,;.!?\-–—])?[ \t]+/u
+const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+export type RunOn = { name: string; rest: string }
+
+// The longest of `names` a heading's text starts with, as whole words and in any
+// case, and the rest of the line after it; undefined when it starts with none, or
+// nothing but marks follows the name.
+export function headingStart(text: string, names: string[]): RunOn | undefined {
+  const longestFirst = [...new Set(names.map(nameOf))].filter(n => n !== '').sort((a, b) => b.length - a.length)
+  for (const name of longestFirst) {
+    const words = name.split(' ').map(escapeRegExp).join('\\s+')
+    const start = new RegExp(`^${words}`, 'iu').exec(text)
+    if (start === null) continue
+    const after = text.slice(start[0].length)
+    const gap = AFTER_NAME.exec(after)
+    if (gap === null) continue
+    const rest = after.slice(gap[0].length).trimEnd()
+    if (/[\p{L}\p{N}]/u.test(rest)) return { name: nameOf(start[0]), rest }
+  }
+  return undefined
+}
+
+// Splits each level-1 heading line outside code fences that `split` finds typed
+// with its section's first line on it: the name it answers stays the heading and
+// the rest of the line goes on the line below.
+export function splitRunOns(text: string, split: (typed: string) => RunOn | undefined): string {
+  let isFenced = false
+  return text
+    .split('\n')
+    .map(line => {
+      if (FENCE.test(line)) isFenced = !isFenced
+      const typed = isFenced ? undefined : RUN_ON.exec(line.trimEnd())?.[1]
+      const runOn = typed === undefined ? undefined : split(typed)
+      return runOn === undefined ? line : `# ${runOn.name}\n${runOn.rest}`
+    })
+    .join('\n')
+}
+
 const squash = (name: string) => name.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '')
 
 function distance(a: string, b: string): number {
