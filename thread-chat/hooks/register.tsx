@@ -540,6 +540,9 @@ function chipPicture(
 // A pill that is a switch on the desktop, in the keyed Box `key`: its picture, the
 // hot one laid over it while the pointer is on the pill, and a hit area over both.
 // The light is the surface's own hover, so it adds no Client: still one per pill.
+// The hot picture is revealed in the flow of an absolute Box always shown, never
+// as one: the desktop lifts an absolute Box the pointer reveals into a floating
+// card, as it does a tip, and a hover can only reveal, never hide the picture at rest.
 function drawPillSwitch(
   elements: Elements['desktop'],
   key: string,
@@ -555,8 +558,10 @@ function drawPillSwitch(
   return (
     <Box key={key} {...layout}>
       <Svg source={rest.source} alt={alt} width={rest.width} height={CHIP_HEIGHT} />
-      <Box position="absolute" top={0} left={0} display="none" hover={{ display: 'flex' }}>
-        <Svg source={hot.source} alt={alt} width={hot.width} height={CHIP_HEIGHT} />
+      <Box position="absolute" top={0} left={0}>
+        <Box display="none" hover={{ display: 'flex' }}>
+          <Svg source={hot.source} alt={alt} width={hot.width} height={CHIP_HEIGHT} />
+        </Box>
       </Box>
       <Box position="absolute" top={0} left={0} width="100%" height="100%">
         <Client key={hitKey} module="./switch.tsx" props={{ isOn }} width="100%" height="100%" />
