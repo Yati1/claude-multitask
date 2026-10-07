@@ -2,13 +2,26 @@ import { atom, read, update } from 'claude-code'
 import type { AgentStatus, EngineInterface, Register, RenderElement, Timer, TurnCompleteReason } from 'claude-code'
 
 import type { Thought, ThoughtStatus, Update } from '../types'
-import { THOUGHT, VOICE, VOICE_OFF, VOICE_REMINDER, describeThoughts, formatUpdates, isQuiet } from './prompts'
+import {
+  RELAY_NOTES,
+  THOUGHT,
+  VOICE,
+  VOICE_OFF,
+  VOICE_REMINDER,
+  describeThoughts,
+  formatUpdates,
+  isQuiet,
+  isRelayText,
+  oneLine,
+  relayNames,
+} from './prompts'
 
 const isOn = atom({ plugin: 'multitask', key: 'isOn' } as const, false)
 const thoughts = atom({ plugin: 'multitask', key: 'thoughts' } as const, [])
 const inbox = atom({ plugin: 'multitask', key: 'inbox' } as const, [])
 const isMainBusy = atom({ plugin: 'multitask', key: 'isMainBusy' } as const, false)
 const toldVoice = atom({ plugin: 'multitask', key: 'toldVoice' } as const, false)
+const expanded = atom({ plugin: 'multitask', key: 'expanded' } as const, [])
 
 const PANE = 'multitask-thoughts'
 const SWITCH = 'multitask-switch'
@@ -38,6 +51,9 @@ const GLYPH: Record<ThoughtStatus, string> = { running: '◐', idle: '○', stop
 const FLUSH_MS = 2000
 // How long an interrupted thought gets to end its turn before the message goes anyway.
 const INTERRUPT_GRACE_MS = 4000
+// How many of a thought's progress notes are kept, and how long each may be.
+const NOTES_KEPT = 5
+const NOTE_MAX = 500
 
 const OFF = {
   deny: 'Multitask is off. The user turns it on with the switch above the prompt or /multitask.',
@@ -93,7 +109,7 @@ const TOOL_SPECS = [
   {
     name: 'thoughts',
     description:
-      'Every thought\'s status, queue and last update; with a thought\'s name, its recent transcript instead.',
+      'Every thought\'s status, queue, latest progress notes and last report; with a thought\'s name, its recent transcript instead.',
     inputSchema: { type: 'object', properties: { thought: { type: 'string' } } },
   },
 ]
@@ -151,6 +167,17 @@ async function patchThought($: EngineInterface, id: string, fn: (t: Thought) => 
   await update($, thoughts, list => list.map(t => (t.id === id ? fn(t) : t)))
 }
 
+// Opens a thought in the Thoughts pane to show everything, or closes it: a finished
+// thought's one line becomes its whole card, a running card shows its whole task.
+async function toggleExpanded($: EngineInterface, id: string) {
+  await update($, expanded, ids => (ids.includes(id) ? ids.filter(one => one !== id) : [...ids, id]))
+}
+
+// A task's first line, which a running card shows until it is opened.
+function firstLine(task: string): string {
+  return task.trimStart().split('\n')[0]?.trimEnd() ?? ''
+}
+
 async function toggle($: EngineInterface): Promise<boolean> {
   let now = false
   await update($, isOn, was => (now = !was))
@@ -172,20 +199,49 @@ async function flushInbox($: EngineInterface) {
     return []
   })
   if (taken.length === 0) return
-  void $.prompt.submit({ text: formatUpdates(taken, await read($, thoughts)) })
+  void $.prompt.submit({ text: formatUpdates(taken) })
 }
 
-async function relay($: EngineInterface, thought: string, text: string) {
+async function relay($: EngineInterface, fn: (list: Update[]) => Update[]) {
   if (!(await read($, isOn))) return
-  await update($, inbox, list => [...list, { thought, text }])
+  await update($, inbox, fn)
   scheduleFlush($)
 }
 
+// What a thought writes as it works is a progress note: kept to follow it by, and
+// relayed to the voice while RELAY_NOTES is on. Its tool calls never are.
 async function noteThoughtSaid($: EngineInterface, id: string, text: string) {
   const t = (await read($, thoughts)).find(one => one.id === id)
-  if (t === undefined || text === '') return
-  await patchThought($, id, one => ({ ...one, lastText: text }))
-  await relay($, t.name, text)
+  // The turn's report, should its row land after the turn ended, has been relayed already.
+  if (t === undefined || text === '' || text === t.lastText) return
+  await patchThought($, id, one => ({
+    ...one,
+    notes: [...(one.notes ?? []), text.slice(0, NOTE_MAX)].slice(-NOTES_KEPT),
+    notedSinceReport: true,
+  }))
+  if (RELAY_NOTES) await relay($, list => [...list, { thought: t.name, text }])
+}
+
+// The end of a thought's turn reaches the voice once, as a done line. Its report replaces
+// the notes still waiting that it repeats; if it went out already as the latest note,
+// the line is a bare "done". With notes not relayed, nothing went out before it.
+async function relayDone($: EngineInterface, t: Thought, report: string, isFailed: boolean) {
+  const notes = t.notes ?? []
+  const wasSent = RELAY_NOTES && report !== '' && notes.at(-1) === report.slice(0, NOTE_MAX)
+  await relay($, list => {
+    const kept = [...list]
+    let isWaiting = false
+    for (let i = kept.length - 1; i >= 0; i--) {
+      const u = kept[i] as Update
+      if (u.thought !== t.name) continue
+      if (u.isDone === true || !report.includes(u.text)) break
+      kept.splice(i, 1)
+      isWaiting = true
+    }
+    const said = isWaiting || !wasSent ? report : ''
+    const text = isFailed ? [said, '(ended on an error)'].filter(part => part !== '').join(' ') : said
+    return [...kept, { thought: t.name, text, isDone: true }]
+  })
 }
 
 async function deliver($: EngineInterface, id: string, text: string) {
@@ -231,19 +287,44 @@ async function interrupt($: EngineInterface, t: Thought, text: string) {
   $.clock.after(INTERRUPT_GRACE_MS, () => void handOverInterrupt($, t.id))
 }
 
+// Hands over the interruption still waiting, if any. Whichever comes second, the cut
+// turn's end or the grace timer, finds none and leaves the thought be: its turn by
+// then may be the one the interruption started, whose id a later interrupt aborts.
 async function handOverInterrupt($: EngineInterface, id: string) {
   let text: string | null = null
   await patchThought($, id, t => {
     text = t.interruptWith
-    return { ...t, interruptWith: null, turnId: null }
+    return text === null ? t : { ...t, interruptWith: null, turnId: null }
   })
   if (text !== null) await deliver($, id, `Interruption from the voice: ${text}`)
 }
 
-// A thought's turn ended: hand over an interruption or its queue, or tell the voice it is idle.
-async function settleThought($: EngineInterface, id: string, reason: TurnCompleteReason) {
+// The notes a turn's report leaves: its own text arrived as notes too, last.
+function notesBefore(notes: string[], report: string): string[] {
+  const kept = [...notes]
+  while (kept.length > 0 && report.includes(kept.at(-1) as string)) kept.pop()
+  return kept
+}
+
+// A thought's turn ended: the voice is told, with the text it ended on as its report (a
+// result, question or problem); then an interruption or its queue is handed over, or
+// it goes idle.
+async function settleThought($: EngineInterface, id: string, reason: TurnCompleteReason, answer: string) {
   const t = (await read($, thoughts)).find(one => one.id === id)
   if (t === undefined || t.status === 'stopped') return
+  // A turn that was cut ended on whatever it was doing, not on a report; it was cut by
+  // the voice's interruption or a stop, so the voice is not told it ended.
+  const isCut = reason === 'aborted'
+  const report = isCut ? '' : answer.trim()
+  if (report !== '') {
+    await patchThought($, id, one => ({
+      ...one,
+      lastText: report,
+      notes: notesBefore(one.notes ?? [], report),
+      notedSinceReport: false,
+    }))
+  }
+  if (!isCut) await relayDone($, t, report, reason === 'error' || reason === 'refusal')
   if (t.interruptWith !== null) return handOverInterrupt($, id)
   if (t.queued.length > 0) {
     const text = t.queued.join('\n\n')
@@ -252,11 +333,11 @@ async function settleThought($: EngineInterface, id: string, reason: TurnComplet
   }
   const status: ThoughtStatus = reason === 'error' || reason === 'refusal' ? 'failed' : 'idle'
   await patchThought($, id, one => ({ ...one, status, turnId: null }))
-  await relay($, t.name, status === 'failed' ? '(ended on an error)' : '(finished its turn; idle)')
 }
 
 // What the voice is told beside the person's message: its whole part once Multitask
-// comes on, a reminder while it stays on, and once that it has gone off.
+// comes on (and again after a compaction), a reminder while it stays on, and once
+// that it has gone off.
 async function voiceNote($: EngineInterface): Promise<string | undefined> {
   const now = await read($, isOn)
   const told = await read($, toldVoice)
@@ -338,6 +419,7 @@ export const register: Register = (on, options) => {
       status: 'running',
       queued: [],
       lastText: '',
+      notes: [],
       turnId: null,
       interruptWith: null,
     }
@@ -409,27 +491,26 @@ export const register: Register = (on, options) => {
     if (t === undefined) return unknownThought(list, ref)
     const messages = await $.session.messages({ agentId: t.id })
     if ('deny' in messages) return { result: describeThoughts([t]) }
-    const recent = messages.slice(-8).map(m => {
-      const tools = m.toolUses.length === 0 ? '' : ` [tools: ${m.toolUses.map(u => u.tool).join(', ')}]`
-      return `${m.role}: ${m.text.slice(0, 600)}${tools}`
-    })
+    // One line a row: its text (a progress note, report or message) and the tools it
+    // called; rows that only carry tool results are left out.
+    const recent = messages
+      .filter(m => m.text !== '' || m.toolUses.length > 0)
+      .slice(-12)
+      .map(m => {
+        const tools = m.toolUses.length === 0 ? '' : ` [${m.toolUses.map(u => u.tool).join(', ')}]`
+        const text = m.text === '' ? '' : ` ${oneLine(m.text, 300)}`
+        return `${m.role}:${text}${tools}`
+      })
     return { result: `${describeThoughts([t])}\n\nRecent:\n${recent.join('\n')}` }
-  })
-
-  on('prompt.compose', async ($, e, next) => {
-    const composed = await next(e)
-    // Thoughts are denied the think tool, so only the voice's prompt carries it.
-    if (!(await read($, isOn)) || !e.tools.includes(TOOL.think)) return composed
-    return {
-      ...composed,
-      sections: [...composed.sections, { id: 'multitask', text: VOICE, scope: 'session' as const }],
-    }
   })
 
   // The engine's own note that a background agent ended would reach the voice
   // twice; the relay already carries it. Beside the person's own message the voice
-  // is told when Multitask came on or went off, as the system prompt is composed
-  // once and does not follow the switch.
+  // is told when Multitask came on or went off: that is the one way it is told. A
+  // system prompt section would not follow the switch, as the engine sends the
+  // prompt it recorded at the first request until a compaction, and on a machine
+  // with managed settings it is never sent, the managed plugin skipping a user
+  // plugin's prompt.compose hook.
   on('prompt.submit', async ($, e, next) => {
     if (e.origin.kind === 'task-notification') {
       const list = await read($, thoughts)
@@ -438,6 +519,15 @@ export const register: Register = (on, options) => {
     if (!PERSON.has(e.origin.kind)) return next(e)
     const note = await voiceNote($)
     return note === undefined ? next(e) : next({ ...e, context: [...(e.context ?? []), note] })
+  })
+
+  // A compaction may summarise the voice's part away: while Multitask is on, it is
+  // told whole again beside the person's next message. (Gone off, it is told so.)
+  on('session.compact', async ($, e, next) => {
+    const result = await next(e)
+    const isCompacted = e.agentId === undefined && e.trigger !== 'precompute' && result.skip === undefined
+    if (isCompacted && (await read($, isOn))) await update($, toldVoice, () => false)
+    return result
   })
 
   // The voice's think call was allowed as any call is; the thought it starts is the
@@ -479,12 +569,12 @@ export const register: Register = (on, options) => {
       await update($, isMainBusy, () => false)
       scheduleFlush($)
     } else if ((await read($, thoughts)).some(t => t.id === e.agentId)) {
-      void settleThought($, e.agentId, e.reason)
+      void settleThought($, e.agentId, e.reason, e.answer)
     }
     return result
   })
 
-  // What a thought says reaches the voice, as what the user would see of it.
+  // What a thought writes as it works is kept as its progress notes (and relayed, while RELAY_NOTES is on).
   on('session.append', async ($, e, next) => {
     if (e.agentId !== undefined && e.door === 'response') {
       await noteThoughtSaid($, e.agentId, textOf(e.message.content))
@@ -499,20 +589,27 @@ export const register: Register = (on, options) => {
     return <Box display="none" />
   })
 
-  // Updates handed to the voice draw as one dim line; ctrl+o shows them whole.
+  // Updates handed to the voice are not the person's to read. The terminal draws them
+  // as one dim line (ctrl+o shows them whole); other surfaces draw nothing. A surface
+  // may not know the row came from this plugin (the desktop holds it under another
+  // origin, its text still in the engine's frame), so the relay is known by its text too.
   on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
-    if (e.props.isExpanded) return next(e)
     const origin = e.props.origin
-    const isRelay = origin.kind === 'plugin' && origin.name === 'multitask'
+    const isRelay = (origin.kind === 'plugin' && origin.name === 'multitask') || isRelayText(e.props.text)
     const taskId = e.props.task?.id
     const isThoughtNotice =
       origin.kind === 'task-notification' &&
       taskId !== undefined &&
       (await read($, thoughts)).some(t => t.id === taskId)
     if (!isRelay && !isThoughtNotice) return next(e)
+    if (e.surface !== 'terminal') {
+      const { Box } = $.ui.resolve(e)
+      return <Box display="none" />
+    }
+    if (e.props.isExpanded) return next(e)
 
     const { Text } = $.ui.resolve(e)
-    const names = [...e.props.text.matchAll(/^## (.+?) \(/gm)].map(m => m[1])
+    const names = relayNames(e.props.text)
     return <Text dimColor>◦ thought update{names.length > 0 ? `: ${names.join(', ')}` : ''}</Text>
   })
 
@@ -528,6 +625,11 @@ export const register: Register = (on, options) => {
 
     const on_ = await read($, isOn)
     const live = (await read($, thoughts)).filter(t => t.status !== 'stopped')
+    // The count is of the thoughts running now; an idle or failed one only keeps the band up.
+    const running = live.filter(t => t.status === 'running').length
+    const queued = live.reduce((n, t) => n + t.queued.length, 0)
+    const thoughtsLabel =
+      (running > 0 ? `thoughts ${running}` : 'thoughts') + (queued > 0 ? ` · ${queued} queued` : '')
     const { Box, Text, Button } = $.ui.resolve(e)
 
     let toggleSwitch: RenderElement
@@ -554,27 +656,25 @@ export const register: Register = (on, options) => {
       )
     }
 
+    // One row that keeps its width; nothing the pointer shows takes room.
     const band = (
-      <Box flexDirection="row" flexWrap="wrap" columnGap={1} alignItems="center">
+      <Box flexDirection="row" columnGap={1} alignItems="center" flexShrink={0}>
         <Text>Multitask</Text>
         {toggleSwitch}
-        {live.map(t => (
-          <Text color={t.color}>
-            {GLYPH[t.status]} {t.name}
-            {t.queued.length > 0 ? ` +${t.queued.length}` : ''}
-          </Text>
-        ))}
         {(on_ || live.length > 0) && (
-          <Button key="open-thoughts" label="thoughts" onPress={() => void $.ui.open({ id: PANE, title: 'Thoughts' })} />
+          <Button key="open-thoughts" label={thoughtsLabel} onPress={() => void $.ui.open({ id: PANE, title: 'Thoughts' })} />
         )}
       </Box>
     )
 
-    // Shares the row with other mods' controls, on its right.
+    // Shares the one row with other mods' controls, on its right: theirs give way, these
+    // keep their width.
     if (below.type === 'engine') return band
     return (
-      <Box flexDirection="row" flexWrap="wrap" justifyContent="space-between" alignItems="center" columnGap={2}>
-        {below}
+      <Box flexDirection="row" justifyContent="space-between" alignItems="center" columnGap={2}>
+        <Box flexDirection="row" alignItems="center" flexGrow={1} flexShrink={1} minWidth={0}>
+          {below}
+        </Box>
         {band}
       </Box>
     )
@@ -584,26 +684,61 @@ export const register: Register = (on, options) => {
     const { Box, Text, Button, Markdown } = $.ui.resolve(e)
     const list = await read($, thoughts)
     const on_ = await read($, isOn)
+    // Running thoughts come first, as cards showing their task's first line; the rest draw
+    // as one line. Opening one (its name, or more) shows everything, the whole task too.
+    const ordered = [...list].sort((a, b) => Number(a.status !== 'running') - Number(b.status !== 'running'))
+    const opened = await read($, expanded)
+    // Cells a card's task line has: the pane's body less the card's border and padding.
+    const taskColumns = e.props.bodyColumns - 4
 
     return (
-      <Box flexDirection="column" rowGap={1}>
-        <Text dimColor>
-          Multitask is {on_ ? 'on' : 'off'}. {list.length === 0 ? 'No thoughts yet.' : `${list.length} thought(s).`}
-        </Text>
-        {list.map(t => (
-          <Box flexDirection="column" borderStyle="round" borderColor={t.color} paddingX={1}>
+      <Box flexDirection="column">
+        <Box marginBottom={1}>
+          <Text dimColor>
+            Multitask is {on_ ? 'on' : 'off'}. {list.length === 0 ? 'No thoughts yet.' : `${list.length} thought(s).`}
+          </Text>
+        </Box>
+        {ordered.map(t =>
+          t.status !== 'running' && !opened.includes(t.id) ? (
             <Box flexDirection="row" columnGap={1} alignItems="center">
-              <Text color={t.color} bold>
-                {GLYPH[t.status]} {t.name}
-              </Text>
+              <Text color={t.color}>{GLYPH[t.status]}</Text>
+              <Button key={`expand:${t.id}`} plain label={t.name} onPress={() => void toggleExpanded($, t.id)} />
               <Text dimColor>{t.status}</Text>
               {t.status !== 'stopped' && (
                 <Button key={`stop:${t.id}`} label="stop" onPress={() => void stopThought($, t.id)} />
               )}
             </Box>
-            <Text dimColor wrap="truncate-end">
-              {t.task}
-            </Text>
+          ) : (
+          <Box flexDirection="column" borderStyle="round" borderColor={t.color} paddingX={1} marginBottom={1}>
+            <Box flexDirection="row" columnGap={1} alignItems="center">
+              <Text color={t.color} bold>
+                {GLYPH[t.status]}
+              </Text>
+              <Button key={`expand:${t.id}`} plain label={t.name} onPress={() => void toggleExpanded($, t.id)} />
+              <Text dimColor>{t.status}</Text>
+              {t.status !== 'stopped' && (
+                <Button key={`stop:${t.id}`} label="stop" onPress={() => void stopThought($, t.id)} />
+              )}
+              {t.status === 'running' && (t.task.trim() !== firstLine(t.task) || firstLine(t.task).length > taskColumns) && (
+                <Button
+                  key={`more:${t.id}`}
+                  plain
+                  dimColor
+                  label={opened.includes(t.id) ? 'less' : 'more'}
+                  onPress={() => void toggleExpanded($, t.id)}
+                />
+              )}
+              {t.status !== 'running' && (
+                <Button key={`collapse:${t.id}`} plain dimColor label="hide" onPress={() => void toggleExpanded($, t.id)} />
+              )}
+            </Box>
+            {opened.includes(t.id) ? (
+              <Text dimColor>{t.task}</Text>
+            ) : (
+              <Text dimColor wrap="truncate-end">
+                {firstLine(t.task)}
+              </Text>
+            )}
             {t.queued.map((q, i) => (
               <Box flexDirection="row" columnGap={1}>
                 <Text>
@@ -612,7 +747,13 @@ export const register: Register = (on, options) => {
                 <Button key={`unqueue:${t.id}:${i}`} label="unqueue" onPress={() => void unqueue($, t.id, i)} />
               </Box>
             ))}
-            {t.lastText !== '' && <Markdown text={t.lastText.slice(-1500)} />}
+            {(t.notes ?? []).slice(-3).map(n => (
+              <Text dimColor wrap="truncate-end">
+                · {oneLine(n, 200)}
+              </Text>
+            ))}
+            {/* Its report, unless it has written notes since: a stale report would sit under fresh ones. */}
+            {t.lastText !== '' && t.notedSinceReport !== true && <Markdown text={t.lastText.slice(-1500)} />}
           </Box>
         ))}
       </Box>

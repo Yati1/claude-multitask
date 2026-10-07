@@ -24,4 +24,6 @@ To develop, clone `git@github.com:othrayte/claude-multitask.git` and add the clo
 ```
 claude plugin validate thread-chat
 claude plugin test thread-chat
+claude plugin validate multitask
+claude plugin test multitask
 ```
