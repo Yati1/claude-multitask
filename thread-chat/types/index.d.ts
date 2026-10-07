@@ -6,6 +6,24 @@ export type Thread = {
   createdBy: 'user' | 'agent'
 }
 
+// A row of the main conversation the thread view draws: a person's message or a
+// reply's text, as stored, by its row id and the start of its text.
+export type ViewRow = {
+  id: string
+  role: 'user' | 'assistant'
+  // the text's start, whitespace dropped: how a transcript row is matched to it
+  mark: string
+  // the length of the text as typed, where notes for the model follow it in the row
+  typed?: number
+}
+
+// Where the threads stood when the model was last told, beside the person's message:
+// the merges (a merged-away thread's key -> its thread's key) and the agent switch.
+export type Brief = {
+  merged: Record<string, string>
+  mayCreate: boolean
+}
+
 declare module 'claude-code' {
   interface PluginState {
     'thread-chat': {
@@ -29,8 +47,17 @@ declare module 'claude-code' {
       moved: Record<string, string>
       // the open move picker: `${row id}|${key of the thread its part sits in}`; '' none
       picking: string
+      // whether the open move picker shows a field for a new thread's name in place
+      // of its pills
+      naming: boolean
       // moves to tell the model beside the person's next message
       untold: string[]
+      // what the model was last told of the threads; null until it is told how they
+      // work (and again after a compaction)
+      briefed: Brief | null
+      // the person's messages and reply texts as stored, in order, so the thread
+      // view knows each transcript row's id
+      viewRows: ViewRow[]
     }
   }
 }

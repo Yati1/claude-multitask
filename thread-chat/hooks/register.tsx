@@ -1,17 +1,30 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderElement } from 'claude-code'
 
-import type { Thread } from '../types'
+import type { Brief, Thread, ViewRow } from '../types'
 import {
   PALETTE,
   closestThread,
   headingsIn,
+  holdsQuote,
+  isOthersPrompt,
   keyOf,
   nameOf,
+  replyQuotesOf,
   rewriteHeadings,
   splitSections,
 } from './parse'
 import type { Section } from './parse'
+import {
+  drawView,
+  markOf,
+  noteDrawnReply,
+  pickedOf,
+  viewKey,
+  viewRowOf,
+  withViewRow,
+} from './pane'
+import type { ViewDeps, ViewInputs } from './pane'
 
 const threads = atom({ plugin: 'thread-chat', key: 'threads' } as const, [])
 const aliases = atom({ plugin: 'thread-chat', key: 'aliases' } as const, {})
@@ -22,10 +35,16 @@ const recentTexts = atom({ plugin: 'thread-chat', key: 'recentTexts' } as const,
 const sentTo = atom({ plugin: 'thread-chat', key: 'sentTo' } as const, {})
 const moved = atom({ plugin: 'thread-chat', key: 'moved' } as const, {})
 const picking = atom({ plugin: 'thread-chat', key: 'picking' } as const, '')
+const naming = atom({ plugin: 'thread-chat', key: 'naming' } as const, false)
 const untold = atom({ plugin: 'thread-chat', key: 'untold' } as const, [])
+const briefed = atom({ plugin: 'thread-chat', key: 'briefed' } as const, null)
+const viewRows = atom({ plugin: 'thread-chat', key: 'viewRows' } as const, [])
 
 const CREATE_TOOL = 'mcp__thread-chat__create_thread'
 const AGENT_SWITCH = 'agent-switch'
+// The thread view's pane id, which is also its command's name and its band button's key.
+const VIEW = 'thread-view'
+const VIEW_TITLE = 'Thread view'
 
 // The ways a person's own prompt arrives: typed in the terminal, the desktop
 // app (an SDK host) or Remote Control.
@@ -108,6 +127,7 @@ type Saved = {
   sentTo: Record<string, string>
   moved: Record<string, string>
   untold: string[]
+  briefed: Brief | null
 }
 
 // Keeps the session's threads, merges, recorded meanings and latest rows for its next run.
@@ -121,8 +141,61 @@ async function save($: EngineInterface) {
     sentTo: await read($, sentTo),
     moved: await read($, moved),
     untold: await read($, untold),
+    briefed: await read($, briefed),
   }
   await $.store.set(storeKey(await $.session.id()), saved)
+}
+
+// A mark too short to tell sessions apart ("ok", "(quiet)") does not count.
+const MIN_PARENT_MARK = 12
+
+// The session this one was rewound or forked from. Claude Code gives such a session a
+// new id and copies the rows it keeps from the other, so it is found as the saved
+// session whose thread view knows the most of this one's messages, by a clear margin.
+async function parentOf($: EngineInterface, id: string): Promise<string | undefined> {
+  const mine = new Set(
+    (await $.session.messages()).map(m => markOf(m.text)).filter(mark => mark.length >= MIN_PARENT_MARK),
+  )
+  if (mine.size === 0) return undefined
+  const scores: { id: string; score: number }[] = []
+  for (const key of await $.store.keys()) {
+    if (!key.startsWith('view:') || key === viewKey(id)) continue
+    const rows = await $.store.get(key)
+    if (!Array.isArray(rows)) continue
+    const known = new Set((rows as ViewRow[]).map(row => row.mark).filter(mark => mine.has(mark)))
+    if (known.size > 0) scores.push({ id: key.slice('view:'.length), score: known.size })
+  }
+  scores.sort((a, b) => b.score - a.score)
+  const [best, next] = scores
+  if (best === undefined || best.score < 3 || (next !== undefined && next.score * 2 > best.score)) return undefined
+  return best.id
+}
+
+// Joins a saved record to what this run holds, so neither loses anything: the threads
+// either knows (this run's first picks kept), the merges and recorded meanings of both
+// (this run's winning), and this run's rows when it has any. A thread this run holds
+// is not merged away by an older record.
+async function takeUp($: EngineInterface, saved: Partial<Saved>) {
+  const held = new Set((await read($, threads)).map(t => keyOf(t.name)))
+  const older = Object.fromEntries(Object.entries(saved.aliases ?? {}).filter(([key]) => !held.has(key)))
+  const links = { ...older, ...(await read($, aliases)) }
+  await update($, aliases, () => links)
+  await update($, threads, list => {
+    const mine = new Map(list.map(t => [keyOf(t.name), t]))
+    const savedKeys = new Set((saved.threads ?? []).map(t => keyOf(t.name)))
+    const ordered = [
+      ...(saved.threads ?? []).map(t => mine.get(keyOf(t.name)) ?? { ...t, isSelected: false }),
+      ...list.filter(t => !savedKeys.has(keyOf(t.name))),
+    ]
+    return ordered.filter(t => links[keyOf(t.name)] === undefined)
+  })
+  await update($, snaps, all => ({ ...(saved.snaps ?? {}), ...all }))
+  await update($, sentTo, all => ({ ...(saved.sentTo ?? {}), ...all }))
+  await update($, moved, all => ({ ...(saved.moved ?? {}), ...all }))
+  await update($, recent, all => (all.length > 0 ? all : (saved.recent ?? [])))
+  await update($, recentTexts, all => (all.length > 0 ? all : (saved.recentTexts ?? [])))
+  await update($, untold, all => [...(saved.untold ?? []).filter(note => !all.includes(note)), ...all])
+  await update($, briefed, brief => brief ?? saved.briefed ?? null)
 }
 
 // A row's id as the screen knows it: blocks of one stored row drawn apart take
@@ -152,7 +225,8 @@ async function isFilteredOut($: EngineInterface, ids: string[]): Promise<boolean
   return !(await isRecent($, ids))
 }
 
-// Messages sent with no heading to the one picked thread, until their rows are stored.
+// Messages sent with no heading to one thread (the one picked, or the one a reply's
+// quotes came from), until their rows are stored.
 const unsent: { text: string; key: string }[] = []
 
 // The text blocks of a stored row, as one text.
@@ -170,6 +244,42 @@ async function sentThreadOf(
   const all = await read($, sentTo)
   const key = all[id] ?? Object.entries(all).find(([row]) => stemOf(row) === stemOf(id))?.[1]
   return key === undefined ? undefined : threadOf(key, list, links)
+}
+
+// Where a quote came from: the place ('' no thread) of the newest reply's part that
+// holds it, read as the reply draws (`replies` newest first); undefined where no reply
+// holds it, or the newest that does holds it in parts of different places, or across them.
+function quotedPlaceOf(replies: string[], quote: string, resolve: (name: string) => Thread | undefined): string | undefined {
+  for (const reply of replies) {
+    if (!holdsQuote(reply, quote)) continue
+    const places = new Set(
+      splitSections(reply, name => resolve(name) !== undefined)
+        .filter(s => holdsQuote(s.text, quote))
+        .map(s => (s.thread === null ? '' : keyOf(resolve(s.thread)?.name ?? s.thread))),
+    )
+    return places.size === 1 ? [...places][0] : undefined
+  }
+  return undefined
+}
+
+// The thread a message replying to parts of earlier replies belongs to: the one every
+// quote that is found came from. Quotes from different threads, or from text of no
+// thread, give none: each quote carries the person's own words on it, so such a
+// message speaks to several places, and filing it under one would hide it from the rest.
+async function quotedThreadOf($: EngineInterface, quotes: string[], list: Thread[]): Promise<Thread | undefined> {
+  if (quotes.length === 0) return undefined
+  let rows: { role: string; text: string }[]
+  try {
+    rows = await $.session.messages()
+  } catch {
+    return undefined
+  }
+  const merged = await read($, aliases)
+  const resolve = (name: string) => threadOf(name, list, merged)
+  const replies = rows.filter(r => r.role === 'assistant' && r.text !== '').map(r => r.text).reverse()
+  const places = new Set(quotes.flatMap(q => quotedPlaceOf(replies, q, resolve) ?? []))
+  const only = places.size === 1 ? [...places][0] : undefined
+  return only === undefined || only === '' ? undefined : threadOf(only, list, merged)
 }
 
 // The marks of a stored reply's text blocks, each as a screen may draw it alone.
@@ -204,19 +314,49 @@ function linksOf(meanings: { typed: string; meant: string }[]): Record<string, s
   )
 }
 
+// How threads work, and where they stand. It goes beside the person's message: the
+// system prompt cannot carry it, as the engine sends the prompt it recorded at the
+// first request until a compaction, and on a machine with managed settings a user
+// plugin's prompt.compose hook is skipped.
 function protocol(list: Thread[], merged: Record<string, string>, mayCreate: boolean): string {
-  const names = list.length === 0 ? 'none yet' : list.map(t => `"${t.name}"`).join(', ')
-  const mergedNames = Object.entries(merged).map(([from, to]) => `"${from}" is now "${to}"`)
   return [
     '# Conversation threads',
     'This conversation can hold several threads at once. The user starts or replies to a thread with a level-1 heading in their message: `# name` or `#name` (with or without the space). Text before the first heading is the unthreaded conversation. A heading may be abbreviated or mistyped, or written `#+name` to start a new thread; a note beside the message then says which thread each heading means.',
     'Reply the same way. Put what belongs to a thread under a level-1 heading carrying that thread\'s exact name, one section per thread the user wrote to; keep unthreaded material before any thread heading. Use `##` or deeper for structure inside a section: a level-1 heading that is not a thread name drops back into the unthreaded conversation.',
+    'This holds for the rest of the conversation; a note beside a later message says when threads are merged or your leave to start them changes.',
+    threadState(list, merged, mayCreate),
+  ].join('\n\n')
+}
+
+// Where the threads stand: those so far, the merges, and whether the model may start one.
+function threadState(list: Thread[], merged: Record<string, string>, mayCreate: boolean): string {
+  const names = list.length === 0 ? 'none yet' : list.map(t => `"${t.name}"`).join(', ')
+  const mergedNames = Object.entries(merged).map(([from, to]) => `"${from}" is now "${to}"`)
+  return [
     `Threads so far: ${names}.`,
     ...(mergedNames.length === 0 ? [] : [`Merged threads (an old heading means the new one): ${mergedNames.join('; ')}.`]),
     mayCreate
       ? `You may start a new thread with ${CREATE_TOOL} when a distinct topic deserves its own thread, then write to it under its heading. Do it sparingly.`
       : `Do not start new threads yourself; the user has not enabled that (${CREATE_TOOL} will refuse).`,
-  ].join('\n\n')
+  ].join(' ')
+}
+
+const mergesKey = (merged: Record<string, string>) => JSON.stringify(Object.entries(merged).sort())
+
+// What the model is told of the threads beside the person's message: how they work,
+// once they matter (and again after a compaction), then where they stand whenever a
+// merge or the agent switch changed it. A thread it sees made (by a heading, its own
+// create_thread, a move it is told of) needs no telling.
+async function briefing($: EngineInterface): Promise<string[]> {
+  const list = await read($, threads)
+  const merged = await read($, aliases)
+  const mayCreate = await read($, agentMayCreate)
+  const was = await read($, briefed)
+  const isUnused = list.length === 0 && Object.keys(merged).length === 0 && !mayCreate
+  if (was === null ? isUnused : mergesKey(was.merged) === mergesKey(merged) && was.mayCreate === mayCreate) return []
+  await update($, briefed, () => ({ merged, mayCreate }))
+  await save($)
+  return [was === null ? protocol(list, merged, mayCreate) : `The threads changed. ${threadState(list, merged, mayCreate)}`]
 }
 
 // The SVG of a slide switch: a rounded track with the knob to the right when on.
@@ -235,6 +375,21 @@ const escapeXml = (text: string) =>
 // Thread names draw as tags: small semibold capitals, a hair apart.
 const PILL_TAG_SIZE = 10.5
 const CHAT_TAG_SIZE = 9
+// On the desktop the engine draws reply text as prose, whose paragraphs sit
+// `--cds-assistant-message-text-inset` (4px) in from the left; reply parts drawn
+// as Markdown have no such inset.
+const PROSE_TEXT_INSET = 4
+// Px a reply part's tag moves right to line up with the engine's text: that inset,
+// and 1px more seen on screen, the tag's capitals starting a hair left of the prose's.
+const REPLY_TAG_INSET = PROSE_TEXT_INSET + 1
+// The padding inside a thread's border round its reply part, in cells, on every side.
+// The desktop gives a bordered Box 8px above and below and 12px at the sides
+// (--cds-pad-md, --cds-pad-lg) unless told otherwise, so paddingX alone left that 8px
+// above and below. The `padding` shorthand overrides all four sides as one. A cell
+// there is half a line down but one sans `ch` across (about 10px and 8px), so the
+// sides are equal in cells and near-equal in px; the engine part's prose inset adds
+// to the left. On the terminal a row is a whole line, so it pads only the sides.
+const REPLY_BORDER_PADDING = 1
 const TAG_SPACING = 0.4
 const TAG_FONT = 'font-family="Segoe UI, system-ui, -apple-system, sans-serif"'
 
@@ -254,38 +409,55 @@ function tagWidth(label: string, size: number): number {
 }
 
 // The SVG of a thread's tag: its name in small capitals, in its colour, set
-// against the edge the tag aligns to.
-function tagPicture(name: string, color: string, align: 'start' | 'end') {
+// against the edge the tag aligns to, `inset` px in from it. The capitals are set
+// to the width guessed for them (`textLength`, the spacing giving way), so the
+// picture ends where they do: what follows the tag, its "▾", sits right after
+// the name, alike in messages and replies.
+function tagPicture(name: string, color: string, align: 'start' | 'end', inset = 0) {
   const label = name.toUpperCase()
-  // Roomier than the guess: the text keeps to its edge, so spare width never shows.
-  const width = Math.ceil(tagWidth(label, CHAT_TAG_SIZE) * 1.25)
+  const text = tagWidth(label, CHAT_TAG_SIZE)
+  const width = text + inset
   const height = 12
-  const x = align === 'end' ? width : 0
+  const x = align === 'end' ? width - inset : inset
   const source =
     `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">` +
     `<text x="${x}" y="9.5" text-anchor="${align}" ${TAG_FONT} font-size="${CHAT_TAG_SIZE}" font-weight="600"` +
-    ` letter-spacing="${TAG_SPACING}" fill="${color}">${escapeXml(label)}</text></svg>`
+    ` letter-spacing="${TAG_SPACING}" textLength="${text - 1}" lengthAdjust="spacing" fill="${color}">${escapeXml(label)}</text></svg>`
   return { source, width, height }
 }
 
 // The SVG of a thread's filter pill: one row high, its coloured dot and tag inside,
 // outlined and tinted in the thread's colour when picked, faded when another is,
 // and with an arrow after the tag when it alone is picked: messages with no
-// heading go to it.
-function chipPicture(name: string, color: string, isSelected: boolean, isDimmed: boolean, isSendTarget: boolean) {
+// heading go to it. With no colour it has no dot; its outline is dashed unless
+// told otherwise, as the pill of no thread.
+function chipPicture(
+  name: string,
+  color: string | undefined,
+  isSelected: boolean,
+  isDimmed: boolean,
+  isSendTarget: boolean,
+  isDashed = color === undefined,
+) {
   const label = name.toUpperCase()
   const text = tagWidth(label, PILL_TAG_SIZE * (isSelected ? 1.03 : 1))
-  const arrowAt = 19 + text + 5
-  const width = isSendTarget ? arrowAt + 8 + 8 : 19 + text + 9
+  const textAt = color === undefined ? 9 : 19
+  const arrowAt = textAt + text + 5
+  const width = isSendTarget ? arrowAt + 8 + 8 : textAt + text + 9
   const h = CHIP_HEIGHT
-  const fill = isSelected ? `fill="${color}" fill-opacity="0.2" stroke="${color}" stroke-width="1.5"` : 'class="bg"'
+  const fill =
+    color === undefined
+      ? `class="bg"${isDashed ? ' stroke-dasharray="3 2"' : ''}`
+      : isSelected
+        ? `fill="${color}" fill-opacity="0.2" stroke="${color}" stroke-width="1.5"`
+        : 'class="bg"'
   const source = [
     `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${h}" viewBox="0 0 ${width} ${h}"${isDimmed ? ' opacity="0.45"' : ''}>`,
     '<style>.bg{fill:#ffffff14;stroke:#ffffff38}.t{fill:#e6e6e6}',
     '@media (prefers-color-scheme: light){.bg{fill:#0000000a;stroke:#00000038}.t{fill:#1f1f1f}}</style>',
     `<rect ${fill} x="0.75" y="0.75" width="${width - 1.5}" height="${h - 1.5}" rx="${(h - 1.5) / 2}"/>`,
-    `<circle cx="10.5" cy="${h / 2}" r="3" fill="${color}"/>`,
-    `<text class="t" x="19" y="${h / 2 + 3.8}" ${TAG_FONT} font-size="${PILL_TAG_SIZE}"`,
+    color === undefined ? '' : `<circle cx="10.5" cy="${h / 2}" r="3" fill="${color}"/>`,
+    `<text class="t" x="${textAt}" y="${h / 2 + 3.8}" ${TAG_FONT} font-size="${PILL_TAG_SIZE}"`,
     ` font-weight="${isSelected ? 700 : 600}" letter-spacing="${TAG_SPACING}">${escapeXml(label)}</text>`,
     isSendTarget
       ? `<path d="M${arrowAt} ${h / 2 - 4}L${arrowAt + 8} ${h / 2}L${arrowAt} ${h / 2 + 4}L${arrowAt + 2} ${h / 2}Z" fill="${color}"/>`
@@ -302,13 +474,14 @@ function drawTag(
   e: Parameters<EngineInterface['ui']['resolve']>[0],
   thread: { name: string; color: string },
   align: 'start' | 'end',
+  inset = 0,
 ): RenderElement {
   if (e.surface === 'terminal') {
     const { Text } = $.ui.resolve(e)
     return <Text color={thread.color}>{thread.name.toUpperCase()}</Text>
   }
   const { Svg } = $.ui.resolve(e)
-  const tag = tagPicture(thread.name, thread.color, align)
+  const tag = tagPicture(thread.name, thread.color, align, inset)
   return <Svg source={tag.source} alt={thread.name} width={tag.width} height={tag.height} />
 }
 
@@ -393,15 +566,17 @@ const glimpseOf = (text: string) => {
 // Opens the move picker for what sits in `place` of a row, or closes it if open.
 async function togglePicker($: EngineInterface, row: string, place: string) {
   const id = `${row}|${place}`
+  await update($, naming, () => false)
   await update($, picking, open => (open === id ? '' : id))
 }
 
 // Moves what the open picker is for to the thread `to` ('' none), to be told to
-// the model beside the person's next message.
-async function moveTo($: EngineInterface, to: string) {
+// the model beside the person's next message; `isNew` when the person started `to` for it.
+async function moveTo($: EngineInterface, to: string, isNew = false) {
   const open = await read($, picking)
   const at = open.indexOf('|')
   await update($, picking, () => '')
+  await update($, naming, () => false)
   if (at < 0) return
   const row = open.slice(0, at)
   const from = open.slice(at + 1)
@@ -411,86 +586,187 @@ async function moveTo($: EngineInterface, to: string) {
   const where = (key: string) =>
     key === '' ? 'no thread' : `the thread "${list.find(t => keyOf(t.name) === key)?.name ?? key}"`
   const what = glimpses.get(open) ?? 'a message'
-  await update($, untold, all => [...all, `The user moved ${what} from ${where(from)} to ${where(to)}.`])
+  const into = isNew ? `the new thread "${list.find(t => keyOf(t.name) === to)?.name ?? to}" they started for it` : where(to)
+  await update($, untold, all => [...all, `The user moved ${what} from ${where(from)} to ${into}.`])
   await save($)
 }
 
-// A tag the person clicks to move the part it names to another thread: a thread's
-// tag, or with no thread, a faint "+ thread". Off the desktop a small button beside
-// the tag does it.
+// Starts the thread the person named in the open picker, as a heading or create_thread
+// would (the next colour), and moves what the picker is for into it. A name already a
+// thread's moves it there; an empty one does nothing.
+async function moveToNewThread($: EngineInterface, typed: string) {
+  const name = nameOf(typed.replace(/^#+/, ''))
+  if (name === '' || name.length > 48 || (await read($, picking)) === '') return
+  const isNew = !(await read($, threads)).some(t => keyOf(t.name) === keyOf(name))
+  await addThreads($, [name], 'user')
+  await moveTo($, keyOf(name), isNew)
+}
+
+// A part's thread tag with a small button beside it that opens the move picker, or
+// with no thread, a "+ thread" button. A Button, never a Client: every Client of a
+// plugin shares one frame on the desktop, and one per tag of a long transcript
+// overran its render deadline, which tore the frame down for every Client.
 function drawMovableTag(
   $: EngineInterface,
   e: Parameters<EngineInterface['ui']['resolve']>[0] & { requestId: string },
   thread: Thread | undefined,
   align: 'start' | 'end',
+  inset = 0,
 ): RenderElement {
   const row = e.requestId
   const place = thread === undefined ? '' : keyOf(thread.name)
-  if (e.surface !== 'desktop') {
-    const { Box, Button } = $.ui.resolve(e)
-    return (
-      <Box flexDirection="row" columnGap={1}>
-        {thread !== undefined && drawTag($, e, thread, align)}
-        <Button
-          key={`tag:${place}`}
-          label={thread === undefined ? '+ thread' : '▾'}
-          variant="secondary"
-          onPress={() => togglePicker($, row, place)}
-        />
-      </Box>
-    )
-  }
-  const { Box, Client } = $.ui.resolve(e)
+  const { Box, Button } = $.ui.resolve(e)
+  // The desktop draws it chromeless and faint, bright under the pointer.
+  const look = e.surface === 'desktop' ? ({ plain: true, dimColor: true } as const) : ({ variant: 'secondary' } as const)
   return (
-    <Box key={`tagbox:${place}`}>
-      {drawTag($, e, thread ?? { name: '+ thread', color: '#8c8c8c' }, align)}
-      <Box position="absolute" top={0} left={0} width="100%" height="100%">
-        <Client key={`tag:${place}`} module="./switch.tsx" props={{ isOn: false }} width="100%" height="100%" />
-      </Box>
+    <Box key={`tagbox:${place}`} flexDirection="row" columnGap={e.surface === 'desktop' ? 0 : 1} alignItems="center">
+      {thread !== undefined && drawTag($, e, thread, align, inset)}
+      <Button
+        key={`tag:${place}`}
+        label={thread === undefined ? '+ thread' : '▾'}
+        {...look}
+        onPress={() => togglePicker($, row, place)}
+      />
     </Box>
   )
 }
 
-// The row of thread pills that moves a part, under it, with "none" for no thread.
+// What the multitask plugin's voice says when it says nothing; that plugin draws it as nothing.
+const QUIET = '(quiet)'
+
+// A row's text with nothing of its own to show: none, or the voice's "(quiet)".
+const isBlankText = (text: string) => text.trim() === '' || text.trim() === QUIET
+
+// Props that give a Box something to show, or room, though it holds nothing.
+const SHAPED = /^(border|padding|margin|height|minHeight|width|minWidth|background)/
+
+// A drawing that shows nothing, as a plugin beneath draws a row it hides: none, a Box
+// drawn "none" that no hover reveals, or a Box or Text of only such with no shape of
+// its own. Anything else, the engine's own drawing among it, shows something.
+function isBlank(node: unknown): boolean {
+  if (node === null || node === undefined || node === false || node === '') return true
+  if (typeof node !== 'object') return false
+  const el = node as { type?: unknown; props?: Record<string, unknown>; hover?: Record<string, unknown>; children?: unknown[] }
+  if (el.type === 'Box' && el.props?.display === 'none') return el.hover?.display === undefined
+  if (el.type !== 'Box' && el.type !== 'Text') return false
+  if (Object.keys(el.props ?? {}).some(prop => SHAPED.test(prop))) return false
+  return (el.children ?? []).every(isBlank)
+}
+
+// A row that holds a "+ thread" keeps one fixed row of room for it, its tags (if
+// any) against the part below, so the pointer revealing it moves nothing. Only a
+// row with something of its own to show gets one: never one drawn as nothing.
+const ADD_ROW = { height: 1, flexShrink: 0, alignItems: 'flex-end' } as const
+
+// The faint "+ thread" of a part of no thread, shown while the pointer is over the
+// keyed Box it sits in. It goes in the flow of an ADD_ROW row above the part: an
+// absolute Box is placed against the whole message, whose top is the part itself.
+function drawAddThread(
+  $: EngineInterface,
+  e: Parameters<EngineInterface['ui']['resolve']>[0] & { requestId: string },
+  align: 'start' | 'end',
+): RenderElement {
+  const { Box } = $.ui.resolve(e)
+  return (
+    <Box display="none" hover={{ display: 'flex' }}>
+      {drawMovableTag($, e, undefined, align)}
+    </Box>
+  )
+}
+
+// A tip for the control in the keyed Box it sits in, shown while the pointer is over
+// that Box. Placed out of the flow, so showing it moves nothing; the desktop lifts it
+// into a card over the band, beside the control.
+function drawTip($: EngineInterface, e: Parameters<EngineInterface['ui']['resolve']>[0], text: string): RenderElement {
+  const { Box, Text } = $.ui.resolve(e)
+  return (
+    <Box position="absolute" display="none" hover={{ display: 'flex' }}>
+      <Text>{text}</Text>
+    </Box>
+  )
+}
+
+// The move picker's field for a new thread's name, and its "+" pill that opens the
+// field; not under `pick:` or `tag:`, which name the picker's pills and the tags' buttons.
+const NEW_THREAD_FIELD = 'new-thread'
+const NEW_THREAD_PILL = 'pick-new'
+
+// Swaps the open picker's pills for its field for a new thread's name, or back.
+async function setNaming($: EngineInterface, isNaming: boolean) {
+  await update($, naming, () => isNaming)
+}
+
+// The row of thread pills that moves a part, drawn in the flow at its top beside
+// its tag, or where its "+ thread" sits; "none", for no thread, has no colour and a
+// dashed outline. A last "+" pill swaps the pills, in the same row, for a field to
+// name a new thread: Enter starts it and moves the part there, "×" goes back. So the
+// picker is of use with no threads yet. Mobile, which draws no field, has no "+".
 function drawPicker(
   $: EngineInterface,
   e: Parameters<EngineInterface['ui']['resolve']>[0],
   list: Thread[],
   place: string,
   align: 'start' | 'end',
+  isNaming: boolean,
 ): RenderElement {
-  const choices = [
+  const choices: { key: string; name: string; color: string | undefined }[] = [
     ...list.filter(t => keyOf(t.name) !== place).map(t => ({ key: keyOf(t.name), name: t.name, color: t.color })),
-    ...(place === '' ? [] : [{ key: '', name: 'none', color: '#8c8c8c' }]),
+    ...(place === '' ? [] : [{ key: '', name: 'none', color: undefined }]),
   ]
   const justify = align === 'end' ? 'flex-end' : 'flex-start'
-  if (e.surface !== 'desktop') {
-    const { Box, Text, Button } = $.ui.resolve(e)
-    return (
-      <Box flexDirection="row" flexWrap="wrap" columnGap={1} justifyContent={justify}>
-        <Text dimColor>move to</Text>
-        {choices.map(c => (
-          <Button key={`pick:${c.key}`} label={c.name} onPress={() => moveTo($, c.key)} />
-        ))}
-      </Box>
-    )
-  }
-  const { Box, Text, Svg, Client } = $.ui.resolve(e)
-  return (
+  const elements = $.ui.resolve(e)
+  const { Box, Text, Button } = elements
+  // The mobile app draws no field yet, though its table may still hand one over.
+  const Input = e.surface !== 'mobile' && 'Input' in elements ? elements.Input : undefined
+  const canName = Input !== undefined
+  const row = (children: RenderElement[]) => (
     <Box flexDirection="row" flexWrap="wrap" columnGap={1} alignItems="center" justifyContent={justify}>
-      <Text dimColor>move to</Text>
-      {choices.map(c => {
-        const pill = chipPicture(c.name, c.color, false, false, false)
-        return (
-          <Box key={`choice:${c.key}`}>
-            <Svg source={pill.source} alt={c.name} width={pill.width} height={CHIP_HEIGHT} />
-            <Box position="absolute" top={0} left={0} width="100%" height="100%">
-              <Client key={`pick:${c.key}`} module="./switch.tsx" props={{ isOn: false }} width="100%" height="100%" />
-            </Box>
-          </Box>
-        )
-      })}
+      <Text dimColor>{isNaming && canName ? 'new thread' : 'move to'}</Text>
+      {children}
     </Box>
+  )
+
+  if (isNaming && canName) {
+    return row([
+      <Input
+        key={NEW_THREAD_FIELD}
+        placeholder="name"
+        submitLabel="move"
+        autoFocus
+        onSubmit={(value: string) => moveToNewThread($, value)}
+      />,
+      <Button key="pick-cancel" label="×" plain dimColor onPress={() => setNaming($, false)} />,
+    ])
+  }
+
+  if (e.surface !== 'desktop') {
+    // A Button takes no dashed outline; "none" is drawn dim instead.
+    return row([
+      ...choices.map(c => (
+        <Button
+          key={`pick:${c.key}`}
+          label={c.name}
+          {...(c.color === undefined ? { dimColor: true } : {})}
+          onPress={() => moveTo($, c.key)}
+        />
+      )),
+      ...(canName ? [<Button key={NEW_THREAD_PILL} label="+" onPress={() => setNaming($, true)} />] : []),
+    ])
+  }
+  const { Svg, Client } = $.ui.resolve(e)
+  const pills = [
+    ...choices.map(c => ({ key: `pick:${c.key}`, pill: chipPicture(c.name, c.color, false, false, false), alt: c.name })),
+    { key: NEW_THREAD_PILL, pill: chipPicture('+', undefined, false, false, false, false), alt: 'new thread' },
+  ]
+  return row(
+    pills.map(p => (
+      <Box key={`choice:${p.key}`}>
+        <Svg source={p.pill.source} alt={p.alt} width={p.pill.width} height={CHIP_HEIGHT} />
+        <Box position="absolute" top={0} left={0} width="100%" height="100%">
+          <Client key={p.key} module="./switch.tsx" props={{ isOn: false }} width="100%" height="100%" />
+        </Box>
+      </Box>
+    )),
   )
 }
 
@@ -539,8 +815,52 @@ function bubbleText(shown: Section[], resolve: (name: string) => Thread | undefi
     .join('\n\n')
 }
 
+// The thread view (pane.tsx) places a section by the rules the chat draws it by.
+const viewDeps: ViewDeps = { threadOf, personThreadOf, placeSection, stemOf }
+
+// Keeps the thread view's window on its newest rows as they come, until the person scrolls.
+async function pinViewToEnd($: EngineInterface) {
+  try {
+    await $.ui.scroll({ in: VIEW, to: 'end' })
+  } catch {
+    return
+  }
+}
+
+// Opens the thread view (or shows it, already open) at its newest rows.
+async function openView($: EngineInterface) {
+  const opened = await $.ui.open({ id: VIEW, title: VIEW_TITLE })
+  if (opened.isPlaced) await pinViewToEnd($)
+  return opened
+}
+
+// What the thread view is drawn from; read while drawing, so a change draws it again.
+async function viewInputs($: EngineInterface): Promise<ViewInputs> {
+  let messages: ViewInputs['messages'] = []
+  try {
+    messages = await $.session.messages()
+  } catch {
+    messages = []
+  }
+  return {
+    list: await read($, threads),
+    merged: await read($, aliases),
+    snapped: await read($, snaps),
+    sent: await read($, sentTo),
+    moves: await read($, moved),
+    known: await read($, viewRows),
+    messages,
+  }
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
+    await $.command.register({ name: VIEW, description: 'Show the picked threads alone, without tool rows, in a pane' })
+    // A restarted or resumed session takes up the rows its thread view knew by id.
+    if ((await read($, viewRows)).length === 0) {
+      const saved = await $.store.get(viewKey(await $.session.id()))
+      if (Array.isArray(saved) && saved.length > 0) await update($, viewRows, () => saved as ViewRow[])
+    }
     await $.tool.register({
       name: 'create_thread',
       description:
@@ -567,24 +887,25 @@ export const register: Register = on => {
       })),
     )
 
-    // A restarted or resumed session takes up the threads it kept.
-    if ((await read($, threads)).length === 0) {
-      const saved = (await $.store.get(storeKey(await $.session.id()))) as Partial<Saved> | undefined
-      if (saved?.threads !== undefined) {
-        const kept = saved.threads.map(t => ({ ...t, isSelected: false }))
-        await update($, threads, () => kept)
-        await update($, aliases, () => saved.aliases ?? {})
-        await update($, snaps, () => saved.snaps ?? {})
-        await update($, recent, () => saved.recent ?? [])
-        await update($, recentTexts, () => saved.recentTexts ?? [])
-        await update($, sentTo, () => saved.sentTo ?? {})
-        await update($, moved, () => saved.moved ?? {})
-        await update($, untold, () => saved.untold ?? [])
+    // A restarted, resumed or reloaded session takes up the threads it kept, joined to
+    // any it holds; a rewound or forked one, which starts under a new id with no record
+    // of its own, those of the session it came from, and that session's view rows.
+    const id = await $.session.id()
+    let saved = (await $.store.get(storeKey(id))) as Partial<Saved> | undefined
+    if (saved === undefined) {
+      // Best effort: a session whose messages or store cannot be read starts empty.
+      const parent = await parentOf($, id).catch(() => undefined)
+      if (parent !== undefined) {
+        saved = (await $.store.get(storeKey(parent))) as Partial<Saved> | undefined
+        const rows = await $.store.get(viewKey(parent))
+        if ((await read($, viewRows)).length === 0 && Array.isArray(rows)) {
+          await update($, viewRows, () => rows as ViewRow[])
+          await $.store.set(viewKey(id), rows)
+        }
       }
-    } else {
-      // Threads made before saving existed (or since the last save) are kept now.
-      await save($)
     }
+    if (saved?.threads !== undefined) await takeUp($, saved)
+    await save($)
 
     return next(e)
   })
@@ -593,11 +914,12 @@ export const register: Register = on => {
     if (!PERSON.has(e.origin.kind)) return next(e)
     // The text goes on as typed, the one version everything reads; what its
     // headings mean is decided now, kept for drawing it, and told to the model.
-    // Messages the person moved between threads since they last wrote go beside this one.
+    // Messages the person moved between threads since they last wrote go beside this
+    // one, after how threads work and where they stand, when the model is to be told.
     const told = await read($, untold)
     if (told.length > 0) await update($, untold, () => [])
-    const send = (notes: string[]) => {
-      const all = [...told, ...notes]
+    const send = async (notes: string[]) => {
+      const all = [...(await briefing($)), ...told, ...notes]
       return all.length === 0 ? next(e) : next({ ...e, context: [...(e.context ?? []), ...all] })
     }
 
@@ -605,6 +927,15 @@ export const register: Register = on => {
     const list = await read($, threads)
     const { names, meanings } = decideHeadings(e.text, list, links)
     if (names.length === 0) {
+      // A reply to parts of earlier replies goes to the thread they came from, even
+      // while another is picked: the person pointed at that thread's text.
+      const quoted = await quotedThreadOf($, replyQuotesOf(e.text), list)
+      if (quoted !== undefined) {
+        unsent.push({ text: e.text.trim(), key: keyOf(quoted.name) })
+        return send([
+          `This message belongs to the thread "${quoted.name}": the user replied to part of your message in that thread. Reply under that thread's heading.`,
+        ])
+      }
       // With one thread alone picked, a message with no heading goes to that thread.
       const picked = list.filter(t => t.isSelected)
       const only = picked.length === 1 ? picked[0] : undefined
@@ -642,15 +973,58 @@ export const register: Register = on => {
       const key = sent >= 0 ? unsent.splice(sent, 1)[0]?.key : undefined
       if (key !== undefined) await update($, sentTo, all => ({ ...all, [e.uuid]: key }))
     }
-    return next(e)
+    try {
+      return await next(e)
+    } finally {
+      // The thread view learns a person's message or a reply's text once it is
+      // stored, and draws again with it. A row that failed to store is noted all the
+      // same: the view matches rows to the transcript, where it is not.
+      const row = viewRowOf(e, PERSON)
+      if (row !== undefined) await update($, viewRows, all => withViewRow(all, row))
+    }
   })
 
   // A turn's rows are kept for the session's next run as the turn ends.
   on('turn.complete', async ($, e, next) => {
     const result = await next(e)
-    if (e.agentId === undefined && (await read($, threads)).length > 0) await save($)
+    if (e.agentId === undefined) {
+      if ((await read($, threads)).length > 0) await save($)
+      const rows = await read($, viewRows)
+      if (rows.length > 0) await $.store.set(viewKey(await $.session.id()), rows)
+    }
     return result
   })
+
+  on('command.run', { command: VIEW }, async $ => {
+    const opened = await openView($)
+    return { text: opened.isPlaced ? 'Thread view opened.' : `Thread view not shown: ${opened.reason}` }
+  })
+
+  // Another pick of threads takes the thread view to the newest of what they hold.
+  on('state.set', { plugin: 'thread-chat', key: 'threads' }, async ($, e, next) => {
+    const result = await next(e)
+    try {
+      if (pickedOf(e.previous) !== pickedOf(e.value) && (await $.ui.panes()).some(p => p.id === VIEW)) await pinViewToEnd($)
+    } catch {
+      // the pick stands whether or not the view moves
+    }
+    return result
+  })
+
+  // The thread view: the picked threads' sections, each tagged in its thread's
+  // colour and drawn as markdown, as the chat draws them. No Client: a pane of
+  // many rows must not add to the Clients every overlay on the desktop shares.
+  on('ui.render', { component: 'Pane', requestId: VIEW }, async ($, e) =>
+    drawView(
+      {
+        ui: $.ui.resolve(e),
+        tag: thread => drawTag($, e, thread, 'start'),
+        markdown: text => drawMarkdown($, e, text),
+      },
+      await viewInputs($),
+      viewDeps,
+    ),
+  )
 
   on('command.run', { command: 'merge-threads' }, async ($, e) => {
     const [fromText, toText] = e.args.split(/\s+into\s+/i).map(part => nameOf(part.replace(/^#+/, '')))
@@ -693,23 +1067,26 @@ export const register: Register = on => {
     return { result: `Thread "${name}" exists. Write to it under the heading "# ${name}".` }
   })
 
-  on('prompt.compose', async ($, e, next) => {
-    const composed = await next(e)
-    const section = {
-      id: 'thread-chat',
-      text: protocol(await read($, threads), await read($, aliases), await read($, agentMayCreate)),
-      scope: 'session' as const,
+  // A compaction may summarise how threads work away: the model is told again beside
+  // the person's next message.
+  on('session.compact', async ($, e, next) => {
+    const result = await next(e)
+    const isCompacted = e.agentId === undefined && e.trigger !== 'precompute' && result.skip === undefined
+    if (isCompacted && (await read($, briefed)) !== null) {
+      await update($, briefed, () => null)
+      await save($)
     }
-    return { ...composed, sections: [...composed.sections, section] }
+    return result
   })
 
-  // The band's chips and switch, and the tags and move pickers on messages, post here when clicked.
+  // The band's chips and switch, and the one open move picker's pills, post here when clicked:
+  // the only Clients, so their count stays near the number of threads.
   on('ui.message', async ($, e, next) => {
     if ((e.data as { flip?: unknown } | null)?.flip === true) {
       if (e.element === AGENT_SWITCH) await update($, agentMayCreate, may => !may)
       else if (e.element.startsWith('thread:')) await toggleThread($, e.element.slice('thread:'.length))
-      else if (e.element.startsWith('tag:')) await togglePicker($, e.requestId, e.element.slice('tag:'.length))
       else if (e.element.startsWith('pick:')) await moveTo($, e.element.slice('pick:'.length))
+      else if (e.element === NEW_THREAD_PILL) await setNaming($, true)
     }
     return next(e)
   })
@@ -718,7 +1095,10 @@ export const register: Register = on => {
   // its thread tags go above it in their colours, its heading lines go, and a
   // filter trims its text to the picked threads' sections.
   on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
-    if (!PERSON.has(e.props.origin.kind)) {
+    // A plugin's prompt is never the person's, though a surface may name it as theirs.
+    // A row of no words (an image alone) is the engine's drawing alone: no tag or
+    // "+ thread" goes round it.
+    if (!PERSON.has(e.props.origin.kind) || isOthersPrompt(e.props.text) || e.props.text.trim() === '') {
       // Another party's message (a notification, a plugin's) belongs to no thread.
       if (!(await isFilteredOut($, [e.requestId]))) return next(e)
       const { Box } = $.ui.resolve(e)
@@ -736,6 +1116,7 @@ export const register: Register = on => {
     const moves = await read($, moved)
     const sections = sent.map(s => placeSection(s, e.requestId, moves, resolve, list, merged))
     const open = await read($, picking)
+    const isNaming = await read($, naming)
     const pickerPlace = open.startsWith(`${e.requestId}|`) ? open.slice(e.requestId.length + 1) : undefined
     // On the desktop, a message of no thread offers "+ thread" where the pointer hovers.
     const canAdd = e.surface === 'desktop'
@@ -749,6 +1130,8 @@ export const register: Register = on => {
 
     const text = bubbleText(shown, resolve) || e.props.text
     const message = await next(text === e.props.text ? e : { ...e, props: { ...e.props, text } })
+    // A row a plugin beneath draws as nothing stays nothing: no tag or "+ thread" round it.
+    if (isBlank(message)) return message
 
     const tags = [
       ...new Map(
@@ -764,21 +1147,26 @@ export const register: Register = on => {
     // Where the surface puts the person's messages on the right, the tags go there too.
     const isOnRight = e.surface === 'desktop' || e.surface === 'mobile'
     const align = isOnRight ? 'end' : 'start'
+    // "+ thread" shows in the tags' row, in the flow: placed over the message instead,
+    // it lands on the bubble wherever no tag holds a row above it.
+    const add = hasPlain && canAdd ? drawAddThread($, e, align) : undefined
+    // An open move picker takes the place of "+ thread" in that row, beside the tags;
+    // its pills are taller than ADD_ROW's one fixed row, so the row grows to hold them.
+    const picker = pickerPlace === undefined ? undefined : drawPicker($, e, list, pickerPlace, align, isNaming)
+    const side = picker ?? add
+    const rowFit = picker !== undefined ? { alignItems: 'center' as const } : add !== undefined ? ADD_ROW : {}
 
     return (
       <Box key="message" flexDirection="column">
-        {tags.length > 0 && (
-          <Box flexDirection="row" columnGap={2} justifyContent={isOnRight ? 'flex-end' : 'flex-start'}>
+        {(tags.length > 0 || side !== undefined) && (
+          <Box flexDirection="row" columnGap={2} justifyContent={isOnRight ? 'flex-end' : 'flex-start'} {...rowFit}>
+            {/* on the side away from the edge the tags keep to, so showing it moves none */}
+            {isOnRight && side}
             {tags.map(t => drawMovableTag($, e, t, align))}
-          </Box>
-        )}
-        {hasPlain && canAdd && (
-          <Box position="absolute" top={0} left={0} display="none" hover={{ display: 'flex' }}>
-            {drawMovableTag($, e, undefined, 'start')}
+            {!isOnRight && side}
           </Box>
         )}
         {message}
-        {pickerPlace !== undefined && drawPicker($, e, list, pickerPlace, align)}
       </Box>
     )
   })
@@ -786,8 +1174,19 @@ export const register: Register = on => {
   // A reply is drawn a section at a time by the engine, as it draws any reply;
   // each thread's section sits in a box of its colour under its name.
   on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
+    // The thread view finds the person's moves of this reply's parts by the id the
+    // screen draws it under, matched by its whole text before it is split.
+    noteDrawnReply(e.requestId, e.props.text)
+    // The voice's "(quiet)" (the multitask plugin draws it as nothing) and a block of no
+    // words are the engine's drawing alone: no "+ thread", or room for one, round nothing.
+    if (isBlankText(e.props.text)) {
+      const isHidden = (await selectedKeys($)).size > 0 && !(await isRecentReply($, e.requestId, e.props.text))
+      if (!isHidden) return next(e)
+      const { Box } = $.ui.resolve(e)
+      return <Box display="none" />
+    }
+    // With no threads yet a part still offers "+ thread": its picker can start one.
     const list = await read($, threads)
-    if (list.length === 0) return next(e)
     const merged = await read($, aliases)
     const selected = await selectedKeys($)
     const resolve = (name: string) => threadOf(name, list, merged)
@@ -795,11 +1194,15 @@ export const register: Register = on => {
     const moves = await read($, moved)
     const sections = written.map(s => placeSection(s, e.requestId, moves, resolve, list, merged))
     const open = await read($, picking)
+    const isNaming = await read($, naming)
     const pickerPlace = open.startsWith(`${e.requestId}|`) ? open.slice(e.requestId.length + 1) : undefined
     // On the desktop, a part of no thread offers "+ thread" where the pointer hovers.
     const canAdd = e.surface === 'desktop'
     const isPlain = selected.size === 0 && !sections.some(s => s.thread !== null) && pickerPlace === undefined
     if (isPlain && !canAdd) return next(e)
+    // A thread's border keeps its part the same cells off on every side (REPLY_BORDER_PADDING).
+    const borderPadding =
+      e.surface === 'desktop' ? { padding: REPLY_BORDER_PADDING } : { paddingX: REPLY_BORDER_PADDING }
 
     const { Box } = $.ui.resolve(e)
     const isRecentRow = selected.size > 0 && (await isRecentReply($, e.requestId, e.props.text))
@@ -815,43 +1218,59 @@ export const register: Register = on => {
     for (const [i, s] of shown.entries()) {
       const isFirstOfReply = e.props.isFirstOfReply && i === 0 && s.thread === null
       let body: RenderElement | undefined
-      if (s.text !== '' && !isEngineDrawn) {
+      const isDrawnByEngine = s.text !== '' && !isEngineDrawn
+      if (isDrawnByEngine) {
         body = await next({ ...e, props: { ...e.props, text: s.text, isFirstOfReply } })
         isEngineDrawn = true
       } else if (s.text !== '') {
         body = drawMarkdown($, e, s.text)
       }
       const thread = s.thread === null ? undefined : resolve(s.thread)
+      // A part of no thread that a plugin beneath draws as nothing stays nothing.
+      if (thread === undefined && isBlank(body)) continue
       const place = thread === undefined ? '' : keyOf(thread.name)
       const isFirstOfPlace = !placesDrawn.has(place)
       placesDrawn.add(place)
       if (isFirstOfPlace) glimpses.set(`${e.requestId}|${place}`, `part of your reply "${glimpseOf(s.text)}"`)
-      const picker = isFirstOfPlace && pickerPlace === place ? drawPicker($, e, list, place, 'start') : undefined
+      const isPicking = isFirstOfPlace && pickerPlace === place
 
       if (thread === undefined) {
+        // An open picker takes the row of "+ thread", at its end; its pills are
+        // taller than ADD_ROW's one fixed row, so the row is the picker's own.
         parts.push(
           <Box key={`part:${i}`} flexDirection="column">
+            {isPicking
+              ? drawPicker($, e, list, place, 'end', isNaming)
+              : isFirstOfPlace &&
+                canAdd && (
+                  <Box flexDirection="row" justifyContent="flex-end" {...ADD_ROW}>
+                    {drawAddThread($, e, 'end')}
+                  </Box>
+                )}
             {body}
-            {isFirstOfPlace && canAdd && (
-              <Box position="absolute" top={0} right={0} display="none" hover={{ display: 'flex' }}>
-                {drawMovableTag($, e, undefined, 'end')}
-              </Box>
-            )}
-            {picker}
           </Box>,
         )
         continue
       }
+      // On the desktop the tag moves in to meet the engine's prose; Markdown parts have no inset.
+      const tagInset = e.surface === 'desktop' && isDrawnByEngine ? REPLY_TAG_INSET : 0
+      const tag = isFirstOfPlace ? drawMovableTag($, e, thread, 'start', tagInset) : drawTag($, e, thread, 'start', tagInset)
       parts.push(
-        <Box flexDirection="column">
-          <Box flexDirection="column" borderStyle="round" borderColor={thread.color} paddingX={1}>
-            {isFirstOfPlace ? drawMovableTag($, e, thread, 'start') : drawTag($, e, thread, 'start')}
-            {body}
-          </Box>
-          {picker}
+        <Box flexDirection="column" borderStyle="round" borderColor={thread.color} {...borderPadding}>
+          {/* an open picker sits beside the tag it opened from */}
+          {isPicking ? (
+            <Box flexDirection="row" flexWrap="wrap" columnGap={2} alignItems="center">
+              {tag}
+              {drawPicker($, e, list, place, 'start', isNaming)}
+            </Box>
+          ) : (
+            tag
+          )}
+          {body}
         </Box>,
       )
     }
+    if (parts.length === 0) return <Box display="none" />
     return <Box flexDirection="column" rowGap={1}>{parts}</Box>
   })
 
@@ -887,63 +1306,90 @@ export const register: Register = on => {
     const picked = list.filter(t => t.isSelected)
     const sendTarget = picked.length === 1 ? picked[0] : undefined
     const tip = `Agent may start threads: ${mayCreate ? 'on' : 'off'}`
+    // After the threads, a short button that opens the thread view: a Button, not a
+    // Client, on every surface.
+    const { Button } = $.ui.resolve(e)
+    const viewButton =
+      list.length === 0 ? undefined : (
+        <Button key={VIEW} label="view" variant="secondary" dimColor onPress={() => openView($)} />
+      )
     let band: RenderElement
 
+    // The band is one row: the threads take the room left and give way first, the
+    // controls after them keep their width. Nothing the pointer shows takes room.
     if (e.surface === 'desktop') {
       // A pill per thread, and a real switch: its picture with a hit area laid over it.
+      // Pills past the room clip at its end (their hit areas with them); the thread
+      // view holds every thread. Tips are cards the desktop lifts over the band.
       const { Box, Text, Svg, Client } = $.ui.resolve(e)
       band = (
-        <Box flexDirection="row" flexWrap="wrap" columnGap={1} alignItems="center">
-          {list.length === 0 && <Text dimColor>start a thread with # name</Text>}
-          {list.map(t => {
-            const isSelected = t.isSelected === true
-            const isSendTarget = isSelected && sendTarget === t
-            const pill = chipPicture(t.name, t.color, isSelected, isFiltering && !isSelected, isSendTarget)
-            return (
-              <Box key={`chip:${keyOf(t.name)}`}>
-                <Svg
-                  source={pill.source}
-                  alt={isSendTarget ? `${t.name}: messages with no heading go here` : t.name}
-                  width={pill.width}
-                  height={CHIP_HEIGHT}
-                />
-                <Box position="absolute" top={0} left={0} width="100%" height="100%">
-                  <Client key={`thread:${keyOf(t.name)}`} module="./switch.tsx" props={{ isOn: isSelected }} width="100%" height="100%" />
+        <Box flexDirection="row" columnGap={1} alignItems="center" flexGrow={1} flexShrink={1} minWidth={0}>
+          <Box flexDirection="row" columnGap={1} alignItems="center" flexShrink={1} minWidth={0} overflow="hidden">
+            {list.length === 0 && (
+              <Text dimColor wrap="truncate-end">
+                start a thread with # name
+              </Text>
+            )}
+            {list.map(t => {
+              const isSelected = t.isSelected === true
+              const isSendTarget = isSelected && sendTarget === t
+              const pill = chipPicture(t.name, t.color, isSelected, isFiltering && !isSelected, isSendTarget)
+              return (
+                <Box key={`chip:${keyOf(t.name)}`} flexShrink={0}>
+                  <Svg
+                    source={pill.source}
+                    alt={isSendTarget ? `${t.name}: messages with no heading go here` : t.name}
+                    width={pill.width}
+                    height={CHIP_HEIGHT}
+                  />
+                  <Box position="absolute" top={0} left={0} width="100%" height="100%">
+                    <Client key={`thread:${keyOf(t.name)}`} module="./switch.tsx" props={{ isOn: isSelected }} width="100%" height="100%" />
+                  </Box>
                 </Box>
-              </Box>
-            )
-          })}
-          <Box key="agent-switch-tip" flexDirection="row" alignItems="center" columnGap={1}>
+              )
+            })}
+          </Box>
+          {viewButton && (
+            <Box key="thread-view-tip" flexShrink={0}>
+              {viewButton}
+              {drawTip($, e, 'Thread view: the picked threads alone, in a pane')}
+            </Box>
+          )}
+          <Box key="agent-switch-tip" flexShrink={0}>
             <Box>
               <Svg source={switchPicture(mayCreate)} alt={tip} width={34} height={20} />
               <Box position="absolute" top={0} left={0} width="100%" height="100%">
                 <Client key={AGENT_SWITCH} module="./switch.tsx" props={{ isOn: mayCreate }} width="100%" height="100%" />
               </Box>
             </Box>
-            <Box display="none" hover={{ display: 'flex' }}>
-              <Text dimColor>{tip}</Text>
-            </Box>
+            {drawTip($, e, tip)}
           </Box>
         </Box>
       )
     } else {
+      // The terminal wraps the pills in their part of the row rather than lose any,
+      // and names the agent switch beside it.
       const { Box, Text, Button } = $.ui.resolve(e)
       band = (
-        <Box flexDirection="row" flexWrap="wrap" columnGap={1} alignItems="center">
-          {list.length === 0 && <Text dimColor>start a thread with # name</Text>}
-          {list.map(t => (
-            <Box flexDirection="row">
-              <Text color={t.color}>●</Text>
-              <Button
-                key={`thread:${keyOf(t.name)}`}
-                label={sendTarget === t ? `${t.name} ➤` : t.name}
-                variant={t.isSelected ? 'primary' : 'secondary'}
-                dimColor={isFiltering && !t.isSelected}
-                onPress={() => toggleThread($, keyOf(t.name))}
-              />
-            </Box>
-          ))}
-          <Box key="agent-switch-tip" flexDirection="row">
+        <Box flexDirection="row" columnGap={1} alignItems="center" flexGrow={1} flexShrink={1} minWidth={0}>
+          <Box flexDirection="row" flexWrap="wrap" columnGap={1} alignItems="center" flexShrink={1} minWidth={0}>
+            {list.length === 0 && <Text dimColor>start a thread with # name</Text>}
+            {list.map(t => (
+              <Box flexDirection="row" flexShrink={0}>
+                <Text color={t.color}>●</Text>
+                <Button
+                  key={`thread:${keyOf(t.name)}`}
+                  label={sendTarget === t ? `${t.name} ➤` : t.name}
+                  variant={t.isSelected ? 'primary' : 'secondary'}
+                  dimColor={isFiltering && !t.isSelected}
+                  onPress={() => toggleThread($, keyOf(t.name))}
+                />
+              </Box>
+            ))}
+          </Box>
+          {viewButton && <Box flexShrink={0}>{viewButton}</Box>}
+          <Box flexDirection="row" columnGap={1} flexShrink={0}>
+            <Text dimColor>agent threads</Text>
             <Button
               key="agent-may-create"
               label={mayCreate ? '( ●)' : '(● )'}
@@ -951,21 +1397,19 @@ export const register: Register = on => {
               dimColor={!mayCreate}
               onPress={() => update($, agentMayCreate, may => !may)}
             />
-            <Box display="none" hover={{ display: 'flex' }} paddingX={1}>
-              <Text dimColor>{tip}</Text>
-            </Box>
           </Box>
         </Box>
       )
     }
 
-    // Other mods' controls share the row, to the right of the threads.
+    // Other mods' controls share the one row, to the right of the threads: they keep
+    // their width, and the threads give way.
     if (below.type === 'engine') return band
     const { Box } = $.ui.resolve(e)
     return (
-      <Box flexDirection="row" flexWrap="wrap" justifyContent="space-between" alignItems="center" columnGap={2}>
+      <Box flexDirection="row" justifyContent="space-between" alignItems="center" columnGap={2}>
         {band}
-        {below}
+        <Box flexShrink={0}>{below}</Box>
       </Box>
     )
   })

@@ -25,6 +25,20 @@ export const keyOf = (name: string) => name.trim().replace(/\s+/g, ' ').toLowerC
 
 export const nameOf = (name: string) => name.trim().replace(/^\+/, '').trim().replace(/\s+/g, ' ')
 
+// The engine's frame around a prompt a plugin submitted, still on the text where a
+// surface shows the stored message (the desktop), whatever origin it gives the row.
+const PLUGIN_FRAME = /^\s*The [^\n]{1,80} plugin sent a message(?: while you were working)?:[ \t]*\r?\n/
+
+export const isPluginFramed = (text: string) => PLUGIN_FRAME.test(text)
+
+// The multitask plugin's relay of its thoughts' updates, as a surface may hold it
+// bare: its header, now or as it was first worded, ending its line, so a person's
+// own words starting the same way stay theirs.
+const RELAY_HEAD = /^\s*Thought updates(?::|\. Reply \(quiet\) unless something here needs you\.)[ \t]*\r?\n/
+
+// A prompt another party sent, though a surface may name its row the person's.
+export const isOthersPrompt = (text: string) => PLUGIN_FRAME.test(text) || RELAY_HEAD.test(text)
+
 // The heading's text as written, `+` included.
 function rawHeadingOf(line: string): string | undefined {
   return HEADING.exec(line.trimEnd())?.[1]
@@ -128,4 +142,44 @@ export function splitSections(text: string, isThread: (name: string) => boolean)
   close()
 
   return sections
+}
+
+// The desktop's reply to a selected part of a message: a marker line, the selection
+// quoted line by line (`> `), then the person's words on it. The first marker counts
+// the blocks (`<!-- reply 2 -->`), later ones are bare; an older desktop wrote one bare.
+const REPLY_MARKER = /^<!-- reply(?: [1-9][0-9]?)? -->$/
+const QUOTED = /^>(?: |$)/
+
+// The selections a message quotes as replies to parts of earlier messages, in order,
+// each as selected (its `> ` gone); none for a message that is no such reply.
+export function replyQuotesOf(text: string): string[] {
+  if (!text.includes('<!-- reply')) return []
+  const lines = text.split(/\r?\n/)
+  const quotes: string[] = []
+  for (let at = 0; at < lines.length; at++) {
+    if (!REPLY_MARKER.test(lines[at] ?? '')) continue
+    const quoted: string[] = []
+    while (QUOTED.test(lines[at + 1] ?? '')) quoted.push((lines[++at] ?? '').replace(/^> ?/, ''))
+    const quote = quoted.join('\n').trim()
+    if (quote !== '') quotes.push(quote)
+  }
+  return quotes
+}
+
+// A text in the letters and digits a reader sees of it drawn: a selection of drawn
+// Markdown lacks its marks, link targets, list numbers and fence lines, and may join
+// or split its lines.
+function seenOf(text: string): string {
+  return squash(
+    text
+      .replace(/^\s*(```|~~~).*$/gm, '')
+      .replace(/^\s*(?:[-*+]|\d+[.)])\s+/gm, '')
+      .replace(/\]\([^)]*\)/g, ']'),
+  )
+}
+
+// Whether `text` holds what a reader quoted from it as drawn.
+export function holdsQuote(text: string, quote: string): boolean {
+  const wanted = seenOf(quote)
+  return wanted !== '' && seenOf(text).includes(wanted)
 }
