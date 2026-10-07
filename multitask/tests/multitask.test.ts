@@ -10,6 +10,8 @@ type Seen = {
   efforts: unknown[]
   aborts: string[]
   spawns: number
+  // the name each spawn gave its agent
+  names: (string | undefined)[]
 }
 
 // The test stands in for the engine beneath the plugin, and records what reached it:
@@ -19,7 +21,7 @@ function engine(
   on: On,
   agents: AgentInfo[] = [{ id: 'agent-1', description: 'auth-bug', type: 'multitask:thought', status: 'running' }],
 ): Seen {
-  const seen: Seen = { prompts: [], sends: [], ran: [], efforts: [], aborts: [], spawns: 0 }
+  const seen: Seen = { prompts: [], sends: [], ran: [], efforts: [], aborts: [], spawns: 0, names: [] }
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('agent.register', () => ({ value: { agent: 'multitask:thought' } }))
   on('tool.register', ($, e) => ({ value: { tool: `mcp__multitask__${e.name}` } }))
@@ -28,8 +30,9 @@ function engine(
   on('ui.message', () => ({}))
   on('ui.render', () => ({ type: 'engine', ref: 0 }))
   // Only the real engine can hand back a spawned agent's id; the agent list stands in.
-  on('agent.spawn', () => {
+  on('agent.spawn', ($, e) => {
     seen.spawns++
+    seen.names.push(e.name)
     return { model: 'test' }
   })
   on('agent.list', () => ({ value: agents }))
@@ -370,6 +373,29 @@ test("the voice's thoughts start without a second permission ask; other agents a
   expect(thought.decision).toBe('allow')
   const other = await $.tool.check({ tool: 'Agent', input: { subagent_type: 'general-purpose', prompt: 'x', description: 'y' } })
   expect(other.decision).toBe('ask')
+})
+
+test('the voice names each thought by its task: kebab-case, made unique, from the task when it gives none', async ($, on) => {
+  const names = ['fix-login-expiry', 'fix-login-expiry-2', 'find-why-login', 'cafe-creme']
+  const seen = engine(
+    on,
+    names.map((name, i) => ({ id: `agent-${i + 1}`, description: name, type: 'multitask:thought', status: 'running' })),
+  )
+  await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
+  await $.command.run({ command: 'multitask', args: '', origin: { kind: 'composer' }, presentation: {} as never })
+  const think = async (id: string, name: string, task: string) =>
+    String((await $.tool.call({ tool: 'mcp__multitask__think', tool_use_id: id, name, task })).result)
+
+  expect(await think('c1', 'Fix login expiry!', 'Find why the token expires early')).toBe(
+    'Started thought "fix-login-expiry". Its updates reach you as they come.',
+  )
+  expect(await think('c2', 'fix-login-expiry', 'Check the refresh path too')).toContain('"fix-login-expiry-2"')
+  expect(await think('c3', ' -- ', 'Find why login fails')).toContain('"find-why-login"')
+  expect(await think('c4', 'Café crème', 'Order the coffee')).toContain('"cafe-creme"')
+  // The engine is given each name, so its agent answers to it as the thought does.
+  expect(seen.names).toEqual(names)
+  const listed = String((await $.tool.call({ tool: 'mcp__multitask__thoughts', tool_use_id: 'c5' })).result)
+  expect(listed).toContain('- fix-login-expiry-2 [running]: Check the refresh path too')
 })
 
 test("a call from another agent's loop (an engine fork, a subagent) never starts, steers or stops a thought", async ($, on) => {

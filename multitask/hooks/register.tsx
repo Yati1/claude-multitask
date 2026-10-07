@@ -71,7 +71,11 @@ const TOOL_SPECS = [
     inputSchema: {
       type: 'object',
       properties: {
-        name: { type: 'string', description: 'Short name for the thought, 1-3 words' },
+        name: {
+          type: 'string',
+          description:
+            'A short kebab-case name for the thought, 1-3 words, by its task (fix-login-expiry); one already taken gets -2, -3',
+        },
         task: { type: 'string', description: 'The full, self-contained brief' },
       },
       required: ['name', 'task'],
@@ -138,9 +142,17 @@ function unknownThought(list: Thought[], ref: string) {
   return { deny: `No thought called "${ref}". Thoughts: ${names}.` }
 }
 
+// A thought's name: up to three words of the text in lower-case kebab-case, of plain
+// letters and digits alone, as an agent's name is spelled; "" when it has none.
 function slug(text: string): string {
-  const words = text.toLowerCase().replace(/[^\p{L}\p{N}\s-]/gu, ' ').trim().split(/\s+/).slice(0, 3)
-  return words.join('-') || 'thought'
+  const words = text
+    .normalize('NFKD')
+    .replace(/[̀-ͯ]/g, '')
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(word => word !== '')
+    .slice(0, 3)
+  return words.join('-').slice(0, 40).replace(/-+$/, '')
 }
 
 function uniqueName(list: Thought[], name: string): string {
@@ -410,9 +422,10 @@ export const register: Register = (on, options) => {
     const task = str(e, 'task')
     if (task === '') return { deny: 'Give the thought a task.' }
     const list = await read($, thoughts)
-    const name = uniqueName(list, slug(str(e, 'name') || task))
+    // The voice names it by its task; failing that, the task's first words do.
+    const name = uniqueName(list, slug(str(e, 'name')) || slug(task) || 'thought')
 
-    const spawned = await $.agent.spawn({ prompt: task, description: name, subagentType: AGENT })
+    const spawned = await $.agent.spawn({ prompt: task, description: name, name, subagentType: AGENT })
     if (spawned.deny !== undefined) return { deny: `The thought did not start: ${spawned.deny}` }
     // The id normally comes back with the spawn; failing that, find it among the agents.
     const id =
