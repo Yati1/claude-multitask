@@ -1,0 +1,3 @@
+# Types Claude Code writes into each mod when it loads it
+*/.claude-plugin/types/
+node_modules/

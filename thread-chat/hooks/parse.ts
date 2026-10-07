@@ -1,0 +1,131 @@
+// A thread heading is a level-1 heading, with or without the space:
+// `# design` or `#design`. `##` and deeper stay inside the current section.
+// A leading `+` (`#+design`) asks for a new thread even when one is close.
+const HEADING = /^#(?!#)[ \t]*(\+?[\p{L}\p{N}][^\n]{0,47}?)[ \t#]*$/u
+const FENCE = /^\s*(```|~~~)/
+
+export const PALETTE = [
+  '#4fa3e0',
+  '#d9636a',
+  '#58b36b',
+  '#c98a2e',
+  '#9b6fd6',
+  '#2fb3a6',
+  '#d66bb0',
+  '#8a9a3a',
+]
+
+export type Section = {
+  // null is the unthreaded conversation
+  thread: string | null
+  text: string
+}
+
+export const keyOf = (name: string) => name.trim().replace(/\s+/g, ' ').toLowerCase()
+
+export const nameOf = (name: string) => name.trim().replace(/^\+/, '').trim().replace(/\s+/g, ' ')
+
+// The heading's text as written, `+` included.
+function rawHeadingOf(line: string): string | undefined {
+  return HEADING.exec(line.trimEnd())?.[1]
+}
+
+function headingOf(line: string): string | undefined {
+  const raw = rawHeadingOf(line)
+  return raw === undefined ? undefined : nameOf(raw)
+}
+
+// Every thread heading in a text, outside code fences, in order, first spelling kept.
+export function headingsIn(text: string): string[] {
+  const seen = new Map<string, string>()
+  let isFenced = false
+  for (const line of text.split('\n')) {
+    if (FENCE.test(line)) isFenced = !isFenced
+    if (isFenced) continue
+    const name = headingOf(line)
+    if (name !== undefined && !seen.has(keyOf(name))) seen.set(keyOf(name), name)
+  }
+  return [...seen.values()]
+}
+
+// Rewrites each thread heading outside code fences to the name `resolve`
+// answers for it; a heading already spelled that way is left as typed.
+export function rewriteHeadings(text: string, resolve: (raw: string) => string): string {
+  let isFenced = false
+  return text
+    .split('\n')
+    .map(line => {
+      if (FENCE.test(line)) isFenced = !isFenced
+      const raw = isFenced ? undefined : rawHeadingOf(line)
+      if (raw === undefined) return line
+      const name = resolve(raw)
+      return name === nameOf(raw) && !raw.startsWith('+') ? line : `# ${name}`
+    })
+    .join('\n')
+}
+
+const squash = (name: string) => name.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '')
+
+function distance(a: string, b: string): number {
+  let row = Array.from({ length: b.length + 1 }, (_, i) => i)
+  for (let i = 1; i <= a.length; i++) {
+    const next = [i]
+    for (let j = 1; j <= b.length; j++) {
+      const swap = (row[j - 1] ?? 0) + (a[i - 1] === b[j - 1] ? 0 : 1)
+      next[j] = Math.min((row[j] ?? 0) + 1, (next[j - 1] ?? 0) + 1, swap)
+    }
+    row = next
+  }
+  return row[b.length] ?? 0
+}
+
+// The one candidate a typed name most likely means: the same name spelled
+// differently, the start of exactly one (3+ characters), or a near miss
+// (1 typo from 4 characters, 2 from 8). Undefined when none, or a tie.
+export function closestThread(name: string, candidates: string[]): string | undefined {
+  const wanted = squash(name)
+  if (wanted === '') return undefined
+  const same = candidates.find(c => squash(c) === wanted)
+  if (same !== undefined) return same
+
+  if (wanted.length >= 3) {
+    const starting = candidates.filter(c => squash(c).startsWith(wanted))
+    if (starting.length === 1) return starting[0]
+  }
+
+  const limit = wanted.length >= 8 ? 2 : wanted.length >= 4 ? 1 : 0
+  const near = candidates
+    .map(c => ({ c, d: distance(wanted, squash(c)) }))
+    .filter(x => x.d <= limit)
+    .sort((x, y) => x.d - y.d)
+  if (near.length === 0 || (near.length > 1 && near[1]?.d === near[0]?.d)) return undefined
+  return near[0]?.c
+}
+
+// Splits a message into sections. A heading `isThread` accepts opens that
+// thread's section (the heading line itself is dropped: the drawing labels it);
+// any other level-1 heading returns to the unthreaded conversation and is kept.
+export function splitSections(text: string, isThread: (name: string) => boolean): Section[] {
+  const sections: Section[] = []
+  let current: { thread: string | null; lines: string[] } = { thread: null, lines: [] }
+  let isFenced = false
+
+  const close = () => {
+    const body = current.lines.join('\n').trim()
+    if (current.thread !== null || body !== '') sections.push({ thread: current.thread, text: body })
+  }
+
+  for (const line of text.split('\n')) {
+    if (FENCE.test(line)) isFenced = !isFenced
+    const name = isFenced ? undefined : headingOf(line)
+    if (name === undefined) {
+      current.lines.push(line)
+      continue
+    }
+    close()
+    current = isThread(name) ? { thread: name, lines: [] } : { thread: null, lines: [line] }
+  }
+  close()
+
+  return sections
+}

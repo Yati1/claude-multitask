@@ -1,0 +1,19 @@
+{
+  "name": "claude-multitask",
+  "owner": {
+    "name": "Adrian Cowan"
+  },
+  "description": "Claude Code mods for conversation threads and a multitasking main session.",
+  "plugins": [
+    {
+      "name": "thread-chat",
+      "source": "./thread-chat",
+      "description": "Conversation threads by # heading: colour-coded sections, show/hide toggles above the prompt, optional agent-created threads"
+    },
+    {
+      "name": "multitask",
+      "source": "./multitask",
+      "description": "Multitasking: the main session becomes the talking mind and hands all work to background thoughts it watches and steers"
+    }
+  ]
+}
