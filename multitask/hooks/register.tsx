@@ -33,6 +33,7 @@ const TOOL = {
   stop: 'mcp__multitask__stop',
   thoughts: 'mcp__multitask__thoughts',
 } as const
+const OWN_TOOLS: ReadonlySet<string> = new Set(Object.values(TOOL))
 
 // The ways a person's own prompt arrives: typed in the terminal, the desktop
 // app (an SDK host) or Remote Control.
@@ -58,6 +59,7 @@ const NOTE_MAX = 500
 const OFF = {
   deny: 'Multitask is off. The user turns it on with the switch above the prompt or /multitask.',
 }
+const NOT_VOICE = { deny: 'Only the voice starts, steers or lists thoughts; this call came from another agent.' }
 
 let flushTimer: Timer | undefined
 
@@ -388,7 +390,14 @@ export const register: Register = (on, options) => {
   })
 
   // The voice does no work itself: the model's own calls on the main loop are refused.
+  // And only the voice uses this mod's tools. The engine's hidden forks (a prompt
+  // suggestion, a memory extraction) are offered the voice's tools, and the engine
+  // refuses their every call beneath next(e); the tools' own hooks below answer
+  // without calling it, so a call from any loop but the main one is refused here,
+  // this hook being registered first and so running outside them. A fork's or a
+  // subagent's call carries its loop's agentId; the voice's carries none.
   on('tool.call', async ($, e, next) => {
+    if (e.agentId !== undefined && OWN_TOOLS.has(String(e.tool))) return NOT_VOICE
     const isVoiceCall = e.agentId === undefined && next.origin.plugin === 'engine'
     if (!isVoiceCall || VOICE_TOOLS.test(String(e.tool)) || !(await read($, isOn))) return next(e)
     return {
