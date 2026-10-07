@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register, RenderElement } from 'claude-code'
+import type { BoxProps, Elements, EngineInterface, Register, RenderElement } from 'claude-code'
 
 import type { Brief, Thread, ViewRow } from '../types'
 import {
@@ -493,7 +493,9 @@ function tagPicture(name: string, color: string, align: 'start' | 'end', inset =
 // outlined and tinted in the thread's colour when picked, faded when another is,
 // and with an arrow after the tag when it alone is picked: messages with no
 // heading go to it. With no colour it has no dot; its outline is dashed unless
-// told otherwise, as the pill of no thread.
+// told otherwise, as the pill of no thread. Hot, it is the same pill under the
+// pointer: its fill and outline stronger and a faded one less faded, as the
+// desktop lights its own controls on hover (and leaves the cursor as it is).
 function chipPicture(
   name: string,
   color: string | undefined,
@@ -501,6 +503,7 @@ function chipPicture(
   isDimmed: boolean,
   isSendTarget: boolean,
   isDashed = color === undefined,
+  isHot = false,
 ) {
   const label = name.toUpperCase()
   const text = tagWidth(label, PILL_TAG_SIZE * (isSelected ? 1.03 : 1))
@@ -512,12 +515,16 @@ function chipPicture(
     color === undefined
       ? `class="bg"${isDashed ? ' stroke-dasharray="3 2"' : ''}`
       : isSelected
-        ? `fill="${color}" fill-opacity="0.2" stroke="${color}" stroke-width="1.5"`
+        ? `fill="${color}" fill-opacity="${isHot ? 0.32 : 0.2}" stroke="${color}" stroke-width="1.5"`
         : 'class="bg"'
+  const [dark, light] = isHot
+    ? ['fill:#ffffff29;stroke:#ffffff73', 'fill:#00000014;stroke:#00000073']
+    : ['fill:#ffffff14;stroke:#ffffff38', 'fill:#0000000a;stroke:#00000038']
+  const opacity = isDimmed ? ` opacity="${isHot ? 0.75 : 0.45}"` : ''
   const source = [
-    `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${h}" viewBox="0 0 ${width} ${h}"${isDimmed ? ' opacity="0.45"' : ''}>`,
-    '<style>.bg{fill:#ffffff14;stroke:#ffffff38}.t{fill:#e6e6e6}',
-    '@media (prefers-color-scheme: light){.bg{fill:#0000000a;stroke:#00000038}.t{fill:#1f1f1f}}</style>',
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${h}" viewBox="0 0 ${width} ${h}"${opacity}>`,
+    `<style>.bg{${dark}}.t{fill:#e6e6e6}`,
+    `@media (prefers-color-scheme: light){.bg{${light}}.t{fill:#1f1f1f}}</style>`,
     `<rect ${fill} x="0.75" y="0.75" width="${width - 1.5}" height="${h - 1.5}" rx="${(h - 1.5) / 2}"/>`,
     color === undefined ? '' : `<circle cx="10.5" cy="${h / 2}" r="3" fill="${color}"/>`,
     `<text class="t" x="${textAt}" y="${h / 2 + 3.8}" ${TAG_FONT} font-size="${PILL_TAG_SIZE}"`,
@@ -528,6 +535,34 @@ function chipPicture(
     '</svg>',
   ].join('')
   return { source, width }
+}
+
+// A pill that is a switch on the desktop, in the keyed Box `key`: its picture, the
+// hot one laid over it while the pointer is on the pill, and a hit area over both.
+// The light is the surface's own hover, so it adds no Client: still one per pill.
+function drawPillSwitch(
+  elements: Elements['desktop'],
+  key: string,
+  hitKey: string,
+  isOn: boolean,
+  alt: string,
+  pictureOf: (isHot: boolean) => { source: string; width: number },
+  layout: BoxProps = {},
+): RenderElement {
+  const { Box, Svg, Client } = elements
+  const rest = pictureOf(false)
+  const hot = pictureOf(true)
+  return (
+    <Box key={key} {...layout}>
+      <Svg source={rest.source} alt={alt} width={rest.width} height={CHIP_HEIGHT} />
+      <Box position="absolute" top={0} left={0} display="none" hover={{ display: 'flex' }}>
+        <Svg source={hot.source} alt={alt} width={hot.width} height={CHIP_HEIGHT} />
+      </Box>
+      <Box position="absolute" top={0} left={0} width="100%" height="100%">
+        <Client key={hitKey} module="./switch.tsx" props={{ isOn }} width="100%" height="100%" />
+      </Box>
+    </Box>
+  )
 }
 
 // A thread's name as a tag: small capitals in its colour, a picture where the
@@ -681,6 +716,8 @@ function drawMovableTag(
   const { Box, Button } = $.ui.resolve(e)
   // The desktop draws it chromeless and faint, bright under the pointer.
   const look = e.surface === 'desktop' ? ({ plain: true, dimColor: true } as const) : ({ variant: 'secondary' } as const)
+  // With the pointer anywhere on the tag, its name included, the button lights in the
+  // thread's colour, showing where to press; the cursor stays the surface's own.
   return (
     <Box key={`tagbox:${place}`} flexDirection="row" columnGap={e.surface === 'desktop' ? 0 : 1} alignItems="center">
       {thread !== undefined && drawTag($, e, thread, align, inset)}
@@ -688,6 +725,7 @@ function drawMovableTag(
         key={`tag:${place}`}
         label={thread === undefined ? '+ thread' : '▾'}
         {...look}
+        hover={{ color: thread?.color ?? 'text' }}
         onPress={() => togglePicker($, row, place)}
       />
     </Box>
@@ -816,20 +854,21 @@ function drawPicker(
       ...(canName ? [<Button key={NEW_THREAD_PILL} label="+" onPress={() => setNaming($, true)} />] : []),
     ])
   }
-  const { Svg, Client } = $.ui.resolve(e)
+  const desktop = $.ui.resolve(e)
   const pills = [
-    ...choices.map(c => ({ key: `pick:${c.key}`, pill: chipPicture(c.name, c.color, false, false, false), alt: c.name })),
-    { key: NEW_THREAD_PILL, pill: chipPicture('+', undefined, false, false, false, false), alt: 'new thread' },
+    ...choices.map(c => ({
+      key: `pick:${c.key}`,
+      pillOf: (isHot: boolean) => chipPicture(c.name, c.color, false, false, false, undefined, isHot),
+      alt: c.name,
+    })),
+    {
+      key: NEW_THREAD_PILL,
+      pillOf: (isHot: boolean) => chipPicture('+', undefined, false, false, false, false, isHot),
+      alt: 'new thread',
+    },
   ]
   return row(
-    pills.map(p => (
-      <Box key={`choice:${p.key}`}>
-        <Svg source={p.pill.source} alt={p.alt} width={p.pill.width} height={CHIP_HEIGHT} />
-        <Box position="absolute" top={0} left={0} width="100%" height="100%">
-          <Client key={p.key} module="./switch.tsx" props={{ isOn: false }} width="100%" height="100%" />
-        </Box>
-      </Box>
-    )),
+    pills.map(p => drawPillSwitch(desktop, `choice:${p.key}`, p.key, false, p.alt, p.pillOf)),
   )
 }
 
@@ -1378,10 +1417,12 @@ export const register: Register = on => {
     // The band is one row: the threads take the room left and give way first, the
     // controls after them keep their width. Nothing the pointer shows takes room.
     if (e.surface === 'desktop') {
-      // A pill per thread, and a real switch: its picture with a hit area laid over it.
-      // Pills past the room clip at its end (their hit areas with them); the thread
-      // view holds every thread. Tips are cards the desktop lifts over the band.
-      const { Box, Text, Svg, Client } = $.ui.resolve(e)
+      // A pill per thread, and a real switch: its picture with a hit area laid over it,
+      // lit under the pointer. Pills past the room clip at its end (their hit areas with
+      // them); the thread view holds every thread. Tips are cards the desktop lifts over
+      // the band.
+      const desktop = $.ui.resolve(e)
+      const { Box, Text, Svg, Client } = desktop
       band = (
         <Box flexDirection="row" columnGap={1} alignItems="center" flexGrow={1} flexShrink={1} minWidth={0}>
           <Box flexDirection="row" columnGap={1} alignItems="center" flexShrink={1} minWidth={0} overflow="hidden">
@@ -1393,19 +1434,15 @@ export const register: Register = on => {
             {list.map(t => {
               const isSelected = t.isSelected === true
               const isSendTarget = isSelected && sendTarget === t
-              const pill = chipPicture(t.name, t.color, isSelected, isFiltering && !isSelected, isSendTarget)
-              return (
-                <Box key={`chip:${keyOf(t.name)}`} flexShrink={0}>
-                  <Svg
-                    source={pill.source}
-                    alt={isSendTarget ? `${t.name}: messages with no heading go here` : t.name}
-                    width={pill.width}
-                    height={CHIP_HEIGHT}
-                  />
-                  <Box position="absolute" top={0} left={0} width="100%" height="100%">
-                    <Client key={`thread:${keyOf(t.name)}`} module="./switch.tsx" props={{ isOn: isSelected }} width="100%" height="100%" />
-                  </Box>
-                </Box>
+              return drawPillSwitch(
+                desktop,
+                `chip:${keyOf(t.name)}`,
+                `thread:${keyOf(t.name)}`,
+                isSelected,
+                isSendTarget ? `${t.name}: messages with no heading go here` : t.name,
+                isHot =>
+                  chipPicture(t.name, t.color, isSelected, isFiltering && !isSelected, isSendTarget, undefined, isHot),
+                { flexShrink: 0 },
               )
             })}
           </Box>
