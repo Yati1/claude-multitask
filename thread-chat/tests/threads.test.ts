@@ -403,3 +403,25 @@ test('a reply of several sections draws one by the engine and the rest as markdo
   expect(markdown.map(m => m.props.text)).toEqual(['it is fine'])
   expect(await tagOf(reply, 'perf')).toBeDefined()
 })
+
+test('the pill of the one picked thread shows that messages with no heading go there', async ($, on) => {
+  engine(on)
+  await $.prompt.submit(say('# design\na\n# perf\nb'))
+  const desktop = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...BAND })
+  const terminal = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...BAND })
+  const marked = async () => ({
+    desktop: (await desktop.findAll({ type: 'Svg' })).filter(p => /go here/.test(String(p.props.alt))).map(p => p.props.alt),
+    terminal: (await terminal.findAll({ type: 'Button' })).filter(b => /➤/.test(String(b.props.label))).map(b => b.props.label),
+  })
+
+  expect(await marked()).toEqual({ desktop: [], terminal: [] })
+  await terminal.press({ key: 'thread:perf' })
+  await desktop.redraw()
+  await terminal.redraw()
+  expect(await marked()).toEqual({ desktop: ['perf: messages with no heading go here'], terminal: ['perf ➤'] })
+
+  await terminal.press({ key: 'thread:design' })
+  await desktop.redraw()
+  await terminal.redraw()
+  expect(await marked()).toEqual({ desktop: [], terminal: [] })
+})

@@ -262,11 +262,14 @@ function tagPicture(name: string, color: string, align: 'start' | 'end') {
 }
 
 // The SVG of a thread's filter pill: one row high, its coloured dot and tag inside,
-// outlined and tinted in the thread's colour when picked, faded when another is.
-function chipPicture(name: string, color: string, isSelected: boolean, isDimmed: boolean) {
+// outlined and tinted in the thread's colour when picked, faded when another is,
+// and with an arrow after the tag when it alone is picked: messages with no
+// heading go to it.
+function chipPicture(name: string, color: string, isSelected: boolean, isDimmed: boolean, isSendTarget: boolean) {
   const label = name.toUpperCase()
   const text = tagWidth(label, PILL_TAG_SIZE * (isSelected ? 1.03 : 1))
-  const width = 19 + text + 9
+  const arrowAt = 19 + text + 5
+  const width = isSendTarget ? arrowAt + 8 + 8 : 19 + text + 9
   const h = CHIP_HEIGHT
   const fill = isSelected ? `fill="${color}" fill-opacity="0.2" stroke="${color}" stroke-width="1.5"` : 'class="bg"'
   const source = [
@@ -277,6 +280,9 @@ function chipPicture(name: string, color: string, isSelected: boolean, isDimmed:
     `<circle cx="10.5" cy="${h / 2}" r="3" fill="${color}"/>`,
     `<text class="t" x="19" y="${h / 2 + 3.8}" ${TAG_FONT} font-size="${PILL_TAG_SIZE}"`,
     ` font-weight="${isSelected ? 700 : 600}" letter-spacing="${TAG_SPACING}">${escapeXml(label)}</text>`,
+    isSendTarget
+      ? `<path d="M${arrowAt} ${h / 2 - 4}L${arrowAt + 8} ${h / 2}L${arrowAt} ${h / 2 + 4}L${arrowAt + 2} ${h / 2}Z" fill="${color}"/>`
+      : '',
     '</svg>',
   ].join('')
   return { source, width }
@@ -664,6 +670,9 @@ export const register: Register = on => {
     const list = await read($, threads)
     const mayCreate = await read($, agentMayCreate)
     const isFiltering = list.some(t => t.isSelected)
+    // With one thread alone picked, messages with no heading go to it.
+    const picked = list.filter(t => t.isSelected)
+    const sendTarget = picked.length === 1 ? picked[0] : undefined
     const tip = `Agent may start threads: ${mayCreate ? 'on' : 'off'}`
     let band: RenderElement
 
@@ -675,10 +684,16 @@ export const register: Register = on => {
           {list.length === 0 && <Text dimColor>start a thread with # name</Text>}
           {list.map(t => {
             const isSelected = t.isSelected === true
-            const pill = chipPicture(t.name, t.color, isSelected, isFiltering && !isSelected)
+            const isSendTarget = isSelected && sendTarget === t
+            const pill = chipPicture(t.name, t.color, isSelected, isFiltering && !isSelected, isSendTarget)
             return (
               <Box key={`chip:${keyOf(t.name)}`}>
-                <Svg source={pill.source} alt={t.name} width={pill.width} height={CHIP_HEIGHT} />
+                <Svg
+                  source={pill.source}
+                  alt={isSendTarget ? `${t.name}: messages with no heading go here` : t.name}
+                  width={pill.width}
+                  height={CHIP_HEIGHT}
+                />
                 <Box position="absolute" top={0} left={0} width="100%" height="100%">
                   <Client key={`thread:${keyOf(t.name)}`} module="./switch.tsx" props={{ isOn: isSelected }} width="100%" height="100%" />
                 </Box>
@@ -708,7 +723,7 @@ export const register: Register = on => {
               <Text color={t.color}>●</Text>
               <Button
                 key={`thread:${keyOf(t.name)}`}
-                label={t.name}
+                label={sendTarget === t ? `${t.name} ➤` : t.name}
                 variant={t.isSelected ? 'primary' : 'secondary'}
                 dimColor={isFiltering && !t.isSelected}
                 onPress={() => toggleThread($, keyOf(t.name))}
