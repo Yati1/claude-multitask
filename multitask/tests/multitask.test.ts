@@ -1,13 +1,14 @@
 import type { On } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 
-import { formatUpdates, isQuiet } from '../hooks/prompts'
+import { VOICE_REMINDER, formatUpdates, isQuiet } from '../hooks/prompts'
 
-type Seen = { prompts: string[]; sends: { to: string; text: string }[]; ran: string[] }
+type Seen = { prompts: string[]; sends: { to: string; text: string }[]; ran: string[]; efforts: unknown[] }
 
-// The test stands in for the engine beneath the plugin, and records what reached it.
+// The test stands in for the engine beneath the plugin, and records what reached it:
+// each prompt with the notes beside it, and the effort each model request asked for.
 function engine(on: On): Seen {
-  const seen: Seen = { prompts: [], sends: [], ran: [] }
+  const seen: Seen = { prompts: [], sends: [], ran: [], efforts: [] }
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('agent.register', () => ({ value: { agent: 'multitask:thought' } }))
   on('tool.register', ($, e) => ({ value: { tool: `mcp__multitask__${e.name}` } }))
@@ -25,10 +26,15 @@ function engine(on: On): Seen {
     return { isDelivered: true }
   })
   on('prompt.submit', ($, e) => {
-    seen.prompts.push(e.text)
+    seen.prompts.push([e.text, ...(e.context ?? [])].join('\n--\n'))
     return { text: e.text }
   })
   on('turn.complete', ($, e) => ({ text: e.answer }))
+  on('turn.step', async function* ($, e) {
+    seen.efforts.push(e.effort)
+    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn' as const, usage: null }
+  })
+  on('tool.check', () => ({ decision: 'ask' as const }))
   on('tool.call', ($, e) => {
     seen.ran.push(String(e.tool))
     return { result: 'ran' }
@@ -139,4 +145,44 @@ test('the voice is refused work, and its thoughts relay, queue and unqueue', asy
   // Posting reaches it at once.
   await $.tool.call({ tool: 'mcp__multitask__tell', tool_use_id: 'c6', thought: 'auth-bug', message: 'also check refresh' })
   expect(seen.sends.at(-1)?.text).toBe('also check refresh')
+})
+
+test('the voice is told as Multitask comes on and goes off, and thinks less hard while on', async ($, on) => {
+  const seen = engine(on)
+  await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
+  const say = (text: string) => $.prompt.submit({ text, origin: { kind: 'composer' }, wait: false })
+  const flip = () => $.command.run({ command: 'multitask', args: '', origin: { kind: 'composer' }, presentation: {} as never })
+  const step = async (agentId?: string) => {
+    const stream = $.turn.step({ turnId: 't', index: 0, model: 'opus', effort: 'xhigh', messageCount: 1, ...(agentId === undefined ? {} : { agentId }) })
+    for await (const _ of stream) void _
+    return seen.efforts.at(-1)
+  }
+
+  await say('hello')
+  expect(seen.prompts.at(-1)).toBe('hello')
+  expect(await step()).toBe('xhigh')
+
+  await flip()
+  await say('do a thing')
+  expect(seen.prompts.at(-1)).toContain('# Multitasking mind')
+  await say('and another')
+  expect(seen.prompts.at(-1)).toBe(`and another\n--\n${VOICE_REMINDER}`)
+  // the voice asks for less effort; a thought keeps the session's
+  expect(await step()).toBe('low')
+  expect(await step('agent-1')).toBe('xhigh')
+
+  await flip()
+  await say('back to normal')
+  expect(seen.prompts.at(-1)).toContain('Multitask is now off')
+  expect(await step()).toBe('xhigh')
+  await say('plain')
+  expect(seen.prompts.at(-1)).toBe('plain')
+})
+
+test("the voice's thoughts start without a second permission ask; other agents are asked as before", async ($, on) => {
+  engine(on)
+  const thought = await $.tool.check({ tool: 'Agent', input: { subagent_type: 'multitask:thought', prompt: 'x', description: 'y' } })
+  expect(thought.decision).toBe('allow')
+  const other = await $.tool.check({ tool: 'Agent', input: { subagent_type: 'general-purpose', prompt: 'x', description: 'y' } })
+  expect(other.decision).toBe('ask')
 })

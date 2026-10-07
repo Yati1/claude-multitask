@@ -2,5 +2,14 @@
   "name": "multitask",
   "version": "0.1.0",
   "description": "Multitasking: the main session becomes the talking mind and hands all work to background thoughts it watches and steers",
-  "types": "./types/index.d.ts"
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "voiceEffort": {
+      "type": "string",
+      "title": "Voice effort",
+      "description": "How hard the voice thinks while Multitask is on; thoughts keep the session's setting. \"session\" leaves the voice at the session's setting too.",
+      "default": "low",
+      "options": ["low", "medium", "high", "session"]
+    }
+  }
 }

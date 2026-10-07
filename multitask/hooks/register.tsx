@@ -2,12 +2,13 @@ import { atom, read, update } from 'claude-code'
 import type { AgentStatus, EngineInterface, Register, RenderElement, Timer, TurnCompleteReason } from 'claude-code'
 
 import type { Thought, ThoughtStatus, Update } from '../types'
-import { THOUGHT, VOICE, describeThoughts, formatUpdates, isQuiet } from './prompts'
+import { THOUGHT, VOICE, VOICE_OFF, VOICE_REMINDER, describeThoughts, formatUpdates, isQuiet } from './prompts'
 
 const isOn = atom({ plugin: 'multitask', key: 'isOn' } as const, false)
 const thoughts = atom({ plugin: 'multitask', key: 'thoughts' } as const, [])
 const inbox = atom({ plugin: 'multitask', key: 'inbox' } as const, [])
 const isMainBusy = atom({ plugin: 'multitask', key: 'isMainBusy' } as const, false)
+const toldVoice = atom({ plugin: 'multitask', key: 'toldVoice' } as const, false)
 
 const PANE = 'multitask-thoughts'
 const SWITCH = 'multitask-switch'
@@ -19,6 +20,13 @@ const TOOL = {
   stop: 'mcp__multitask__stop',
   thoughts: 'mcp__multitask__thoughts',
 } as const
+
+// The ways a person's own prompt arrives: typed in the terminal, the desktop
+// app (an SDK host) or Remote Control.
+const PERSON = new Set(['composer', 'sdk', 'bridge'])
+
+// How hard a model request may be asked to think, from least to most.
+const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
 
 // What the voice may still call itself while multitasking is on.
 const VOICE_TOOLS = /^(mcp__multitask__|mcp__thread-chat__)|^(AskUserQuestion|ToolSearch)$/
@@ -247,7 +255,27 @@ async function settleThought($: EngineInterface, id: string, reason: TurnComplet
   await relay($, t.name, status === 'failed' ? '(ended on an error)' : '(finished its turn; idle)')
 }
 
-export const register: Register = on => {
+// What the voice is told beside the person's message: its whole part once Multitask
+// comes on, a reminder while it stays on, and once that it has gone off.
+async function voiceNote($: EngineInterface): Promise<string | undefined> {
+  const now = await read($, isOn)
+  const told = await read($, toldVoice)
+  if (now !== told) await update($, toldVoice, () => now)
+  if (now) return told ? VOICE_REMINDER : VOICE
+  return told ? VOICE_OFF : undefined
+}
+
+// The voice's effort: the lighter of the session's and the chosen one, so the voice
+// that only talks and steers costs less; a budget given as a number stays.
+function lighterEffort<E>(effort: E, chosen: string): E {
+  const at = EFFORTS.indexOf(effort as never)
+  const cap = EFFORTS.indexOf(chosen as never)
+  return at < 0 || cap < 0 || at <= cap ? effort : (EFFORTS[cap] as E)
+}
+
+export const register: Register = (on, options) => {
+  const voiceEffort = typeof options.voiceEffort === 'string' ? options.voiceEffort : 'low'
+
   on('session.start', async ($, e, next) => {
     await update($, isMainBusy, () => false)
     await $.agent.register({
@@ -399,13 +427,26 @@ export const register: Register = on => {
   })
 
   // The engine's own note that a background agent ended would reach the voice
-  // twice; the relay already carries it.
+  // twice; the relay already carries it. Beside the person's own message the voice
+  // is told when Multitask came on or went off, as the system prompt is composed
+  // once and does not follow the switch.
   on('prompt.submit', async ($, e, next) => {
     if (e.origin.kind === 'task-notification') {
       const list = await read($, thoughts)
       if (list.some(t => e.text.includes(t.id))) return { drop: 'multitask relays its thoughts itself' }
     }
-    return next(e)
+    if (!PERSON.has(e.origin.kind)) return next(e)
+    const note = await voiceNote($)
+    return note === undefined ? next(e) : next({ ...e, context: [...(e.context ?? []), note] })
+  })
+
+  // The voice's think call was allowed as any call is; the thought it starts is the
+  // mod's own agent type, which the model is never offered, so its start is not put
+  // to a second decider. What the thought then does is checked as any agent's work.
+  on('tool.check', { tool: 'Agent' }, async ($, e, next) => {
+    const input = e.input as { subagent_type?: unknown; subagentType?: unknown } | null
+    if (input?.subagent_type !== AGENT && input?.subagentType !== AGENT) return next(e)
+    return { decision: 'allow', reason: 'A thought the multitask voice started.' }
   })
 
   on('turn.start', async ($, e, next) => {
@@ -414,17 +455,20 @@ export const register: Register = on => {
     return next(e)
   })
 
+  // A thought's latest turn is noted; the voice's requests think less hard.
   on('turn.step', async function* ($, e, next) {
     const id = e.agentId
-    if (id !== undefined) {
-      const t = (await read($, thoughts)).find(one => one.id === id)
-      if (t !== undefined && t.turnId !== e.turnId) {
-        await patchThought($, id, one => ({
-          ...one,
-          turnId: e.turnId,
-          status: one.status === 'stopped' ? one.status : 'running',
-        }))
-      }
+    if (id === undefined) {
+      const isLighter = voiceEffort !== 'session' && e.effort !== undefined && (await read($, isOn))
+      return yield* next(isLighter ? { ...e, effort: lighterEffort(e.effort, voiceEffort) } : e)
+    }
+    const t = (await read($, thoughts)).find(one => one.id === id)
+    if (t !== undefined && t.turnId !== e.turnId) {
+      await patchThought($, id, one => ({
+        ...one,
+        turnId: e.turnId,
+        status: one.status === 'stopped' ? one.status : 'running',
+      }))
     }
     return yield* next(e)
   })

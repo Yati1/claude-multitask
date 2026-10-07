@@ -26,6 +26,8 @@ declare module 'claude-code' {
       thoughts: Thought[]
       inbox: Update[]
       isMainBusy: boolean
+      // whether the voice was last told, beside the person's message, that Multitask is on
+      toldVoice: boolean
     }
   }
 }
