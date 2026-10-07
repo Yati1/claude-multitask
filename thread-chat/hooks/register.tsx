@@ -1152,7 +1152,15 @@ export const register: Register = on => {
     return { text: `Merged thread "${from.name}" into "${to.name}": "# ${from.name}" now means "${to.name}".` }
   })
 
+  // Threads are of the main conversation, whose text alone is sorted into them. A
+  // subagent's call, or one from the engine's hidden forks (a prompt suggestion, a
+  // memory extraction) that are offered the main loop's tools, carries its loop's
+  // agentId and is refused: the engine's own refusal of a fork's call lies beneath
+  // next(e), which this hook, answering itself, never calls.
   on('tool.call', { tool: 'mcp__thread-chat__create_thread' }, async ($, e) => {
+    if (e.agentId !== undefined) {
+      return { deny: 'Only the main conversation starts threads; this call came from another agent.' }
+    }
     if (!(await read($, agentMayCreate))) {
       return { deny: 'The user has not enabled agent-created threads. Reply in existing threads only.' }
     }

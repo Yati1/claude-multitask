@@ -9,16 +9,17 @@ type Seen = {
   ran: string[]
   efforts: unknown[]
   aborts: string[]
+  spawns: number
 }
 
 // The test stands in for the engine beneath the plugin, and records what reached it:
-// each prompt with the notes beside it, the effort each model request asked for, and
-// each turn it was asked to cut.
+// each prompt with the notes beside it, the effort each model request asked for, each
+// turn it was asked to cut, and how many agents it was asked to start.
 function engine(
   on: On,
   agents: AgentInfo[] = [{ id: 'agent-1', description: 'auth-bug', type: 'multitask:thought', status: 'running' }],
 ): Seen {
-  const seen: Seen = { prompts: [], sends: [], ran: [], efforts: [], aborts: [] }
+  const seen: Seen = { prompts: [], sends: [], ran: [], efforts: [], aborts: [], spawns: 0 }
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('agent.register', () => ({ value: { agent: 'multitask:thought' } }))
   on('tool.register', ($, e) => ({ value: { tool: `mcp__multitask__${e.name}` } }))
@@ -27,7 +28,10 @@ function engine(
   on('ui.message', () => ({}))
   on('ui.render', () => ({ type: 'engine', ref: 0 }))
   // Only the real engine can hand back a spawned agent's id; the agent list stands in.
-  on('agent.spawn', () => ({ model: 'test' }))
+  on('agent.spawn', () => {
+    seen.spawns++
+    return { model: 'test' }
+  })
   on('agent.list', () => ({ value: agents }))
   on('session.send', ($, e) => {
     seen.sends.push({ to: e.to, text: e.text })
@@ -366,6 +370,42 @@ test("the voice's thoughts start without a second permission ask; other agents a
   expect(thought.decision).toBe('allow')
   const other = await $.tool.check({ tool: 'Agent', input: { subagent_type: 'general-purpose', prompt: 'x', description: 'y' } })
   expect(other.decision).toBe('ask')
+})
+
+test("a call from another agent's loop (an engine fork, a subagent) never starts, steers or stops a thought", async ($, on) => {
+  const seen = engine(on)
+  await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
+  const think = { tool: 'mcp__multitask__think', name: 'placeholder', task: 'Placeholder - not used' } as const
+  const list = async (id: string) => String((await $.tool.call({ tool: 'mcp__multitask__thoughts', tool_use_id: id })).result)
+
+  // A fork's think is refused, Multitask off or on, and starts nothing.
+  expect((await $.tool.call({ ...think, tool_use_id: 'f1', agentId: 'fork-1' })).deny).toContain('another agent')
+  await $.command.run({ command: 'multitask', args: '', origin: { kind: 'composer' }, presentation: {} as never })
+  expect((await $.tool.call({ ...think, tool_use_id: 'f2', agentId: 'fork-1' })).deny).toContain('another agent')
+  expect(seen.spawns).toBe(0)
+  expect(await list('v1')).toBe('No thoughts yet.')
+
+  // The voice's own think, on the main loop, still starts one.
+  const started = await $.tool.call({ tool: 'mcp__multitask__think', tool_use_id: 'v2', name: 'auth bug', task: 'Find why login fails' })
+  expect(started.deny).toBeUndefined()
+  expect(seen.spawns).toBe(1)
+
+  // Nor can another loop message, queue for, interrupt, unqueue, stop or list it.
+  const calls = [
+    { tool: 'mcp__multitask__tell', thought: 'auth-bug', message: 'hi' },
+    { tool: 'mcp__multitask__tell', thought: 'auth-bug', message: 'later', how: 'queue' },
+    { tool: 'mcp__multitask__tell', thought: 'auth-bug', message: 'now', how: 'interrupt' },
+    { tool: 'mcp__multitask__unqueue', thought: 'auth-bug' },
+    { tool: 'mcp__multitask__stop', thought: 'auth-bug' },
+    { tool: 'mcp__multitask__thoughts' },
+  ] as const
+  for (const [i, call] of calls.entries()) {
+    expect((await $.tool.call({ ...call, tool_use_id: `f${i + 3}`, agentId: 'agent-7' })).deny).toContain('another agent')
+  }
+  expect(seen.sends).toHaveLength(0)
+  expect(seen.aborts).toHaveLength(0)
+  expect(seen.ran).not.toContain('TaskStop')
+  expect(await list('v3')).toBe('- auth-bug [running]: Find why login fails')
 })
 
 test("the Thoughts pane draws running thoughts first with their task's first line, the rest as one line, until opened", async ($, on) => {

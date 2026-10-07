@@ -249,6 +249,26 @@ test('with no threads the band says how to start one; the agent switch gates the
   expect(await band.find({ text: /start a thread/ })).toBeUndefined()
 })
 
+test("another agent's loop (an engine fork, a subagent) cannot start a thread, the agent switch on or off", async ($, on) => {
+  engine(on)
+  await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
+  const tool = 'mcp__thread-chat__create_thread'
+  const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...BAND })
+
+  expect((await $.tool.call({ tool, tool_use_id: 'f1', name: 'stray', agentId: 'fork-1' })).deny).toContain('another agent')
+  await band.pointer({ type: 'down', x: 1, y: 0, button: 'left', in: 'agent-switch' })
+  await band.pointer({ type: 'up', x: 1, y: 0, button: 'left', in: 'agent-switch' })
+  expect((await $.tool.call({ tool, tool_use_id: 'f2', name: 'stray', agentId: 'fork-1' })).deny).toContain('another agent')
+  await band.redraw()
+  expect(await band.find({ key: 'thread:stray' })).toBeUndefined()
+
+  // The main conversation's own call still starts one.
+  expect((await $.tool.call({ tool, tool_use_id: 'm1', name: 'ideas' })).deny).toBeUndefined()
+  await band.redraw()
+  expect(await band.find({ key: 'thread:ideas' })).toBeDefined()
+  expect(await band.find({ key: 'thread:stray' })).toBeUndefined()
+})
+
 test("a plugin's prompt is not the person's, though the desktop names its row theirs", async ($, on) => {
   engine(on)
   // As the engine stores a plugin's prompt, and as the desktop shows it: framed.
