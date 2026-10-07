@@ -1,14 +1,28 @@
 import type { On, SessionMessage } from 'claude-code'
-import { expect, mock, test } from 'claude-code/testing'
+import { expect, test } from 'claude-code/testing'
+
+import type { ViewRow } from '../types'
+import { markOf, rowsUpTo, viewsKept, withTextKept, withViewRow } from '../hooks/pane'
 
 type Block = { type: string; [field: string]: unknown }
 
 // The test stands in for the engine beneath the plugin, keeping the rows stored
-// as the transcript `$.session.messages()` reads.
-function engine(on: On) {
+// as the conversation `$.session.messages()` reads (`transcript`, which a test may
+// rewrite as a compaction does), and the mod store (`kept`, seeded with `store`).
+function engine(on: On, store: Record<string, unknown> = {}) {
   const opened: string[] = []
   const transcript: SessionMessage[] = []
-  mock.store(on, {})
+  const kept: Record<string, unknown> = { ...store }
+  on('store.get', ($, e) => ({ value: kept[e.key] }))
+  on('store.set', ($, e) => {
+    kept[e.key] = JSON.parse(JSON.stringify(e.value)) as unknown
+    return { value: undefined }
+  })
+  on('store.delete', ($, e) => {
+    delete kept[e.key]
+    return { value: undefined }
+  })
+  on('store.keys', () => ({ value: Object.keys(kept) }))
   on('session.id', () => ({ value: 'session-1' }))
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('prompt.submit', ($, e) => ({ text: e.text }))
@@ -41,7 +55,7 @@ function engine(on: On) {
     }
     return next(e)
   })
-  return opened
+  return { opened, transcript, kept }
 }
 
 const say = (text: string) => ({ text, origin: { kind: 'composer' as const }, wait: false })
@@ -239,7 +253,7 @@ test('a long section draws as markdown in pieces a Markdown element takes', asyn
 })
 
 test('/thread-view and the band button open the view', async ($, on) => {
-  const opened = engine(on)
+  const { opened } = engine(on)
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
   const ran = await $.command.run({ command: 'thread-view', args: '', origin: { kind: 'composer' }, presentation: {} as never })
   expect(ran.text).toBe('Thread view opened.')
@@ -258,4 +272,169 @@ test('/thread-view and the band button open the view', async ($, on) => {
     await band.unmount()
   }
   expect(opened).toEqual(['thread-view', 'thread-view', 'thread-view'])
+})
+
+// A compaction's summary, as the engine stores it and the conversation then reads it.
+const SUMMARY = 'This session is being continued from a previous conversation. Summary: hello, and fast?'
+
+const DESIGN = { name: 'design', color: '#4fa3e0', isSelected: false, createdBy: 'user' } as const
+
+test('the view keeps what a compaction summarised away, and never shows the summary', async ($, on) => {
+  const { transcript, kept } = engine(on)
+  await $.prompt.submit(say('# design\nhello'))
+  const store = (uuid: string, door: 'prompt' | 'response' | 'compaction', text: string) =>
+    $.session
+      .append({
+        message:
+          door === 'response'
+            ? { type: 'assistant', role: 'assistant', content: [{ type: 'text', text }] }
+            : { type: 'user', role: 'user', content: [{ type: 'text', text }] },
+        door,
+        origin: door === 'prompt' ? { kind: 'composer' } : door === 'response' ? model : { kind: 'engine' },
+        uuid,
+      })
+      .catch(() => undefined)
+  await store('p1', 'prompt', '# design\nhello')
+  await store('a1', 'response', 'on it\n# design\nuse a queue')
+  await $.prompt.submit(say('# perf\nfast?'))
+  await store('p2', 'prompt', '# perf\nfast?')
+  await store('a2', 'response', '# perf\nit is fine')
+  // the compaction stores its summary as a row of its own; a row stored again draws once
+  await store('s1', 'compaction', SUMMARY)
+  await store('a2', 'response', '# perf\nit is fine')
+  // the conversation then reads as the summary and the rows it kept
+  transcript.splice(
+    0,
+    transcript.length,
+    { role: 'user', text: SUMMARY, toolUses: [] },
+    { role: 'user', text: '# perf\nfast?', toolUses: [] },
+    { role: 'assistant', text: '# perf\nit is fine', toolUses: [] },
+  )
+
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const pane = await $.ui.mount({ plugin: 'thread-chat', surface, ...PANE })
+    expect(await sectionsOf(pane)).toEqual(['you: hello', 'Claude: on it', 'Claude: use a queue', 'you: fast?', 'Claude: it is fine'])
+    expect(await pane.findAll({ text: /continued from a previous/ })).toEqual([])
+    expect(await pane.find({ type: 'Text', text: /no longer kept/ })).toBeUndefined()
+    await pane.unmount()
+  }
+
+  // the rows are kept with their text as the turn ends, for the session's next run
+  await $.turn.complete({ answer: '', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })
+  const rows = kept['view:session-1'] as ViewRow[]
+  expect(rows.map(row => `${row.id}: ${row.text ?? ''}`)).toEqual([
+    'p1: # design\nhello',
+    'a1: on it\n# design\nuse a queue',
+    'p2: # perf\nfast?',
+    'a2: # perf\nit is fine',
+  ])
+})
+
+test('a restarted session draws the rows it kept; rows kept without text draw while the conversation holds them', async ($, on) => {
+  const { transcript } = engine(on, {
+    'session:session-1': { threads: [DESIGN], aliases: {}, snaps: {} },
+    'view:session-1': [
+      // kept by an earlier version, without text: one the compaction summarised away,
+      // one the conversation still holds, and one with a note for the model beside it
+      { id: 'p0', role: 'user', mark: markOf('# design\nlong ago') },
+      { id: 'a0', role: 'assistant', mark: markOf('# design\nuse a queue') },
+      { id: 'p1', role: 'user', mark: markOf('and?\nThis message belongs to the thread "design".'), typed: 4 },
+      // kept with its text
+      { id: 'a1', role: 'assistant', mark: markOf('# design\nnext step'), text: '# design\nnext step' },
+    ],
+  })
+  transcript.push(
+    { role: 'user', text: SUMMARY, toolUses: [] },
+    { role: 'assistant', text: '# design\nuse a queue', toolUses: [] },
+    { role: 'user', text: 'and?\nThis message belongs to the thread "design".', toolUses: [] },
+  )
+  await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
+
+  const pane = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...PANE })
+  expect(await sectionsOf(pane)).toEqual(['Claude: use a queue', 'you: and?', 'Claude: next step'])
+  expect(await pane.findAll({ text: /continued from a previous/ })).toEqual([])
+  expect((await pane.find({ type: 'Text', text: /no longer kept/ }))?.text).toBe('1 earlier message is no longer kept')
+})
+
+test('a rewound session draws the rows of the session it came from up to where it was rewound', async ($, on) => {
+  const said = [
+    { id: 'p1', role: 'user', text: '# design\nwhy is the band two rows high?' },
+    { id: 'a1', role: 'assistant', text: '# design\nIt wraps because both mods share one row.' },
+    { id: 'p2', role: 'user', text: '# design\nhow long do the tests take?' },
+    // rewound away: the new session holds the rows before these
+    { id: 'a2', role: 'assistant', text: '# design\nAbout five seconds in all.' },
+    { id: 'p3', role: 'user', text: '# design\nand the store?' },
+  ] as const
+  const { transcript, kept } = engine(on, {
+    'session:old': { threads: [DESIGN], aliases: {}, snaps: {} },
+    'view:old': said.map(row => ({ ...row, mark: markOf(row.text) })),
+  })
+  transcript.push(...said.slice(0, 3).map(row => ({ role: row.role, text: row.text, toolUses: [] })))
+  await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
+
+  const pane = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...PANE })
+  expect(await sectionsOf(pane)).toEqual([
+    'you: why is the band two rows high?',
+    'Claude: It wraps because both mods share one row.',
+    'you: how long do the tests take?',
+  ])
+  expect((kept['view:session-1'] as ViewRow[]).map(row => row.id)).toEqual(['p1', 'a1', 'p2'])
+})
+
+test('the store keeps the rows of the sessions kept most recently, within its size', async ($, on) => {
+  const big = (id: string, length: number) => [{ id, role: 'assistant', mark: 'x', text: 'x'.repeat(length) }]
+  const { kept } = engine(on, { 'view:old1': big('o1', 1_200_000), 'view:old2': big('o2', 700_000) })
+  await $.session
+    .append({
+      message: { type: 'assistant', role: 'assistant', content: [{ type: 'text', text: 'y'.repeat(200_000) }] },
+      door: 'response',
+      origin: model,
+      uuid: 'a1',
+    })
+    .catch(() => undefined)
+  await $.turn.complete({ answer: '', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })
+
+  expect(kept['view:old1']).toBeUndefined()
+  expect(kept['view:old2']).toBeDefined()
+  expect(kept['view:session-1']).toBeDefined()
+  expect((kept.views as { id: string }[]).map(view => view.id)).toEqual(['old2', 'session-1'])
+})
+
+test('rows keep their newest texts within a budget, one row per id', async () => {
+  const row = (id: string, text: string): ViewRow => ({ id, role: 'assistant', mark: markOf(text), text })
+  const rows = [row('a', '12345'), { ...row('b', '67890'), role: 'user' as const, typed: 3 }, row('c', 'abcde')]
+  // the newest that fit keep their text; from the first that does not, none older does
+  expect(withTextKept(rows, 12)).toEqual([{ id: 'a', role: 'assistant', mark: '12345' }, rows[1], rows[2]])
+  expect(withTextKept(rows, 9)).toEqual([
+    { id: 'a', role: 'assistant', mark: '12345' },
+    { id: 'b', role: 'user', mark: '67890', typed: 3 },
+    row('c', 'abcde'),
+  ])
+  // a row stored again takes its own place, not another
+  expect(withViewRow(rows, row('b', 'again')).map(known => `${known.id}: ${known.text ?? ''}`)).toEqual(['a: 12345', 'b: again', 'c: abcde'])
+
+  // the sessions kept longest ago go first; keeping one again makes it the newest
+  const index = [
+    { id: 'a', size: 100 },
+    { id: 'b', size: 100 },
+    { id: 'c', size: 100 },
+  ]
+  expect(viewsKept(index, 'd', 150, 300)).toEqual({
+    index: [
+      { id: 'c', size: 100 },
+      { id: 'd', size: 150 },
+    ],
+    dropped: ['a', 'b'],
+  })
+  expect(viewsKept(index, 'a', 50, 300)).toEqual({
+    index: [
+      { id: 'b', size: 100 },
+      { id: 'c', size: 100 },
+      { id: 'a', size: 50 },
+    ],
+    dropped: [],
+  })
+
+  // a conversation that holds none of the rows (not read yet) cuts none
+  expect(rowsUpTo(rows, [])).toEqual(rows)
 })

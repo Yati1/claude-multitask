@@ -20,13 +20,16 @@ import type { RunOn, Section } from './parse'
 import {
   drawView,
   markOf,
+  needsMessages,
   noteDrawnReply,
   pickedOf,
+  rowsUpTo,
   viewKey,
   viewRowOf,
+  viewsKept,
   withViewRow,
 } from './pane'
-import type { ViewDeps, ViewInputs } from './pane'
+import type { ViewDeps, ViewInputs, ViewSize } from './pane'
 
 const threads = atom({ plugin: 'thread-chat', key: 'threads' } as const, [])
 const aliases = atom({ plugin: 'thread-chat', key: 'aliases' } as const, {})
@@ -942,12 +945,18 @@ async function openView($: EngineInterface) {
 }
 
 // What the thread view is drawn from; read while drawing, so a change draws it again.
+// The rows it kept are the transcript as stored; the conversation as the engine
+// holds it (a compaction's summary in place of what came before) is read only to
+// fill in rows kept without their text, or for a session it kept no rows of.
 async function viewInputs($: EngineInterface): Promise<ViewInputs> {
+  const known = await read($, viewRows)
   let messages: ViewInputs['messages'] = []
-  try {
-    messages = await $.session.messages()
-  } catch {
-    messages = []
+  if (needsMessages(known)) {
+    try {
+      messages = await $.session.messages()
+    } catch {
+      messages = []
+    }
   }
   return {
     list: await read($, threads),
@@ -955,8 +964,51 @@ async function viewInputs($: EngineInterface): Promise<ViewInputs> {
     snapped: await read($, snaps),
     sent: await read($, sentTo),
     moves: await read($, moved),
-    known: await read($, viewRows),
+    known,
     messages,
+  }
+}
+
+// Where the sizes of the sessions' kept view rows are, oldest kept first (ViewSize).
+const VIEWS_KEY = 'views'
+
+// The sizes of the view rows the store holds, oldest kept first. Rows with no size
+// recorded (kept by an earlier version) are measured once and count as the oldest.
+async function viewSizes($: EngineInterface): Promise<ViewSize[]> {
+  const kept = await $.store.get(VIEWS_KEY)
+  const recorded = Array.isArray(kept) ? (kept as ViewSize[]) : []
+  const held = new Set((await $.store.keys()).filter(key => key.startsWith('view:')).map(key => key.slice('view:'.length)))
+  const known = recorded.filter(view => held.has(view.id))
+  const measured = new Set(known.map(view => view.id))
+  const unmeasured: ViewSize[] = []
+  for (const id of held) {
+    if (!measured.has(id)) unmeasured.push({ id, size: JSON.stringify((await $.store.get(viewKey(id))) ?? null).length })
+  }
+  return [...unmeasured, ...known]
+}
+
+// Keeps a session's view rows for its next run, within what the store holds: the
+// rows of the sessions kept longest ago go first, and go too where the store
+// refuses them for its size. Best effort: the view this run draws keeps its rows.
+async function keepViewRows($: EngineInterface, id: string, rows: ViewRow[]) {
+  try {
+    const { index, dropped } = viewsKept(await viewSizes($), id, JSON.stringify(rows).length)
+    for (const old of dropped) await $.store.delete(viewKey(old))
+    let left = index
+    for (;;) {
+      try {
+        await $.store.set(viewKey(id), rows)
+        break
+      } catch (error) {
+        const oldest = left.find(view => view.id !== id)
+        if (oldest === undefined) throw error
+        await $.store.delete(viewKey(oldest.id))
+        left = left.filter(view => view !== oldest)
+      }
+    }
+    await $.store.set(VIEWS_KEY, left)
+  } catch {
+    // the store keeps no rows this time; the next turn tries again
   }
 }
 
@@ -996,7 +1048,8 @@ export const register: Register = on => {
 
     // A restarted, resumed or reloaded session takes up the threads it kept, joined to
     // any it holds; a rewound or forked one, which starts under a new id with no record
-    // of its own, those of the session it came from, and that session's view rows.
+    // of its own, those of the session it came from, and that session's view rows up
+    // to where it was rewound.
     const id = await $.session.id()
     let saved = (await $.store.get(storeKey(id))) as Partial<Saved> | undefined
     if (saved === undefined) {
@@ -1006,8 +1059,9 @@ export const register: Register = on => {
         saved = (await $.store.get(storeKey(parent))) as Partial<Saved> | undefined
         const rows = await $.store.get(viewKey(parent))
         if ((await read($, viewRows)).length === 0 && Array.isArray(rows)) {
-          await update($, viewRows, () => rows as ViewRow[])
-          await $.store.set(viewKey(id), rows)
+          const kept = rowsUpTo(rows as ViewRow[], await $.session.messages().catch(() => []))
+          await update($, viewRows, () => kept)
+          await keepViewRows($, id, kept)
         }
       }
     }
@@ -1077,13 +1131,16 @@ export const register: Register = on => {
       const key = sent >= 0 ? unsent.splice(sent, 1)[0]?.key : undefined
       if (key !== undefined) await update($, sentTo, all => ({ ...all, [e.uuid]: key }))
     }
+    // The thread view learns a person's message or a reply's text, as stored, with
+    // its text: its record of the transcript, which no compaction rewrites. It draws
+    // again with it. A row whose append was refused is not kept; one whose store
+    // failed is noted all the same (the screen may show it already).
+    let stored: Awaited<ReturnType<typeof next>> | undefined
     try {
-      return await next(e)
+      stored = await next(e)
+      return stored
     } finally {
-      // The thread view learns a person's message or a reply's text once it is
-      // stored, and draws again with it. A row that failed to store is noted all the
-      // same: the view matches rows to the transcript, where it is not.
-      const row = viewRowOf(e, PERSON)
+      const row = stored?.deny === undefined ? viewRowOf(stored === undefined ? e : { ...e, message: stored.message }, PERSON) : undefined
       if (row !== undefined) await update($, viewRows, all => withViewRow(all, row))
     }
   })
@@ -1094,7 +1151,7 @@ export const register: Register = on => {
     if (e.agentId === undefined) {
       if ((await read($, threads)).length > 0) await save($)
       const rows = await read($, viewRows)
-      if (rows.length > 0) await $.store.set(viewKey(await $.session.id()), rows)
+      if (rows.length > 0) await keepViewRows($, await $.session.id(), rows)
     }
     return result
   })
