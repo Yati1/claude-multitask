@@ -24,6 +24,13 @@ declare module 'claude-code' {
       // a person's message row id -> the key of the thread it went to: sent with no
       // heading while that thread alone was picked
       sentTo: Record<string, string>
+      // `${row id}|${key of the thread a part was first placed in, '' none}` -> the key
+      // of the thread the person moved it to ('' none)
+      moved: Record<string, string>
+      // the open move picker: `${row id}|${key of the thread its part sits in}`; '' none
+      picking: string
+      // moves to tell the model beside the person's next message
+      untold: string[]
     }
   }
 }

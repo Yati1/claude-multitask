@@ -425,3 +425,49 @@ test('the pill of the one picked thread shows that messages with no heading go t
   await terminal.redraw()
   expect(await marked()).toEqual({ desktop: [], terminal: [] })
 })
+
+test('a message or a reply part moves to another thread from its tag, and the model is told', async ($, on) => {
+  const prompts = engine(on)
+  await $.prompt.submit(say('# design\na\n# perf\nb'))
+  const click = (drawing: { pointer: (p: never) => Promise<unknown> }, key: string) =>
+    drawing.pointer({ type: 'down', x: 1, y: 0, button: 'left', in: key } as never)
+
+  // the person's message, on the desktop: its tag opens the picker; a pill moves it
+  const mine = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...userRow('# design\nhi'), requestId: 'u1' })
+  expect(await mine.find({ key: 'pick:perf' })).toBeUndefined()
+  await click(mine, 'tag:design')
+  await mine.redraw()
+  expect(await mine.find({ key: 'pick:perf' })).toBeDefined()
+  expect(await mine.find({ key: 'pick:design' })).toBeUndefined()
+  await click(mine, 'pick:perf')
+  await mine.redraw()
+  expect(await tagOf(mine, 'perf')).toBeDefined()
+  expect(await tagOf(mine, 'design')).toBeUndefined()
+  expect(await mine.find({ key: 'pick:perf' })).toBeUndefined()
+
+  // a message of no thread offers "+ thread"
+  const plain = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...userRow('plain words'), requestId: 'u2' })
+  await click(plain, 'tag:')
+  await plain.redraw()
+  await click(plain, 'pick:design')
+  await plain.redraw()
+  expect(await tagOf(plain, 'design')).toBeDefined()
+
+  // a part of a reply, on the terminal, moves to no thread
+  const reply = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...assistantRow('# design\nuse a queue'), requestId: 'r1' })
+  expect(await tagOf(reply, 'design')).toBeDefined()
+  await reply.press({ key: 'tag:design' })
+  await reply.redraw()
+  await reply.press({ key: 'pick:' })
+  await reply.redraw()
+  expect(await tagOf(reply, 'design')).toBeUndefined()
+  expect(await reply.find({ text: /use a queue/ })).toBeDefined()
+
+  // the moves reach the model beside the next message, once
+  await $.prompt.submit(say('next'))
+  expect(prompts.at(-1)).toContain('The user moved their message "hi" from the thread "design" to the thread "perf".')
+  expect(prompts.at(-1)).toContain('The user moved their message "plain words" from no thread to the thread "design".')
+  expect(prompts.at(-1)).toContain('The user moved part of your reply "use a queue" from the thread "design" to no thread.')
+  await $.prompt.submit(say('again'))
+  expect(prompts.at(-1)).toBe('again')
+})
