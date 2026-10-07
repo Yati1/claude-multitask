@@ -18,18 +18,24 @@ import {
 } from './parse'
 import type { RunOn, Section } from './parse'
 import {
+  chunksOf,
+  dataFolderOf,
   drawView,
+  fingerprintOf,
+  isKeptView,
+  markHashOf,
   markOf,
+  marksOf,
   needsMessages,
   noteDrawnReply,
   pickedOf,
+  rowsOfChunks,
   rowsUpTo,
   viewKey,
   viewRowOf,
-  viewsKept,
   withViewRow,
 } from './pane'
-import type { ViewDeps, ViewInputs, ViewSize } from './pane'
+import type { ViewDeps, ViewInputs } from './pane'
 
 const threads = atom({ plugin: 'thread-chat', key: 'threads' } as const, [])
 const aliases = atom({ plugin: 'thread-chat', key: 'aliases' } as const, {})
@@ -204,18 +210,30 @@ const MIN_PARENT_MARK = 12
 // The session this one was rewound or forked from. Claude Code gives such a session a
 // new id and copies the rows it keeps from the other, so it is found as the saved
 // session whose thread view knows the most of this one's messages, by a clear margin.
+// Its rows' marks are read as hashes: from the file kept beside its rows, or from
+// the rows an earlier version kept in the store.
 async function parentOf($: EngineInterface, id: string): Promise<string | undefined> {
   const mine = new Set(
-    (await $.session.messages()).map(m => markOf(m.text)).filter(mark => mark.length >= MIN_PARENT_MARK),
+    (await $.session.messages())
+      .map(m => markOf(m.text))
+      .filter(mark => mark.length >= MIN_PARENT_MARK)
+      .map(markHashOf),
   )
   if (mine.size === 0) return undefined
   const scores: { id: string; score: number }[] = []
   for (const key of await $.store.keys()) {
     if (!key.startsWith('view:') || key === viewKey(id)) continue
-    const rows = await $.store.get(key)
-    if (!Array.isArray(rows)) continue
-    const known = new Set((rows as ViewRow[]).map(row => row.mark).filter(mark => mine.has(mark)))
-    if (known.size > 0) scores.push({ id: key.slice('view:'.length), score: known.size })
+    const other = key.slice('view:'.length)
+    const kept = await $.store.get(key)
+    let marks: string[] = []
+    if (Array.isArray(kept)) marks = (kept as ViewRow[]).map(row => markHashOf(row.mark))
+    else if (isKeptView(kept)) {
+      const folder = await rowsFolder($, other).catch(() => undefined)
+      const text = folder === undefined ? undefined : await $.fs.read(`${folder}/${MARKS_FILE}`).catch(() => undefined)
+      marks = text === undefined ? [] : text.split('\n')
+    }
+    const known = new Set(marks.filter(mark => mine.has(mark)))
+    if (known.size > 0) scores.push({ id: other, score: known.size })
   }
   scores.sort((a, b) => b.score - a.score)
   const [best, next] = scores
@@ -969,56 +987,70 @@ async function viewInputs($: EngineInterface): Promise<ViewInputs> {
   }
 }
 
-// Where the sizes of the sessions' kept view rows are, oldest kept first (ViewSize).
-const VIEWS_KEY = 'views'
+// The file beside a session's rows that holds their marks' hashes, a line a row.
+const MARKS_FILE = 'marks.txt'
 
-// The sizes of the view rows the store holds, oldest kept first. Rows with no size
-// recorded (kept by an earlier version) are measured once and count as the oldest.
-async function viewSizes($: EngineInterface): Promise<ViewSize[]> {
-  const kept = await $.store.get(VIEWS_KEY)
-  const recorded = Array.isArray(kept) ? (kept as ViewSize[]) : []
-  const held = new Set((await $.store.keys()).filter(key => key.startsWith('view:')).map(key => key.slice('view:'.length)))
-  const known = recorded.filter(view => held.has(view.id))
-  const measured = new Set(known.map(view => view.id))
-  const unmeasured: ViewSize[] = []
-  for (const id of held) {
-    if (!measured.has(id)) unmeasured.push({ id, size: JSON.stringify((await $.store.get(viewKey(id))) ?? null).length })
-  }
-  return [...unmeasured, ...known]
+// Where a session's view rows are kept between runs: files of their own, all of
+// every message's text, as the store holds 4 MiB in all; the store notes only how
+// many there are (KeptView). They are in the plugin's data folder under the Claude
+// Code configuration folder, a folder a session. None where the configuration
+// folder is not known.
+async function rowsFolder($: EngineInterface, id: string): Promise<string | undefined> {
+  const home = (await $.env.get('USERPROFILE')) || (await $.env.get('HOME'))
+  const config = (await $.env.get('CLAUDE_CONFIG_DIR')) || (home ? `${home}/.claude` : undefined)
+  const data = dataFolderOf($.plugin.root, $.plugin.name, config)
+  return data === undefined ? undefined : `${data}/views/${id.replace(/[^A-Za-z0-9_-]/g, '_')}`
 }
 
-// Keeps a session's view rows for its next run, within what the store holds: the
-// rows of the sessions kept longest ago go first, and go too where the store
-// refuses them for its size. Best effort: the view this run draws keeps its rows.
+// The rows kept of a session: in its files, or in the store, as an earlier version
+// kept them; none where none were kept. A file that cannot be read is passed over.
+async function keptRows($: EngineInterface, id: string): Promise<ViewRow[]> {
+  const kept = await $.store.get(viewKey(id))
+  if (Array.isArray(kept)) return kept as ViewRow[]
+  if (!isKeptView(kept) || kept.chunks.length === 0) return []
+  const folder = await rowsFolder($, id)
+  if (folder === undefined) return []
+  const chunks: string[] = []
+  for (let i = 0; i < kept.chunks.length; i++) {
+    const text = await $.fs.read(`${folder}/${i}.jsonl`).catch(() => undefined)
+    if (text !== undefined) chunks.push(text)
+  }
+  return rowsOfChunks(chunks)
+}
+
+// Keeps a session's view rows for its next run, every one with its text: the files
+// whose text changed are written, then the hashes of the rows' marks, then the
+// store's note of the files. Rows an earlier version kept in the store move to
+// files. Best effort: the view this run draws keeps its rows, and the next turn
+// tries again.
 async function keepViewRows($: EngineInterface, id: string, rows: ViewRow[]) {
   try {
-    const { index, dropped } = viewsKept(await viewSizes($), id, JSON.stringify(rows).length)
-    for (const old of dropped) await $.store.delete(viewKey(old))
-    let left = index
-    for (;;) {
-      try {
-        await $.store.set(viewKey(id), rows)
-        break
-      } catch (error) {
-        const oldest = left.find(view => view.id !== id)
-        if (oldest === undefined) throw error
-        await $.store.delete(viewKey(oldest.id))
-        left = left.filter(view => view !== oldest)
-      }
+    const folder = await rowsFolder($, id)
+    if (folder === undefined) return
+    const chunks = chunksOf(rows)
+    const fingerprints = chunks.map(fingerprintOf)
+    const kept = await $.store.get(viewKey(id))
+    const before = isKeptView(kept) ? kept.chunks : []
+    if (fingerprints.length === before.length && fingerprints.every((print, i) => print === before[i])) return
+    for (const [i, text] of chunks.entries()) {
+      if (fingerprints[i] !== before[i]) await $.fs.write(`${folder}/${i}.jsonl`, text)
     }
-    await $.store.set(VIEWS_KEY, left)
+    // a file past the rows' end is left empty, as no file is deleted
+    for (let i = chunks.length; i < before.length; i++) await $.fs.write(`${folder}/${i}.jsonl`, '')
+    await $.fs.write(`${folder}/${MARKS_FILE}`, marksOf(rows))
+    await $.store.set(viewKey(id), { chunks: fingerprints })
   } catch {
-    // the store keeps no rows this time; the next turn tries again
+    // nothing more is kept this time
   }
 }
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: VIEW, description: 'Show the picked threads alone, without tool rows, in a pane' })
-    // A restarted or resumed session takes up the rows its thread view knew by id.
+    // A restarted or resumed session takes up the rows its thread view kept.
     if ((await read($, viewRows)).length === 0) {
-      const saved = await $.store.get(viewKey(await $.session.id()))
-      if (Array.isArray(saved) && saved.length > 0) await update($, viewRows, () => saved as ViewRow[])
+      const kept = await keptRows($, await $.session.id()).catch(() => [])
+      if (kept.length > 0) await update($, viewRows, () => kept)
     }
     await $.tool.register({
       name: 'create_thread',
@@ -1057,9 +1089,9 @@ export const register: Register = on => {
       const parent = await parentOf($, id).catch(() => undefined)
       if (parent !== undefined) {
         saved = (await $.store.get(storeKey(parent))) as Partial<Saved> | undefined
-        const rows = await $.store.get(viewKey(parent))
-        if ((await read($, viewRows)).length === 0 && Array.isArray(rows)) {
-          const kept = rowsUpTo(rows as ViewRow[], await $.session.messages().catch(() => []))
+        const rows = (await read($, viewRows)).length === 0 ? await keptRows($, parent).catch(() => []) : []
+        if (rows.length > 0) {
+          const kept = rowsUpTo(rows, await $.session.messages().catch(() => []))
           await update($, viewRows, () => kept)
           await keepViewRows($, id, kept)
         }

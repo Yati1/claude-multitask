@@ -38,21 +38,20 @@ export type ViewDeps = {
   stemOf: (id: string) => string
 }
 
-// Rows remembered by id; the newest are kept.
-const ROWS_KEPT = 1000
-// Characters of text a session's rows keep in all; the newest rows keep theirs,
-// older ones their id and mark alone.
-const TEXT_KEPT = 256_000
-// Characters of JSON the store keeps of all sessions' rows; the most recently kept
-// sessions' stay. The store holds 4 MiB in all, the threads' records included.
-const VIEWS_KEPT = 2_000_000
+// Characters a file of kept rows holds at most: under the 4 MiB a file read or
+// write takes, however many bytes each character comes to.
+const CHUNK_CHARS = 1_000_000
+// A long text is kept in pieces of this many characters, a line each, so one line
+// fits a file however its characters are escaped.
+const PIECE_CHARS = 100_000
 // Sections drawn at once; the newest are drawn.
 const SECTIONS_DRAWN = 200
 const MARK_LENGTH = 80
 // The marker beside the person's sections of no thread.
 const NO_THREAD_COLOR = '#8c8c8c'
 
-// Where a session's view rows are kept between runs of the app.
+// Where the store notes how a session's view rows are kept between runs of the app
+// (KeptView); an earlier version kept the rows themselves there.
 export const viewKey = (sessionId: string) => `view:${sessionId}`
 
 // A text's start with its spacing dropped: the same however a row's text blocks
@@ -86,30 +85,107 @@ export function viewRowOf(e: Args<'session.append'>, person: ReadonlySet<string>
     : { id: e.uuid, role: 'user', mark: markOf(text), text }
 }
 
-// The rows known once `row` is: the newest ROWS_KEPT, one per id (a row stored
-// again replaces itself), the newest of them with their text, up to TEXT_KEPT.
+// The rows known once `row` is: every one, one per id (a row stored again replaces
+// itself).
 export function withViewRow(all: ViewRow[], row: ViewRow): ViewRow[] {
   const at = all.findIndex(known => known.id === row.id)
-  const rows = at < 0 ? [...all, row] : all.map((known, i) => (i === at ? row : known))
-  return withTextKept(rows.slice(-ROWS_KEPT))
+  return at < 0 ? [...all, row] : all.map((known, i) => (i === at ? row : known))
 }
 
-// The rows with the newest texts kept, up to `budget` characters in all: older
-// rows keep their id and mark (and length as typed), by which a transcript that
-// still holds them fills their text in.
-export function withTextKept(rows: readonly ViewRow[], budget = TEXT_KEPT): ViewRow[] {
-  let left = budget
-  const kept = [...rows]
-  for (let i = kept.length - 1; i >= 0; i--) {
-    const row = kept[i]
-    if (row?.text === undefined) continue
-    left -= row.text.length
-    if (left < 0) {
-      const { id, role, mark, typed } = row
-      kept[i] = typed === undefined ? { id, role, mark } : { id, role, mark, typed }
+// How the store notes a session's kept rows: a fingerprint of each of its files'
+// text, in order. The files are written before the note, and only those whose text
+// changed; the note's count is how many there are.
+export type KeptView = { chunks: string[] }
+
+export const isKeptView = (value: unknown): value is KeptView =>
+  typeof value === 'object' &&
+  value !== null &&
+  Array.isArray((value as { chunks?: unknown }).chunks) &&
+  (value as { chunks: unknown[] }).chunks.every(chunk => typeof chunk === 'string')
+
+// A 32-bit FNV-1a hash, in hex.
+function hashOf(text: string) {
+  let hash = 0x811c9dc5
+  for (let i = 0; i < text.length; i++) {
+    hash ^= text.charCodeAt(i)
+    hash = Math.imul(hash, 0x01000193)
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0')
+}
+
+// A file's text as the store notes it: its length and hash.
+export const fingerprintOf = (text: string) => `${text.length.toString(36)}.${hashOf(text)}`
+
+// A session's rows as files: a JSON line a row, its text's first piece with it, and
+// a line `{ id, more }` for each further piece of a long text; as many lines a file
+// as fit in `size` characters.
+export function chunksOf(rows: readonly ViewRow[], size = CHUNK_CHARS, piece = PIECE_CHARS): string[] {
+  const chunks: string[] = []
+  let lines: string[] = []
+  let length = 0
+  const put = (line: string) => {
+    if (lines.length > 0 && length + line.length + 1 > size) {
+      chunks.push(`${lines.join('\n')}\n`)
+      lines = []
+      length = 0
+    }
+    lines.push(line)
+    length += line.length + 1
+  }
+  for (const row of rows) {
+    const text = row.text
+    if (text === undefined || text.length <= piece) {
+      put(JSON.stringify(row))
+      continue
+    }
+    put(JSON.stringify({ ...row, text: text.slice(0, piece) }))
+    for (let at = piece; at < text.length; at += piece) put(JSON.stringify({ id: row.id, more: text.slice(at, at + piece) }))
+  }
+  if (lines.length > 0) chunks.push(`${lines.join('\n')}\n`)
+  return chunks
+}
+
+// The rows a session's files hold, in order (chunksOf). A line that does not read
+// as a row (a write cut short) is passed over.
+export function rowsOfChunks(chunks: readonly string[]): ViewRow[] {
+  const rows: ViewRow[] = []
+  for (const chunk of chunks) {
+    for (const line of chunk.split('\n')) {
+      if (line.trim() === '') continue
+      let value: Partial<ViewRow> & { more?: unknown }
+      try {
+        value = JSON.parse(line) as Partial<ViewRow> & { more?: unknown }
+      } catch {
+        continue
+      }
+      if (typeof value !== 'object' || value === null || typeof value.id !== 'string') continue
+      const last = rows[rows.length - 1]
+      if (typeof value.more === 'string') {
+        if (last?.id === value.id) rows[rows.length - 1] = { ...last, text: (last.text ?? '') + value.more }
+        continue
+      }
+      if ((value.role === 'user' || value.role === 'assistant') && typeof value.mark === 'string') rows.push(value as ViewRow)
     }
   }
-  return kept
+  return rows
+}
+
+// A row's mark as another session's rows are matched to it, without reading their
+// text: a file of these, a line a row, is kept beside a session's rows.
+export const markHashOf = (mark: string) => hashOf(mark)
+export const marksOf = (rows: readonly ViewRow[]) => rows.map(row => markHashOf(row.mark)).join('\n')
+
+// The folder Claude Code names for a plugin's data, under its configuration folder:
+// `<name>-<marketplace>` for one installed from a marketplace (beneath
+// `plugins/cache/<marketplace>/`, whose configuration folder it takes),
+// `<name>-inline` for one loaded from a folder as it is. None where neither tells
+// the configuration folder.
+export function dataFolderOf(root: string, name: string, config: string | undefined): string | undefined {
+  const installed = /^(.*)[\\/]plugins[\\/]cache[\\/]([^\\/]+)[\\/]/.exec(root)
+  const base = installed?.[1] ?? config
+  if (base === undefined || base === '') return undefined
+  const folder = `${name}-${installed?.[2] ?? 'inline'}`.replace(/[^A-Za-z0-9_-]/g, '-')
+  return `${base.replace(/[\\/]+$/, '')}/plugins/data/${folder}`
 }
 
 // Each transcript message's stored row (its index in `known`), matched in order by
@@ -141,23 +217,6 @@ function alignRows(messages: readonly SessionMessage[], known: readonly ViewRow[
 export function rowsUpTo(rows: readonly ViewRow[], messages: readonly SessionMessage[]): ViewRow[] {
   const last = alignRows(messages, rows).reduce<number>((max, i) => (i === undefined ? max : Math.max(max, i)), -1)
   return last < 0 ? [...rows] : rows.slice(0, last + 1)
-}
-
-// A session's rows as the store keeps them, by size: characters of JSON.
-export type ViewSize = { id: string; size: number }
-
-// Which sessions' rows the store keeps once `id`'s are kept at `size`: the most
-// recently kept, up to `budget` characters in all, `id`'s last (`index`, oldest
-// first); `dropped` the sessions whose rows go, oldest first.
-export function viewsKept(index: readonly ViewSize[], id: string, size: number, budget = VIEWS_KEPT) {
-  const others = index.filter(view => view.id !== id)
-  let total = others.reduce((sum, view) => sum + view.size, size)
-  let cut = 0
-  while (cut < others.length && total > budget) {
-    total -= others[cut]?.size ?? 0
-    cut++
-  }
-  return { index: [...others.slice(cut), { id, size }], dropped: others.slice(0, cut).map(view => view.id) }
 }
 
 // Whether a user message with no stored row reads as one the person typed: not a
@@ -217,16 +276,14 @@ export const needsMessages = (known: readonly ViewRow[]) => known.length === 0 |
 type Source = { row: ViewRow | undefined; role: 'user' | 'assistant'; text: string }
 
 // The messages the view draws, oldest first: the rows kept as the session stored
-// them, each with its text, or the text of the message the conversation still holds
-// for it (a row kept without its text); `missing` the rows with neither, which a
-// compaction summarised away before their text was kept. For a session with no rows
-// kept, the conversation as it reads now.
-function sourcesOf(known: readonly ViewRow[], messages: readonly SessionMessage[]) {
+// them, each with its text. A row an earlier version kept without its text draws
+// while the conversation still holds it, as that version drew it. For a session
+// with no rows kept, the conversation as it reads now.
+function sourcesOf(known: readonly ViewRow[], messages: readonly SessionMessage[]): Source[] {
   if (known.length === 0) {
-    const sources: Source[] = messages
+    return messages
       .filter(m => m.text.trim() !== '' && (m.role === 'assistant' || looksTyped(m)))
       .map(m => ({ row: undefined, role: m.role, text: m.text }))
-    return { sources, missing: 0 }
   }
   const held = new Map<number, SessionMessage>()
   if (known.some(row => row.text === undefined)) {
@@ -236,27 +293,24 @@ function sourcesOf(known: readonly ViewRow[], messages: readonly SessionMessage[
     }
   }
   const sources: Source[] = []
-  let missing = 0
   for (const [i, row] of known.entries()) {
     const m = held.get(i)
     const text = row.text ?? (m === undefined ? undefined : row.typed === undefined ? m.text : m.text.slice(0, row.typed))
-    if (text === undefined || text.trim() === '') missing++
-    else sources.push({ row, role: row.role, text })
+    if (text !== undefined && text.trim() !== '') sources.push({ row, role: row.role, text })
   }
-  return { sources, missing }
+  return sources
 }
 
 // One section the view draws; `id` its row's, where one was kept.
 type Entry = { id: string | undefined; role: 'user' | 'assistant'; thread: Thread | undefined; text: string }
 
 // The conversation's sections, in order, where the person last placed them, kept
-// to the picked threads (all of them while none is picked); `missing` the messages
-// whose text is no longer kept.
+// to the picked threads (all of them while none is picked).
 export function viewEntries(inputs: ViewInputs, deps: ViewDeps) {
   const { list, merged, snapped, sent, moves, known, messages } = inputs
   const picked = list.filter(t => t.isSelected)
   const selected = new Set(picked.map(t => keyOf(t.name)))
-  const { sources, missing } = sourcesOf(known, messages)
+  const sources = sourcesOf(known, messages)
 
   const entries: Entry[] = []
   const keep = (id: string | undefined, role: Entry['role'], s: Section, resolve: (name: string) => Thread | undefined) => {
@@ -290,7 +344,7 @@ export function viewEntries(inputs: ViewInputs, deps: ViewDeps) {
     const at = movedRowOf(moves, row?.id, new Set([markOf(text)]), deps.stemOf)
     for (const s of sections) keep(row?.id, 'user', at === undefined ? s : deps.placeSection(s, at, moves, resolve, list, merged), resolve)
   }
-  return { entries, picked, missing }
+  return { entries, picked }
 }
 
 // How the pane draws: the surface's elements, a thread's tag in its colour, and
@@ -336,7 +390,7 @@ function drawEntry(draw: ViewDrawing, entry: Entry): RenderElement {
 // The pane's body: the picked threads' sections, oldest first, the newest at the bottom.
 export function drawView(draw: ViewDrawing, inputs: ViewInputs, deps: ViewDeps): RenderElement {
   const { Box, Text } = draw.ui
-  const { entries, picked, missing } = viewEntries(inputs, deps)
+  const { entries, picked } = viewEntries(inputs, deps)
   const shown = entries.slice(-SECTIONS_DRAWN)
   const hidden = entries.length - shown.length
   const names = picked.map(t => t.name).join(', ')
@@ -345,9 +399,6 @@ export function drawView(draw: ViewDrawing, inputs: ViewInputs, deps: ViewDeps):
     <Box flexDirection="column" rowGap={1}>
       {picked.length === 0 && <Text dimColor>All threads. Pick threads above the prompt to follow just those.</Text>}
       {hidden > 0 && <Text dimColor>{`${hidden} earlier sections not shown`}</Text>}
-      {hidden === 0 && missing > 0 && (
-        <Text dimColor>{missing === 1 ? '1 earlier message is no longer kept' : `${missing} earlier messages are no longer kept`}</Text>
-      )}
       {shown.length === 0 && <Text dimColor>{picked.length === 0 ? 'Nothing here yet.' : `Nothing in ${names} yet.`}</Text>}
       {shown.map(entry => drawEntry(draw, entry))}
     </Box>
