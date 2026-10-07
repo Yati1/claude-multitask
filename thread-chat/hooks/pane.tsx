@@ -8,6 +8,13 @@ import type { Section } from './parse'
 // messages and Claude's replies a section at a time, with no tool rows and no gaps
 // where the chat hides a row.
 //
+// It draws from the rows it kept as the session stored them (`session.append`),
+// each with its id and text: the transcript as the person sees it. A compaction
+// rewrites the conversation `$.session.messages()` reads (its summary in place of
+// what it replaced) but not the stored rows, so the view keeps what came before
+// it. That read only fills in rows kept without their text, and stands in for a
+// session the view kept no rows of.
+//
 // Here are its rules and its layout, as plain functions; register.tsx owns every
 // hook and every call on `$`. A plugin hooks an event once without a matcher, and
 // the engine follows `$` only into functions of the file that uses it.
@@ -31,15 +38,20 @@ export type ViewDeps = {
   stemOf: (id: string) => string
 }
 
-// Rows remembered by id; the newest are kept.
-const ROWS_KEPT = 1000
+// Characters a file of kept rows holds at most: under the 4 MiB a file read or
+// write takes, however many bytes each character comes to.
+const CHUNK_CHARS = 1_000_000
+// A long text is kept in pieces of this many characters, a line each, so one line
+// fits a file however its characters are escaped.
+const PIECE_CHARS = 100_000
 // Sections drawn at once; the newest are drawn.
 const SECTIONS_DRAWN = 200
 const MARK_LENGTH = 80
 // The marker beside the person's sections of no thread.
 const NO_THREAD_COLOR = '#8c8c8c'
 
-// Where a session's view rows are kept between runs of the app.
+// Where the store notes how a session's view rows are kept between runs of the app
+// (KeptView); an earlier version kept the rows themselves there.
 export const viewKey = (sessionId: string) => `view:${sessionId}`
 
 // A text's start with its spacing dropped: the same however a row's text blocks
@@ -51,32 +63,135 @@ function textBlocks(content: readonly { type: string; [field: string]: unknown }
 }
 
 // A stored row of the main conversation as the view knows it: a person's message
-// or a reply's text; none else.
+// or a reply's text, with the text the transcript shows; none else. A compaction's
+// summary is the engine's (door `compaction`), not the person's.
 export function viewRowOf(e: Args<'session.append'>, person: ReadonlySet<string>): ViewRow | undefined {
   if (e.agentId !== undefined) return undefined
   const blocks = textBlocks(e.message.content)
   const text = blocks.join('\n')
   if (text.trim() === '') return undefined
-  if (e.message.type === 'assistant') return { id: e.uuid, role: 'assistant', mark: markOf(text) }
+  if (e.message.type === 'assistant') return { id: e.uuid, role: 'assistant', mark: markOf(text), text }
   const isPerson =
     e.message.type === 'user' &&
     e.message.isMeta !== true &&
     person.has(e.origin.kind) &&
     (e.door === 'prompt' || e.door === 'delivery')
   if (!isPerson || isPluginFramed(text)) return undefined
-  // Notes for the model follow the prompt as typed, a block each.
+  // Notes for the model follow the prompt as typed, a block each; the transcript
+  // shows the prompt alone.
   const typed = blocks[0] ?? ''
   return blocks.length > 1
-    ? { id: e.uuid, role: 'user', mark: markOf(text), typed: typed.length }
-    : { id: e.uuid, role: 'user', mark: markOf(text) }
+    ? { id: e.uuid, role: 'user', mark: markOf(text), text: typed, typed: typed.length }
+    : { id: e.uuid, role: 'user', mark: markOf(text), text }
 }
 
-// The rows known once `row` is: the newest ROWS_KEPT.
-export const withViewRow = (all: ViewRow[], row: ViewRow) => [...all, row].slice(-ROWS_KEPT)
+// The rows known once `row` is: every one, one per id (a row stored again replaces
+// itself).
+export function withViewRow(all: ViewRow[], row: ViewRow): ViewRow[] {
+  const at = all.findIndex(known => known.id === row.id)
+  return at < 0 ? [...all, row] : all.map((known, i) => (i === at ? row : known))
+}
 
-// Each transcript message's stored row, matched in order by role and mark; none
-// for a message stored before the view kept rows, or not the person's or a reply.
-function alignRows(messages: readonly SessionMessage[], known: readonly ViewRow[]): (ViewRow | undefined)[] {
+// How the store notes a session's kept rows: a fingerprint of each of its files'
+// text, in order. The files are written before the note, and only those whose text
+// changed; the note's count is how many there are.
+export type KeptView = { chunks: string[] }
+
+export const isKeptView = (value: unknown): value is KeptView =>
+  typeof value === 'object' &&
+  value !== null &&
+  Array.isArray((value as { chunks?: unknown }).chunks) &&
+  (value as { chunks: unknown[] }).chunks.every(chunk => typeof chunk === 'string')
+
+// A 32-bit FNV-1a hash, in hex.
+function hashOf(text: string) {
+  let hash = 0x811c9dc5
+  for (let i = 0; i < text.length; i++) {
+    hash ^= text.charCodeAt(i)
+    hash = Math.imul(hash, 0x01000193)
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0')
+}
+
+// A file's text as the store notes it: its length and hash.
+export const fingerprintOf = (text: string) => `${text.length.toString(36)}.${hashOf(text)}`
+
+// A session's rows as files: a JSON line a row, its text's first piece with it, and
+// a line `{ id, more }` for each further piece of a long text; as many lines a file
+// as fit in `size` characters.
+export function chunksOf(rows: readonly ViewRow[], size = CHUNK_CHARS, piece = PIECE_CHARS): string[] {
+  const chunks: string[] = []
+  let lines: string[] = []
+  let length = 0
+  const put = (line: string) => {
+    if (lines.length > 0 && length + line.length + 1 > size) {
+      chunks.push(`${lines.join('\n')}\n`)
+      lines = []
+      length = 0
+    }
+    lines.push(line)
+    length += line.length + 1
+  }
+  for (const row of rows) {
+    const text = row.text
+    if (text === undefined || text.length <= piece) {
+      put(JSON.stringify(row))
+      continue
+    }
+    put(JSON.stringify({ ...row, text: text.slice(0, piece) }))
+    for (let at = piece; at < text.length; at += piece) put(JSON.stringify({ id: row.id, more: text.slice(at, at + piece) }))
+  }
+  if (lines.length > 0) chunks.push(`${lines.join('\n')}\n`)
+  return chunks
+}
+
+// The rows a session's files hold, in order (chunksOf). A line that does not read
+// as a row (a write cut short) is passed over.
+export function rowsOfChunks(chunks: readonly string[]): ViewRow[] {
+  const rows: ViewRow[] = []
+  for (const chunk of chunks) {
+    for (const line of chunk.split('\n')) {
+      if (line.trim() === '') continue
+      let value: Partial<ViewRow> & { more?: unknown }
+      try {
+        value = JSON.parse(line) as Partial<ViewRow> & { more?: unknown }
+      } catch {
+        continue
+      }
+      if (typeof value !== 'object' || value === null || typeof value.id !== 'string') continue
+      const last = rows[rows.length - 1]
+      if (typeof value.more === 'string') {
+        if (last?.id === value.id) rows[rows.length - 1] = { ...last, text: (last.text ?? '') + value.more }
+        continue
+      }
+      if ((value.role === 'user' || value.role === 'assistant') && typeof value.mark === 'string') rows.push(value as ViewRow)
+    }
+  }
+  return rows
+}
+
+// A row's mark as another session's rows are matched to it, without reading their
+// text: a file of these, a line a row, is kept beside a session's rows.
+export const markHashOf = (mark: string) => hashOf(mark)
+export const marksOf = (rows: readonly ViewRow[]) => rows.map(row => markHashOf(row.mark)).join('\n')
+
+// The folder Claude Code names for a plugin's data, under its configuration folder:
+// `<name>-<marketplace>` for one installed from a marketplace (beneath
+// `plugins/cache/<marketplace>/`, whose configuration folder it takes),
+// `<name>-inline` for one loaded from a folder as it is. None where neither tells
+// the configuration folder.
+export function dataFolderOf(root: string, name: string, config: string | undefined): string | undefined {
+  const installed = /^(.*)[\\/]plugins[\\/]cache[\\/]([^\\/]+)[\\/]/.exec(root)
+  const base = installed?.[1] ?? config
+  if (base === undefined || base === '') return undefined
+  const folder = `${name}-${installed?.[2] ?? 'inline'}`.replace(/[^A-Za-z0-9_-]/g, '-')
+  return `${base.replace(/[\\/]+$/, '')}/plugins/data/${folder}`
+}
+
+// Each transcript message's stored row (its index in `known`), matched in order by
+// role and mark; none for a message stored before the view kept rows, or not the
+// person's or a reply (a compaction's summary).
+function alignRows(messages: readonly SessionMessage[], known: readonly ViewRow[]): (number | undefined)[] {
   const byMark = new Map<string, number[]>()
   for (const [i, row] of known.entries()) {
     const at = `${row.role}|${row.mark}`
@@ -92,8 +207,16 @@ function alignRows(messages: readonly SessionMessage[], known: readonly ViewRow[
     const i = list?.shift()
     if (i === undefined) return undefined
     next = i + 1
-    return known[i]
+    return i
   })
+}
+
+// The rows a session rewound or forked from another takes up of that one's: up to
+// the last one its own transcript holds, as those after it were rewound away. All
+// of them where the transcript holds none (it may not be read yet).
+export function rowsUpTo(rows: readonly ViewRow[], messages: readonly SessionMessage[]): ViewRow[] {
+  const last = alignRows(messages, rows).reduce<number>((max, i) => (i === undefined ? max : Math.max(max, i)), -1)
+  return last < 0 ? [...rows] : rows.slice(0, last + 1)
 }
 
 // Whether a user message with no stored row reads as one the person typed: not a
@@ -130,7 +253,9 @@ function movedRowOf(moves: Links, id: string | undefined, marks: Set<string>, st
   return id
 }
 
-// What the view is drawn from, as read while drawing it.
+// What the view is drawn from, as read while drawing it. `messages` is the
+// conversation as `$.session.messages()` reads it, needed only while a kept row
+// lacks its text or none is kept (`needsMessages`); else it may be left empty.
 export type ViewInputs = {
   list: Thread[]
   merged: Links
@@ -141,7 +266,43 @@ export type ViewInputs = {
   messages: SessionMessage[]
 }
 
-type Entry = { role: 'user' | 'assistant'; thread: Thread | undefined; text: string }
+// Whether the view reads the conversation as `$.session.messages()` has it: for a
+// session it kept no rows of, or to fill in rows kept without their text.
+export const needsMessages = (known: readonly ViewRow[]) => known.length === 0 || known.some(row => row.text === undefined)
+
+// One message the view draws: its row where one was kept (its id: where its moves
+// and sends are kept, and where the transcript shows it), who wrote it, and the
+// text the transcript shows.
+type Source = { row: ViewRow | undefined; role: 'user' | 'assistant'; text: string }
+
+// The messages the view draws, oldest first: the rows kept as the session stored
+// them, each with its text. A row an earlier version kept without its text draws
+// while the conversation still holds it, as that version drew it. For a session
+// with no rows kept, the conversation as it reads now.
+function sourcesOf(known: readonly ViewRow[], messages: readonly SessionMessage[]): Source[] {
+  if (known.length === 0) {
+    return messages
+      .filter(m => m.text.trim() !== '' && (m.role === 'assistant' || looksTyped(m)))
+      .map(m => ({ row: undefined, role: m.role, text: m.text }))
+  }
+  const held = new Map<number, SessionMessage>()
+  if (known.some(row => row.text === undefined)) {
+    for (const [i, at] of alignRows(messages, known).entries()) {
+      const m = messages[i]
+      if (at !== undefined && m !== undefined) held.set(at, m)
+    }
+  }
+  const sources: Source[] = []
+  for (const [i, row] of known.entries()) {
+    const m = held.get(i)
+    const text = row.text ?? (m === undefined ? undefined : row.typed === undefined ? m.text : m.text.slice(0, row.typed))
+    if (text !== undefined && text.trim() !== '') sources.push({ row, role: row.role, text })
+  }
+  return sources
+}
+
+// One section the view draws; `id` its row's, where one was kept.
+type Entry = { id: string | undefined; role: 'user' | 'assistant'; thread: Thread | undefined; text: string }
 
 // The conversation's sections, in order, where the person last placed them, kept
 // to the picked threads (all of them while none is picked).
@@ -149,30 +310,28 @@ export function viewEntries(inputs: ViewInputs, deps: ViewDeps) {
   const { list, merged, snapped, sent, moves, known, messages } = inputs
   const picked = list.filter(t => t.isSelected)
   const selected = new Set(picked.map(t => keyOf(t.name)))
-  const rows = alignRows(messages, known)
+  const sources = sourcesOf(known, messages)
 
   const entries: Entry[] = []
-  const keep = (role: Entry['role'], s: Section, resolve: (name: string) => Thread | undefined) => {
+  const keep = (id: string | undefined, role: Entry['role'], s: Section, resolve: (name: string) => Thread | undefined) => {
     const thread = s.thread === null ? undefined : resolve(s.thread)
     if (selected.size > 0 && (thread === undefined || !selected.has(keyOf(thread.name)))) return
     // a heading that names no thread stays as typed
     const text = thread === undefined && s.thread !== null ? `# ${s.thread}\n${s.text}`.trim() : s.text
-    if (text !== '') entries.push({ role, thread, text })
+    if (text !== '') entries.push({ id, role, thread, text })
   }
 
-  for (const [i, m] of messages.entries()) {
-    const row = rows[i]
-    if (m.text.trim() === '') continue
-    if (m.role === 'assistant') {
+  for (const { row, role, text } of sources) {
+    if (role === 'assistant') {
       const resolve = (name: string) => deps.threadOf(name, list, merged)
-      const written = splitSections(m.text, name => resolve(name) !== undefined)
-      const marks = new Set([markOf(m.text), ...written.map(s => markOf(s.text))])
+      const written = splitSections(text, name => resolve(name) !== undefined)
+      const marks = new Set([markOf(text), ...written.map(s => markOf(s.text))])
       const at = movedRowOf(moves, row?.id, marks, deps.stemOf)
-      for (const s of written) keep('assistant', at === undefined ? s : deps.placeSection(s, at, moves, resolve, list, merged), resolve)
+      for (const s of written) {
+        keep(row?.id, 'assistant', at === undefined ? s : deps.placeSection(s, at, moves, resolve, list, merged), resolve)
+      }
       continue
     }
-    if (row === undefined && !looksTyped(m)) continue
-    const text = row?.typed === undefined ? m.text : m.text.slice(0, row.typed)
     const resolve = (name: string) => deps.personThreadOf(name, list, { ...snapped, ...merged })
     const typed = deps.personSectionsOf(text, list, snapped, merged)
     // A message with no heading may have gone to the one thread picked as it was sent.
@@ -183,7 +342,7 @@ export function viewEntries(inputs: ViewInputs, deps: ViewDeps) {
     const sentThread = sentKey === undefined ? undefined : deps.threadOf(sentKey, list, merged)
     const sections = sentThread === undefined ? typed : [{ thread: sentThread.name, text }]
     const at = movedRowOf(moves, row?.id, new Set([markOf(text)]), deps.stemOf)
-    for (const s of sections) keep('user', at === undefined ? s : deps.placeSection(s, at, moves, resolve, list, merged), resolve)
+    for (const s of sections) keep(row?.id, 'user', at === undefined ? s : deps.placeSection(s, at, moves, resolve, list, merged), resolve)
   }
   return { entries, picked }
 }

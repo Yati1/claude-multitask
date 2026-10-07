@@ -1,14 +1,59 @@
 import type { On, SessionMessage } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 
+import type { ViewRow } from '../types'
+import {
+  chunksOf,
+  dataFolderOf,
+  fingerprintOf,
+  isKeptView,
+  markOf,
+  marksOf,
+  rowsOfChunks,
+  rowsUpTo,
+  withViewRow,
+} from '../hooks/pane'
+
 type Block = { type: string; [field: string]: unknown }
 
+// Where the plugin keeps sessions' view rows under the test's configuration folder:
+// the test loads it from its folder, as it is.
+const VIEWS = '/config/plugins/data/thread-chat-inline/views'
+
 // The test stands in for the engine beneath the plugin, keeping the rows stored
-// as the transcript `$.session.messages()` reads.
-function engine(on: On) {
+// as the conversation `$.session.messages()` reads (`transcript`, which a test may
+// rewrite as a compaction does), the mod store (`kept`, seeded with `store`), and
+// the files it reads and writes (`files`, seeded with `seed`; `writes` the paths
+// written, in order).
+function engine(on: On, store: Record<string, unknown> = {}, seed: Record<string, string> = {}) {
   const opened: string[] = []
   const transcript: SessionMessage[] = []
-  mock.store(on, {})
+  const kept: Record<string, unknown> = { ...store }
+  const files: Record<string, string> = { ...seed }
+  const writes: string[] = []
+  mock.env(on, { CLAUDE_CONFIG_DIR: '/config' })
+  // the engine hands a path on resolved (on Windows, `C:\config\...`)
+  const pathOf = (path: string) => path.replace(/\\/g, '/').replace(/^[A-Za-z]:/, '')
+  on('fs.read', ($, e) => {
+    const text = files[pathOf(e.path)]
+    if (text === undefined) throw new Error(`ENOENT: ${e.path}`)
+    return { value: text }
+  })
+  on('fs.write', ($, e) => {
+    files[pathOf(e.path)] = e.text
+    writes.push(pathOf(e.path))
+    return { value: undefined }
+  })
+  on('store.get', ($, e) => ({ value: kept[e.key] }))
+  on('store.set', ($, e) => {
+    kept[e.key] = JSON.parse(JSON.stringify(e.value)) as unknown
+    return { value: undefined }
+  })
+  on('store.delete', ($, e) => {
+    delete kept[e.key]
+    return { value: undefined }
+  })
+  on('store.keys', () => ({ value: Object.keys(kept) }))
   on('session.id', () => ({ value: 'session-1' }))
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('prompt.submit', ($, e) => ({ text: e.text }))
@@ -41,7 +86,28 @@ function engine(on: On) {
     }
     return next(e)
   })
-  return opened
+  return { opened, transcript, kept, files, writes }
+}
+
+// The rows a session's files hold, as the store notes them.
+function rowsIn(kept: Record<string, unknown>, files: Record<string, string>, id: string): ViewRow[] {
+  const note = kept[`view:${id}`]
+  if (!isKeptView(note)) throw new Error(`no note of ${id}'s rows: ${JSON.stringify(note)}`)
+  return rowsOfChunks(note.chunks.map((print, i) => {
+    const text = files[`${VIEWS}/${id}/${i}.jsonl`] ?? ''
+    expect(fingerprintOf(text)).toBe(print)
+    return text
+  }))
+}
+
+// A session's rows as the plugin keeps them: its files, and the store's note of them.
+function keptAs(id: string, rows: ViewRow[]) {
+  const chunks = chunksOf(rows)
+  const files = Object.fromEntries(chunks.map((text, i) => [`${VIEWS}/${id}/${i}.jsonl`, text]))
+  return {
+    note: { chunks: chunks.map(fingerprintOf) },
+    files: { ...files, [`${VIEWS}/${id}/marks.txt`]: marksOf(rows) },
+  }
 }
 
 const say = (text: string) => ({ text, origin: { kind: 'composer' as const }, wait: false })
@@ -239,7 +305,7 @@ test('a long section draws as markdown in pieces a Markdown element takes', asyn
 })
 
 test('/thread-view and the band button open the view', async ($, on) => {
-  const opened = engine(on)
+  const { opened } = engine(on)
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
   const ran = await $.command.run({ command: 'thread-view', args: '', origin: { kind: 'composer' }, presentation: {} as never })
   expect(ran.text).toBe('Thread view opened.')
@@ -258,4 +324,203 @@ test('/thread-view and the band button open the view', async ($, on) => {
     await band.unmount()
   }
   expect(opened).toEqual(['thread-view', 'thread-view', 'thread-view'])
+})
+
+// A compaction's summary, as the engine stores it and the conversation then reads it.
+const SUMMARY = 'This session is being continued from a previous conversation. Summary: hello, and fast?'
+
+const DESIGN = { name: 'design', color: '#4fa3e0', isSelected: false, createdBy: 'user' } as const
+
+test('the view keeps what a compaction summarised away, and never shows the summary', async ($, on) => {
+  const { transcript, kept, files } = engine(on)
+  await $.prompt.submit(say('# design\nhello'))
+  const store = (uuid: string, door: 'prompt' | 'response' | 'compaction', text: string) =>
+    $.session
+      .append({
+        message:
+          door === 'response'
+            ? { type: 'assistant', role: 'assistant', content: [{ type: 'text', text }] }
+            : { type: 'user', role: 'user', content: [{ type: 'text', text }] },
+        door,
+        origin: door === 'prompt' ? { kind: 'composer' } : door === 'response' ? model : { kind: 'engine' },
+        uuid,
+      })
+      .catch(() => undefined)
+  await store('p1', 'prompt', '# design\nhello')
+  await store('a1', 'response', 'on it\n# design\nuse a queue')
+  await $.prompt.submit(say('# perf\nfast?'))
+  await store('p2', 'prompt', '# perf\nfast?')
+  await store('a2', 'response', '# perf\nit is fine')
+  // the compaction stores its summary as a row of its own; a row stored again draws once
+  await store('s1', 'compaction', SUMMARY)
+  await store('a2', 'response', '# perf\nit is fine')
+  // the conversation then reads as the summary and the rows it kept
+  transcript.splice(
+    0,
+    transcript.length,
+    { role: 'user', text: SUMMARY, toolUses: [] },
+    { role: 'user', text: '# perf\nfast?', toolUses: [] },
+    { role: 'assistant', text: '# perf\nit is fine', toolUses: [] },
+  )
+
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const pane = await $.ui.mount({ plugin: 'thread-chat', surface, ...PANE })
+    expect(await sectionsOf(pane)).toEqual(['you: hello', 'Claude: on it', 'Claude: use a queue', 'you: fast?', 'Claude: it is fine'])
+    expect(await pane.findAll({ text: /continued from a previous/ })).toEqual([])
+    expect(await pane.find({ type: 'Text', text: /no longer kept/ })).toBeUndefined()
+    await pane.unmount()
+  }
+
+  // every row is kept with its text as the turn ends, for the session's next run: in
+  // files of the session's own, the store noting them
+  await $.turn.complete({ answer: '', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })
+  expect(rowsIn(kept, files, 'session-1').map(row => `${row.id}: ${row.text ?? ''}`)).toEqual([
+    'p1: # design\nhello',
+    'a1: on it\n# design\nuse a queue',
+    'p2: # perf\nfast?',
+    'a2: # perf\nit is fine',
+  ])
+})
+
+test('a restarted session draws every message it kept, from its files', async ($, on) => {
+  const rows = Array.from({ length: 1200 }, (_, i): ViewRow => {
+    const text = `# design\nmessage ${i}`
+    return { id: `r${i}`, role: i % 2 === 0 ? 'user' : 'assistant', mark: markOf(text), text }
+  })
+  const { note, files } = keptAs('session-1', rows)
+  engine(on, { 'session:session-1': { threads: [DESIGN], aliases: {}, snaps: {} }, 'view:session-1': note }, files)
+  // the conversation, compacted, holds none of them
+  await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
+
+  const pane = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...PANE })
+  // all of them are there; the pane draws the newest 200 sections at once
+  expect((await pane.find({ type: 'Text', text: /earlier sections not shown/ }))?.text).toBe('1000 earlier sections not shown')
+  const shown = await sectionsOf(pane)
+  expect([shown.length, shown[0], shown[shown.length - 1]]).toEqual([200, 'you: message 1000', 'Claude: message 1199'])
+})
+
+test('a restarted session draws the rows an earlier version kept; those without text draw while the conversation holds them', async ($, on) => {
+  const { transcript } = engine(on, {
+    'session:session-1': { threads: [DESIGN], aliases: {}, snaps: {} },
+    'view:session-1': [
+      // kept by an earlier version, without text: one the compaction summarised away
+      // (which that version did not draw either), one the conversation still holds,
+      // and one with a note for the model beside it
+      { id: 'p0', role: 'user', mark: markOf('# design\nlong ago') },
+      { id: 'a0', role: 'assistant', mark: markOf('# design\nuse a queue') },
+      { id: 'p1', role: 'user', mark: markOf('and?\nThis message belongs to the thread "design".'), typed: 4 },
+      // kept with its text
+      { id: 'a1', role: 'assistant', mark: markOf('# design\nnext step'), text: '# design\nnext step' },
+    ],
+  })
+  transcript.push(
+    { role: 'user', text: SUMMARY, toolUses: [] },
+    { role: 'assistant', text: '# design\nuse a queue', toolUses: [] },
+    { role: 'user', text: 'and?\nThis message belongs to the thread "design".', toolUses: [] },
+  )
+  await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
+
+  const pane = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...PANE })
+  expect(await sectionsOf(pane)).toEqual(['Claude: use a queue', 'you: and?', 'Claude: next step'])
+  expect(await pane.findAll({ text: /continued from a previous/ })).toEqual([])
+  expect(await pane.find({ type: 'Text', text: /no longer kept/ })).toBeUndefined()
+})
+
+for (const form of ['files', 'the store, by an earlier version'] as const) {
+  test(`a rewound session draws the rows of the session it came from up to where it was rewound (kept in ${form})`, async ($, on) => {
+    const said: ViewRow[] = [
+      { id: 'p1', role: 'user', text: '# design\nwhy is the band two rows high?' },
+      { id: 'a1', role: 'assistant', text: '# design\nIt wraps because both mods share one row.' },
+      { id: 'p2', role: 'user', text: '# design\nhow long do the tests take?' },
+      // rewound away: the new session holds the rows before these
+      { id: 'a2', role: 'assistant', text: '# design\nAbout five seconds in all.' },
+      { id: 'p3', role: 'user', text: '# design\nand the store?' },
+    ].map(row => ({ ...row, role: row.role as ViewRow['role'], mark: markOf(row.text) }))
+    const old = keptAs('old', said)
+    const { transcript, kept, files } = engine(
+      on,
+      { 'session:old': { threads: [DESIGN], aliases: {}, snaps: {} }, 'view:old': form === 'files' ? old.note : said },
+      form === 'files' ? old.files : {},
+    )
+    transcript.push(...said.slice(0, 3).map(row => ({ role: row.role, text: row.text ?? '', toolUses: [] })))
+    await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
+
+    const pane = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...PANE })
+    expect(await sectionsOf(pane)).toEqual([
+      'you: why is the band two rows high?',
+      'Claude: It wraps because both mods share one row.',
+      'you: how long do the tests take?',
+    ])
+    // kept as the new session's own at once
+    expect(rowsIn(kept, files, 'session-1').map(row => row.id)).toEqual(['p1', 'a1', 'p2'])
+  })
+}
+
+test('every message is kept with its text, however long, writing only the files that changed', async ($, on) => {
+  // an earlier version kept the session's rows in the store, without text
+  const { kept, files, writes } = engine(on, { 'view:session-1': [{ id: 'p0', role: 'user', mark: markOf('# design\nlong ago') }] })
+  await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
+  const reply = (uuid: string, text: string) =>
+    $.session
+      .append({ message: { type: 'assistant', role: 'assistant', content: [{ type: 'text', text }] }, door: 'response', origin: model, uuid })
+      .catch(() => undefined)
+  const done = () => $.turn.complete({ answer: '', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })
+  const huge = 'y'.repeat(2_500_000)
+  await reply('a1', huge)
+  await reply('a2', 'short')
+  await done()
+
+  // the rows move from the store to files, none over what one read or write takes
+  const rows = rowsIn(kept, files, 'session-1')
+  expect(rows.map(row => row.id)).toEqual(['p0', 'a1', 'a2'])
+  expect(rows[1]?.text === huge).toBe(true)
+  const last = (kept['view:session-1'] as { chunks: string[] }).chunks.length - 1
+  expect(last >= 2).toBe(true)
+  const sizes = Object.entries(files).flatMap(([path, text]) => (path.endsWith('.jsonl') ? [text.length] : []))
+  expect(sizes.every(size => size <= 1_000_000)).toBe(true)
+  // with their marks beside them, by which a rewound session finds them
+  expect(files[`${VIEWS}/session-1/marks.txt`]).toBe(marksOf(rows))
+
+  // the next turn writes the file its new row went into, and no other
+  writes.length = 0
+  await reply('a3', 'another')
+  await done()
+  expect(writes).toEqual([`${VIEWS}/session-1/${last}.jsonl`, `${VIEWS}/session-1/marks.txt`])
+  expect(rowsIn(kept, files, 'session-1').map(row => row.id)).toEqual(['p0', 'a1', 'a2', 'a3'])
+  // and a turn with nothing new writes nothing
+  writes.length = 0
+  await done()
+  expect(writes).toEqual([])
+})
+
+test('rows are kept one per id, every one, and read back from their files as written', async () => {
+  const row = (id: string, text: string): ViewRow => ({ id, role: 'assistant', mark: markOf(text), text })
+  const rows = [row('a', '12345'), { ...row('b', '67890'), role: 'user' as const, typed: 3 }, row('c', 'abcde')]
+  // a row stored again takes its own place, not another
+  expect(withViewRow(rows, row('b', 'again')).map(known => `${known.id}: ${known.text ?? ''}`)).toEqual(['a: 12345', 'b: again', 'c: abcde'])
+  // however many there are, none goes
+  let many: ViewRow[] = []
+  for (let i = 0; i < 1500; i++) many = withViewRow(many, row(`r${i}`, `text ${i}`))
+  expect(many.length).toBe(1500)
+
+  // files of at most `size` characters; a long text in pieces of `piece`, cut even
+  // inside a character a pair of code units make
+  const long = row('d', `${'x'.repeat(26)}\n"quoted"${'\u{1F600}'.repeat(5)}`)
+  const all: ViewRow[] = [...rows, long, { id: 'e', role: 'user', mark: 'e' }]
+  const chunks = chunksOf(all, 200, 10)
+  expect(chunks.length > 1).toBe(true)
+  expect(chunks.every(chunk => chunk.length <= 200)).toBe(true)
+  expect(rowsOfChunks(chunks)).toEqual(all)
+  // a line cut short is passed over
+  expect(rowsOfChunks([...chunks, '{"id":"f","role":"assi'])).toEqual(all)
+
+  // the plugin's data folder: Claude Code's name for it, beside its other plugins'
+  expect(dataFolderOf('C:\\Users\\me\\.claude\\plugins\\cache\\claude-multitask\\thread-chat\\0.1.0', 'thread-chat', '/elsewhere')).toBe(
+    'C:\\Users\\me\\.claude/plugins/data/thread-chat-claude-multitask',
+  )
+  expect(dataFolderOf('/home/me/src/thread-chat', 'thread-chat', '/home/me/.claude/')).toBe('/home/me/.claude/plugins/data/thread-chat-inline')
+  expect(dataFolderOf('/home/me/src/thread-chat', 'thread-chat', undefined)).toBeUndefined()
+
+  // a conversation that holds none of the rows (not read yet) cuts none
+  expect(rowsUpTo(rows, [])).toEqual(rows)
 })

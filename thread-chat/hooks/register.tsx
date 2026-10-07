@@ -18,10 +18,19 @@ import {
 } from './parse'
 import type { RunOn, Section } from './parse'
 import {
+  chunksOf,
+  dataFolderOf,
   drawView,
+  fingerprintOf,
+  isKeptView,
+  markHashOf,
   markOf,
+  marksOf,
+  needsMessages,
   noteDrawnReply,
   pickedOf,
+  rowsOfChunks,
+  rowsUpTo,
   viewKey,
   viewRowOf,
   withViewRow,
@@ -201,18 +210,30 @@ const MIN_PARENT_MARK = 12
 // The session this one was rewound or forked from. Claude Code gives such a session a
 // new id and copies the rows it keeps from the other, so it is found as the saved
 // session whose thread view knows the most of this one's messages, by a clear margin.
+// Its rows' marks are read as hashes: from the file kept beside its rows, or from
+// the rows an earlier version kept in the store.
 async function parentOf($: EngineInterface, id: string): Promise<string | undefined> {
   const mine = new Set(
-    (await $.session.messages()).map(m => markOf(m.text)).filter(mark => mark.length >= MIN_PARENT_MARK),
+    (await $.session.messages())
+      .map(m => markOf(m.text))
+      .filter(mark => mark.length >= MIN_PARENT_MARK)
+      .map(markHashOf),
   )
   if (mine.size === 0) return undefined
   const scores: { id: string; score: number }[] = []
   for (const key of await $.store.keys()) {
     if (!key.startsWith('view:') || key === viewKey(id)) continue
-    const rows = await $.store.get(key)
-    if (!Array.isArray(rows)) continue
-    const known = new Set((rows as ViewRow[]).map(row => row.mark).filter(mark => mine.has(mark)))
-    if (known.size > 0) scores.push({ id: key.slice('view:'.length), score: known.size })
+    const other = key.slice('view:'.length)
+    const kept = await $.store.get(key)
+    let marks: string[] = []
+    if (Array.isArray(kept)) marks = (kept as ViewRow[]).map(row => markHashOf(row.mark))
+    else if (isKeptView(kept)) {
+      const folder = await rowsFolder($, other).catch(() => undefined)
+      const text = folder === undefined ? undefined : await $.fs.read(`${folder}/${MARKS_FILE}`).catch(() => undefined)
+      marks = text === undefined ? [] : text.split('\n')
+    }
+    const known = new Set(marks.filter(mark => mine.has(mark)))
+    if (known.size > 0) scores.push({ id: other, score: known.size })
   }
   scores.sort((a, b) => b.score - a.score)
   const [best, next] = scores
@@ -942,12 +963,18 @@ async function openView($: EngineInterface) {
 }
 
 // What the thread view is drawn from; read while drawing, so a change draws it again.
+// The rows it kept are the transcript as stored; the conversation as the engine
+// holds it (a compaction's summary in place of what came before) is read only to
+// fill in rows kept without their text, or for a session it kept no rows of.
 async function viewInputs($: EngineInterface): Promise<ViewInputs> {
+  const known = await read($, viewRows)
   let messages: ViewInputs['messages'] = []
-  try {
-    messages = await $.session.messages()
-  } catch {
-    messages = []
+  if (needsMessages(known)) {
+    try {
+      messages = await $.session.messages()
+    } catch {
+      messages = []
+    }
   }
   return {
     list: await read($, threads),
@@ -955,18 +982,75 @@ async function viewInputs($: EngineInterface): Promise<ViewInputs> {
     snapped: await read($, snaps),
     sent: await read($, sentTo),
     moves: await read($, moved),
-    known: await read($, viewRows),
+    known,
     messages,
+  }
+}
+
+// The file beside a session's rows that holds their marks' hashes, a line a row.
+const MARKS_FILE = 'marks.txt'
+
+// Where a session's view rows are kept between runs: files of their own, all of
+// every message's text, as the store holds 4 MiB in all; the store notes only how
+// many there are (KeptView). They are in the plugin's data folder under the Claude
+// Code configuration folder, a folder a session. None where the configuration
+// folder is not known.
+async function rowsFolder($: EngineInterface, id: string): Promise<string | undefined> {
+  const home = (await $.env.get('USERPROFILE')) || (await $.env.get('HOME'))
+  const config = (await $.env.get('CLAUDE_CONFIG_DIR')) || (home ? `${home}/.claude` : undefined)
+  const data = dataFolderOf($.plugin.root, $.plugin.name, config)
+  return data === undefined ? undefined : `${data}/views/${id.replace(/[^A-Za-z0-9_-]/g, '_')}`
+}
+
+// The rows kept of a session: in its files, or in the store, as an earlier version
+// kept them; none where none were kept. A file that cannot be read is passed over.
+async function keptRows($: EngineInterface, id: string): Promise<ViewRow[]> {
+  const kept = await $.store.get(viewKey(id))
+  if (Array.isArray(kept)) return kept as ViewRow[]
+  if (!isKeptView(kept) || kept.chunks.length === 0) return []
+  const folder = await rowsFolder($, id)
+  if (folder === undefined) return []
+  const chunks: string[] = []
+  for (let i = 0; i < kept.chunks.length; i++) {
+    const text = await $.fs.read(`${folder}/${i}.jsonl`).catch(() => undefined)
+    if (text !== undefined) chunks.push(text)
+  }
+  return rowsOfChunks(chunks)
+}
+
+// Keeps a session's view rows for its next run, every one with its text: the files
+// whose text changed are written, then the hashes of the rows' marks, then the
+// store's note of the files. Rows an earlier version kept in the store move to
+// files. Best effort: the view this run draws keeps its rows, and the next turn
+// tries again.
+async function keepViewRows($: EngineInterface, id: string, rows: ViewRow[]) {
+  try {
+    const folder = await rowsFolder($, id)
+    if (folder === undefined) return
+    const chunks = chunksOf(rows)
+    const fingerprints = chunks.map(fingerprintOf)
+    const kept = await $.store.get(viewKey(id))
+    const before = isKeptView(kept) ? kept.chunks : []
+    if (fingerprints.length === before.length && fingerprints.every((print, i) => print === before[i])) return
+    for (const [i, text] of chunks.entries()) {
+      if (fingerprints[i] !== before[i]) await $.fs.write(`${folder}/${i}.jsonl`, text)
+    }
+    // a file past the rows' end is left empty, as no file is deleted
+    for (let i = chunks.length; i < before.length; i++) await $.fs.write(`${folder}/${i}.jsonl`, '')
+    await $.fs.write(`${folder}/${MARKS_FILE}`, marksOf(rows))
+    await $.store.set(viewKey(id), { chunks: fingerprints })
+  } catch {
+    // nothing more is kept this time
   }
 }
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: VIEW, description: 'Show the picked threads alone, without tool rows, in a pane' })
-    // A restarted or resumed session takes up the rows its thread view knew by id.
+    // A restarted or resumed session takes up the rows its thread view kept.
     if ((await read($, viewRows)).length === 0) {
-      const saved = await $.store.get(viewKey(await $.session.id()))
-      if (Array.isArray(saved) && saved.length > 0) await update($, viewRows, () => saved as ViewRow[])
+      const kept = await keptRows($, await $.session.id()).catch(() => [])
+      if (kept.length > 0) await update($, viewRows, () => kept)
     }
     await $.tool.register({
       name: 'create_thread',
@@ -996,7 +1080,8 @@ export const register: Register = on => {
 
     // A restarted, resumed or reloaded session takes up the threads it kept, joined to
     // any it holds; a rewound or forked one, which starts under a new id with no record
-    // of its own, those of the session it came from, and that session's view rows.
+    // of its own, those of the session it came from, and that session's view rows up
+    // to where it was rewound.
     const id = await $.session.id()
     let saved = (await $.store.get(storeKey(id))) as Partial<Saved> | undefined
     if (saved === undefined) {
@@ -1004,10 +1089,11 @@ export const register: Register = on => {
       const parent = await parentOf($, id).catch(() => undefined)
       if (parent !== undefined) {
         saved = (await $.store.get(storeKey(parent))) as Partial<Saved> | undefined
-        const rows = await $.store.get(viewKey(parent))
-        if ((await read($, viewRows)).length === 0 && Array.isArray(rows)) {
-          await update($, viewRows, () => rows as ViewRow[])
-          await $.store.set(viewKey(id), rows)
+        const rows = (await read($, viewRows)).length === 0 ? await keptRows($, parent).catch(() => []) : []
+        if (rows.length > 0) {
+          const kept = rowsUpTo(rows, await $.session.messages().catch(() => []))
+          await update($, viewRows, () => kept)
+          await keepViewRows($, id, kept)
         }
       }
     }
@@ -1077,13 +1163,16 @@ export const register: Register = on => {
       const key = sent >= 0 ? unsent.splice(sent, 1)[0]?.key : undefined
       if (key !== undefined) await update($, sentTo, all => ({ ...all, [e.uuid]: key }))
     }
+    // The thread view learns a person's message or a reply's text, as stored, with
+    // its text: its record of the transcript, which no compaction rewrites. It draws
+    // again with it. A row whose append was refused is not kept; one whose store
+    // failed is noted all the same (the screen may show it already).
+    let stored: Awaited<ReturnType<typeof next>> | undefined
     try {
-      return await next(e)
+      stored = await next(e)
+      return stored
     } finally {
-      // The thread view learns a person's message or a reply's text once it is
-      // stored, and draws again with it. A row that failed to store is noted all the
-      // same: the view matches rows to the transcript, where it is not.
-      const row = viewRowOf(e, PERSON)
+      const row = stored?.deny === undefined ? viewRowOf(stored === undefined ? e : { ...e, message: stored.message }, PERSON) : undefined
       if (row !== undefined) await update($, viewRows, all => withViewRow(all, row))
     }
   })
@@ -1094,7 +1183,7 @@ export const register: Register = on => {
     if (e.agentId === undefined) {
       if ((await read($, threads)).length > 0) await save($)
       const rows = await read($, viewRows)
-      if (rows.length > 0) await $.store.set(viewKey(await $.session.id()), rows)
+      if (rows.length > 0) await keepViewRows($, await $.session.id(), rows)
     }
     return result
   })

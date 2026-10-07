@@ -13,7 +13,12 @@ export type ViewRow = {
   role: 'user' | 'assistant'
   // the text's start, whitespace dropped: how a transcript row is matched to it
   mark: string
+  // the text as the transcript shows it (a person's message as typed, without the
+  // notes for the model beside it), so the view does not depend on the conversation
+  // a compaction rewrites. Absent on rows kept by an earlier version.
+  text?: string
   // the length of the text as typed, where notes for the model follow it in the row
+  // (rows of an earlier version, which kept no text)
   typed?: number
 }
 
@@ -55,8 +60,8 @@ declare module 'claude-code' {
       // what the model was last told of the threads; null until it is told how they
       // work (and again after a compaction)
       briefed: Brief | null
-      // the person's messages and reply texts as stored, in order, so the thread
-      // view knows each transcript row's id
+      // the person's messages and reply texts as stored, in order: what the thread
+      // view draws, each by its transcript row's id
       viewRows: ViewRow[]
     }
   }
