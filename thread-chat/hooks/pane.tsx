@@ -19,6 +19,7 @@ type Links = Record<string, string>
 export type ViewDeps = {
   threadOf: (name: string, list: Thread[], links: Links) => Thread | undefined
   personThreadOf: (name: string, list: Thread[], links: Links) => Thread | undefined
+  personSectionsOf: (text: string, list: Thread[], snapped: Links, merged: Links) => Section[]
   placeSection: (
     s: Section,
     row: string,
@@ -173,7 +174,7 @@ export function viewEntries(inputs: ViewInputs, deps: ViewDeps) {
     if (row === undefined && !looksTyped(m)) continue
     const text = row?.typed === undefined ? m.text : m.text.slice(0, row.typed)
     const resolve = (name: string) => deps.personThreadOf(name, list, { ...snapped, ...merged })
-    const typed = splitSections(text, () => true)
+    const typed = deps.personSectionsOf(text, list, snapped, merged)
     // A message with no heading may have gone to the one thread picked as it was sent.
     const sentKey =
       row === undefined || typed.some(s => s.thread !== null)
