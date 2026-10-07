@@ -1010,13 +1010,23 @@ test('the "none" pill has no dot and a dashed outline; off the desktop it is dim
   expect((await terminal.find({ key: 'pick:perf' }))?.props.dimColor).toBeUndefined()
 })
 
-// A desktop pill's pictures, at rest and lit, from the keyed Box that holds it.
+// A desktop pill's pictures, at rest and lit, from the keyed Box that holds it. Lit
+// on hover: revealed in place over the picture at rest, in the flow of a Box out of
+// the flow and always shown; an out-of-flow Box the pointer reveals, the desktop
+// lifts into a card away from the pill, as it does a tip.
 function pillPictures(tree: unknown, key: string) {
   const box = pathTo(tree, n => n.props?.key === key)?.at(-1)
-  const [rest, lit] = (box?.children ?? []) as Drawn[]
+  const [rest, over] = (box?.children ?? []) as Drawn[]
+  const lit = over?.children?.[0] as Drawn | undefined
   const hot = lit?.children?.[0] as Drawn | undefined
   return {
-    isLitOnHover: lit?.props?.display === 'none' && lit?.hover?.display === 'flex' && lit?.props?.position === 'absolute',
+    isLitOnHover:
+      over?.props?.position === 'absolute' &&
+      over?.props?.display === undefined &&
+      over?.hover === undefined &&
+      lit?.props?.display === 'none' &&
+      lit?.hover?.display === 'flex' &&
+      lit?.props?.position === undefined,
     rest: rest?.props,
     hot: hot?.type === 'Svg' ? hot.props : undefined,
   }
@@ -1188,14 +1198,20 @@ test('the band keeps one row with 12 threads beside another mod, and nothing the
       expect(wrapping.every(n => elementsOf(n).every(m => !isOther(m) && !controls.some(c => c?.includes(m))))).toBe(true)
     }
 
-    // every Box the pointer reveals is out of the flow, so showing it moves nothing:
-    // on the desktop the two tips, and each pill's lit picture over it
+    // every Box the pointer reveals is out of the flow, or in a Box that is, so showing
+    // it moves nothing: on the desktop the two tips, cards the desktop lifts, and each
+    // pill's lit picture, revealed in place over it and never lifted as a card
     const reveals = all.filter(n => n.hover?.display === 'flex')
-    expect(reveals.filter(n => n.props?.position !== 'absolute')).toEqual([])
+    const isPlaced = (n: Drawn) => n.props?.position === 'absolute'
+    expect(reveals.filter(n => !pathTo(tree, m => m === n)?.some(isPlaced))).toEqual([])
     if (surface === 'desktop') {
       const picturesShown = (n: Drawn) => (n.children ?? []).flatMap(restingPictures).length
-      expect(reveals.filter(n => picturesShown(n) === 0)).toHaveLength(2)
-      expect(reveals.filter(n => picturesShown(n) === 1)).toHaveLength(12)
+      const tips = reveals.filter(n => picturesShown(n) === 0)
+      const lit = reveals.filter(n => picturesShown(n) === 1)
+      expect(tips).toHaveLength(2)
+      expect(tips.every(isPlaced)).toBe(true)
+      expect(lit).toHaveLength(12)
+      expect(lit.filter(isPlaced)).toEqual([])
     }
     await band.unmount()
   }
