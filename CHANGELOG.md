@@ -31,5 +31,6 @@ Notable changes to the thread-chat and multitask mods. The format is based on [K
 - Fixed issue where multitask's voice kept its old role when Multitask was switched mid-session.
 - Fixed issue where multitask's thoughts were refused at start in auto mode.
 - Fixed issue where a second interrupt to a multitask thought did not cut its current work.
+- Fixed issue where messages to a busy or interrupted multitask thought were silently lost.
 - Fixed issue where multitask left stray chat rows when the voice stayed quiet or a thought finished.
 - Fixed issue where hidden background agents could start multitask thoughts or thread-chat threads.
