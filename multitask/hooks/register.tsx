@@ -37,6 +37,7 @@ const inbox = atom({ plugin: 'multitask', key: 'inbox' } as const, [])
 const isMainBusy = atom({ plugin: 'multitask', key: 'isMainBusy' } as const, false)
 const toldVoice = atom({ plugin: 'multitask', key: 'toldVoice' } as const, false)
 const expanded = atom({ plugin: 'multitask', key: 'expanded' } as const, [])
+const openReports = atom({ plugin: 'multitask', key: 'openReports' } as const, [])
 const heard = atom({ plugin: 'multitask', key: 'heard' } as const, {})
 
 const PANE = 'multitask-thoughts'
@@ -221,6 +222,11 @@ async function patchThought($: EngineInterface, id: string, fn: (t: Thought) => 
 // thought's one line becomes its whole card, a running card shows its whole task.
 async function toggleExpanded($: EngineInterface, id: string) {
   await update($, expanded, ids => (ids.includes(id) ? ids.filter(one => one !== id) : [...ids, id]))
+}
+
+// Opens a thought's last report in the Thoughts pane to read whole, or folds it to its first line.
+async function toggleReport($: EngineInterface, id: string) {
+  await update($, openReports, ids => (ids.includes(id) ? ids.filter(one => one !== id) : [...ids, id]))
 }
 
 // A task's first line, which a running card shows until it is opened.
@@ -792,6 +798,8 @@ export const register: Register = (on, options) => {
         turnId: e.turnId,
         status: one.status === 'stopped' ? one.status : 'running',
       }))
+      // New work: the report it ends on starts folded, as every report does.
+      await update($, openReports, ids => ids.filter(one => one !== id))
     }
     return yield* next(e)
   })
@@ -922,6 +930,7 @@ export const register: Register = (on, options) => {
     // as one line. Opening one (its name, or more) shows everything, the whole task too.
     const ordered = [...list].sort((a, b) => Number(a.status !== 'running') - Number(b.status !== 'running'))
     const opened = await read($, expanded)
+    const shownReports = await read($, openReports)
     // Cells a card's task line has: the pane's body less the card's border and padding.
     const taskColumns = e.props.bodyColumns - 4
 
@@ -986,8 +995,31 @@ export const register: Register = (on, options) => {
                 · {oneLine(n, 200)}
               </Text>
             ))}
-            {/* Its report, unless it has written notes since: a stale report would sit under fresh ones. */}
-            {t.lastText !== '' && t.notedSinceReport !== true && <Markdown text={t.lastText.slice(-1500)} />}
+            {/* Its report, its first line until opened. Not while it works on, nor once it has
+                written notes since: an old report would read as the result of the new work. */}
+            {t.lastText !== '' && t.status !== 'running' && t.notedSinceReport !== true && (
+              <Box key={`reportbox:${t.id}`} flexDirection="column">
+                {shownReports.includes(t.id) && <Markdown text={t.lastText.slice(-1500)} />}
+                <Box flexDirection="row" columnGap={1}>
+                  {!shownReports.includes(t.id) && (
+                    <Box flexShrink={1} minWidth={0}>
+                      <Text wrap="truncate-end">{oneLine(t.lastText, 200)}</Text>
+                    </Box>
+                  )}
+                  {/* Lit in the thought's colour with the pointer anywhere on the report; the line gives way, not it. */}
+                  <Box flexShrink={0}>
+                    <Button
+                      key={`report:${t.id}`}
+                      plain
+                      dimColor
+                      hover={{ color: t.color }}
+                      label={shownReports.includes(t.id) ? 'less' : 'more'}
+                      onPress={() => void toggleReport($, t.id)}
+                    />
+                  </Box>
+                </Box>
+              </Box>
+            )}
           </Box>
         ))}
       </Box>

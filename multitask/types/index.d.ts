@@ -44,6 +44,9 @@ declare module 'claude-code' {
       // thoughts the person opened in the Thoughts pane to show everything: a finished one's
       // whole card instead of one line, a running one's whole task instead of its first line
       expanded: string[]
+      // thoughts whose last report the person opened in the Thoughts pane to read whole,
+      // instead of its first line; a thought leaves it when it starts new work
+      openReports: string[]
     }
   }
 }

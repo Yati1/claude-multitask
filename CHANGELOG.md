@@ -19,7 +19,7 @@ Notable changes to the thread-chat and multitask mods. The format is based on [K
 - Changed thread-chat's band to stay on one row in the desktop app and not shift on hover.
 - Changed multitask's band to show counts of running thoughts and queued messages.
 - Changed multitask to give the voice thoughts' latest progress with your messages, not note by note.
-- Changed multitask's Thoughts pane to list running thoughts first and fold the rest to one line.
+- Changed multitask's Thoughts pane to list running thoughts first and fold the rest and reports.
 - Changed the voice in multitask to speak as one mind and keep acknowledgements to a few words.
 
 ### Fixed
