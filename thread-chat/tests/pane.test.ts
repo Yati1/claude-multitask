@@ -1,5 +1,6 @@
 import type { On, SessionMessage } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
+import type { Engine } from 'claude-code/testing'
 
 import type { ViewRow } from '../types'
 import {
@@ -112,6 +113,10 @@ function keptAs(id: string, rows: ViewRow[]) {
 
 const say = (text: string) => ({ text, origin: { kind: 'composer' as const }, wait: false })
 
+// The person's /threads, which turns threads on in the chat, or off again.
+const flipThreads = ($: Engine) =>
+  $.command.run({ command: 'threads', args: '', origin: { kind: 'composer' }, presentation: {} as never })
+
 const BAND = {
   component: 'AbovePrompt',
   props: {
@@ -152,6 +157,7 @@ async function sectionsOf(pane: Drawing) {
 
 test('the thread view shows the picked threads alone, earlier replies too, and no tool rows', async ($, on) => {
   engine(on)
+  await flipThreads($)
   await $.prompt.submit(say('# design\nhello\n# perf\nfast?'))
   const store = (uuid: string, door: 'prompt' | 'response' | 'tool-result', content: Block[]) =>
     $.session
@@ -216,6 +222,7 @@ test('the thread view shows the picked threads alone, earlier replies too, and n
 
 test('the view puts a message sent to the one picked thread, and a moved part, where the chat does', async ($, on) => {
   engine(on)
+  await flipThreads($)
   await $.prompt.submit(say('# design\na\n# perf\nb'))
   const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...BAND })
   await band.press({ key: 'thread:perf' })
@@ -282,6 +289,7 @@ test('the view puts a message sent to the one picked thread, and a moved part, w
 
 test('a long section draws as markdown in pieces a Markdown element takes', async ($, on) => {
   engine(on)
+  await flipThreads($)
   await $.prompt.submit(say('# design\nhello'))
   // 250 lines of 100 characters, the last without its newline: 24999 characters
   const long = Array.from({ length: 250 }, () => 'x'.repeat(99)).join('\n')
@@ -304,11 +312,14 @@ test('a long section draws as markdown in pieces a Markdown element takes', asyn
   }
 })
 
-test('/thread-view and the band button open the view', async ($, on) => {
+test('/thread-view and the band button open the view, once threads are on', async ($, on) => {
   const { opened } = engine(on)
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
-  const ran = await $.command.run({ command: 'thread-view', args: '', origin: { kind: 'composer' }, presentation: {} as never })
-  expect(ran.text).toBe('Thread view opened.')
+  const view = () => $.command.run({ command: 'thread-view', args: '', origin: { kind: 'composer' }, presentation: {} as never })
+  expect((await view()).text).toBe('Threads are off in this chat; /threads turns them on.')
+  expect(opened).toEqual([])
+  await flipThreads($)
+  expect((await view()).text).toBe('Thread view opened.')
   expect(opened).toEqual(['thread-view'])
 
   for (const surface of ['terminal', 'desktop'] as const) {
@@ -333,6 +344,7 @@ const DESIGN = { name: 'design', color: '#4fa3e0', isSelected: false, createdBy:
 
 test('the view keeps what a compaction summarised away, and never shows the summary', async ($, on) => {
   const { transcript, kept, files } = engine(on)
+  await flipThreads($)
   await $.prompt.submit(say('# design\nhello'))
   const store = (uuid: string, door: 'prompt' | 'response' | 'compaction', text: string) =>
     $.session
@@ -459,6 +471,7 @@ for (const form of ['files', 'the store, by an earlier version'] as const) {
 test('every message is kept with its text, however long, writing only the files that changed', async ($, on) => {
   // an earlier version kept the session's rows in the store, without text
   const { kept, files, writes } = engine(on, { 'view:session-1': [{ id: 'p0', role: 'user', mark: markOf('# design\nlong ago') }] })
+  await flipThreads($)
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
   // a session using threads
   await $.prompt.submit(say('# design\nlong ago'))
@@ -495,7 +508,7 @@ test('every message is kept with its text, however long, writing only the files 
   expect(writes).toEqual([])
 })
 
-test('a session keeps no rows on disk until it uses threads, then every one, those from before too', async ($, on) => {
+test('a session keeps no rows on disk until threads are on, then every one, those from before too', async ($, on) => {
   const { kept, files, writes } = engine(on)
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
   const reply = (uuid: string, text: string) =>
@@ -503,11 +516,14 @@ test('a session keeps no rows on disk until it uses threads, then every one, tho
       .append({ message: { type: 'assistant', role: 'assistant', content: [{ type: 'text', text }] }, door: 'response', origin: model, uuid })
       .catch(() => undefined)
   const done = () => $.turn.complete({ answer: '', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })
-  await reply('a1', 'before any thread')
+  // a heading is plain text while threads are off
+  await $.prompt.submit(say('# design\nnot yet'))
+  await reply('a1', '# design\nbefore threads')
   await done()
   expect(writes).toEqual([])
   expect(kept['view:session-1']).toBeUndefined()
 
+  await flipThreads($)
   await $.prompt.submit(say('# design\nnow'))
   await reply('a2', '# design\nin a thread')
   await done()

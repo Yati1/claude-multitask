@@ -1,5 +1,6 @@
 import type { On, SessionMessage } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
+import type { Engine } from 'claude-code/testing'
 
 import { headingStart, splitRunOns, splitSections } from '../hooks/parse'
 
@@ -44,6 +45,10 @@ function engine(on: On): string[] {
 }
 
 const say = (text: string) => ({ text, origin: { kind: 'composer' as const }, wait: false })
+
+// The person's /threads, which turns threads on in the chat, or off again.
+const flipThreads = ($: Engine) =>
+  $.command.run({ command: 'threads', args: '', origin: { kind: 'composer' }, presentation: {} as never })
 
 const userRow = (text: string) =>
   ({ component: 'UserMessage', props: { text, origin: { kind: 'composer' }, isExpanded: false } }) as const
@@ -118,6 +123,7 @@ test('a heading line of any length splits where asked, outside code fences only'
 
 test("a heading typed with its first line on the heading's line is split, told to the model and drawn so", async ($, on) => {
   const prompts = engine(on)
+  await flipThreads($)
   await $.prompt.submit(say('# Threads\na\n# perf\nb'))
 
   const long = '#Threads Lets fix the view so that every section shows up in the pane'
@@ -150,6 +156,7 @@ test("a heading typed with its first line on the heading's line is split, told t
 
 test('the longest thread name a heading starts with is its thread; a merged name counts', async ($, on) => {
   const prompts = engine(on)
+  await flipThreads($)
   await $.prompt.submit(say('# Threads\na\n# view\nb\n# view transcript\nc\n# threading\nd'))
   await $.command.run({ command: 'merge-threads', args: 'threading into Threads', origin: { kind: 'composer' }, presentation: {} as never })
 
@@ -173,6 +180,7 @@ test('the longest thread name a heading starts with is its thread; a merged name
 
 test('a heading that is a name, starts with none, asks for a new thread or abbreviates another stays a heading', async ($, on) => {
   const prompts = engine(on)
+  await flipThreads($)
   await $.prompt.submit(say('# Threads\na\n# Threads fixes\nb'))
 
   // exactly a thread's name: nothing to tell
@@ -209,6 +217,7 @@ test('a heading that is a name, starts with none, asks for a new thread or abbre
 
 test('a split heading is not recorded, so an abbreviation still means its thread', async ($, on) => {
   const prompts = engine(on)
+  await flipThreads($)
   await $.prompt.submit(say('# design\na'))
   await $.prompt.submit(say('#design the pills are tall\nb'))
   await $.prompt.submit(say('# desi\nc'))
@@ -219,6 +228,7 @@ test('a split heading is not recorded, so an abbreviation still means its thread
 
 test('the thread view shows the rest of a split heading as the first line of its thread', async ($, on) => {
   engine(on)
+  await flipThreads($)
   await $.prompt.submit(say('# Threads\na\n# perf\nb'))
   const text = '#Threads Lets fix the view\nand the tags'
   await $.prompt.submit(say(text))

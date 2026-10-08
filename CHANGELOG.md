@@ -6,18 +6,20 @@ Notable changes to the thread-chat and multitask mods. The format is based on [K
 
 ### Added
 
-- Added a picker to thread-chat's tags, and `+ thread` once a chat has threads, to move messages.
+- Added a picker to thread-chat's tags, and `+ thread` once threads are on, to move messages.
 - Added a thread view to thread-chat (`/thread-view` or `view`) with every message of picked threads.
 - Added a hover highlight to thread-chat's thread tags and pills in the desktop app.
 - Added the `voiceEffort` setting to multitask to set how hard the voice thinks (`low` by default).
 
 ### Changed
 
+- Changed thread-chat to stay out of a chat until `/threads` turns it on; `/threads` again turns it off.
 - Changed thread-chat to send unheaded messages to the sole picked thread, marked with an arrow.
 - Changed thread-chat to put a reply to selected text in that text's thread.
 - Changed thread-chat to send a heading that runs on past a thread's name to it, the rest as text.
 - Changed thread-chat's band to stay on one row in the desktop app and not shift on hover.
 - Changed multitask's band to show counts of running thoughts and queued messages.
+- Changed multitask's band to show only while Multitask is on or has thoughts left.
 - Changed multitask to give the voice thoughts' latest progress with your messages, not note by note.
 - Changed multitask's Thoughts pane to list running thoughts first and fold the rest and reports.
 - Changed the voice in multitask to speak as one mind and keep acknowledgements to a few words.

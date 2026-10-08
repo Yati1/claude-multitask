@@ -1,5 +1,6 @@
 import type { On } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
+import type { Engine } from 'claude-code/testing'
 
 import { markOf } from '../hooks/pane'
 import { PALETTE, closestThread, headingsIn, rewriteHeadings, splitSections } from '../hooks/parse'
@@ -55,6 +56,10 @@ const assistantRow = (text: string) =>
 
 const say = (text: string) => ({ text, origin: { kind: 'composer' as const }, wait: false })
 
+// The person's /threads, which turns threads on in the chat, or off again.
+const flipThreads = ($: Engine) =>
+  $.command.run({ command: 'threads', args: '', origin: { kind: 'composer' }, presentation: {} as never })
+
 // A thread's tag in a drawing: its name in capitals on the terminal, a picture elsewhere.
 async function tagOf(
   drawing: { findAll: (query: { type?: string }) => Promise<{ props: Record<string, unknown>; text: string }[]> },
@@ -100,6 +105,7 @@ test('a typed name finds the thread it most likely means', async () => {
 
 test('a mistyped or partial heading means its thread, decided at send and told to the model', async ($, on) => {
   const prompts = engine(on)
+  await flipThreads($)
   await $.prompt.submit(say('# Threads\na\n# Multitasking\nb'))
   // the first threads bring how threads work, once, beside the message
   expect(prompts.at(-1)).toStartWith('# Threads\na\n# Multitasking\nb\n--\n# Conversation threads\n')
@@ -127,6 +133,7 @@ test('a mistyped or partial heading means its thread, decided at send and told t
 
 test('a merged thread draws as the one it joined', async ($, on) => {
   engine(on)
+  await flipThreads($)
   await $.prompt.submit(say('# design\na\n# perf\nb'))
   const merged = await $.command.run({
     command: 'merge-threads',
@@ -144,6 +151,7 @@ test('a merged thread draws as the one it joined', async ($, on) => {
 
 test('the filter shows everything with none picked, and only the picked threads otherwise', async ($, on) => {
   engine(on)
+  await flipThreads($)
   await $.prompt.submit(say('# design\nhello\n#perf\nfast?'))
 
   for (const surface of ['terminal', 'desktop'] as const) {
@@ -193,12 +201,13 @@ test('the filter shows everything with none picked, and only the picked threads 
   }
 })
 
-test('the model is told how threads work once, of merges and the agent switch as they change, and all again after a compaction', async ($, on) => {
+test('the model is told how threads work once they are on, of merges and the agent switch as they change, and all again after a compaction', async ($, on) => {
   const prompts = engine(on)
   await $.session.start({ cwd: '.', surface: 'terminal', isInteractive: true })
-  // With no threads there is nothing to tell.
+  // With threads off there is nothing to tell.
   await $.prompt.submit(say('hello'))
   expect(prompts.at(-1)).toBe('hello')
+  await flipThreads($)
   await $.prompt.submit(say('# design\na\n# perf\nb'))
   expect(prompts.at(-1)).toContain('\n--\n# Conversation threads\n')
   await $.prompt.submit(say('more'))
@@ -228,6 +237,7 @@ test('the model is told how threads work once, of merges and the agent switch as
 
 test('with no threads the band says how to start one; the agent switch gates the tool', async ($, on) => {
   engine(on)
+  await flipThreads($)
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
   const tool = 'mcp__thread-chat__create_thread'
 
@@ -249,7 +259,7 @@ test('with no threads the band says how to start one; the agent switch gates the
   expect(await band.find({ text: /start a thread/ })).toBeUndefined()
 })
 
-test('a session with no threads is left as it is: its rows, its prompts and its tools', async ($, on) => {
+test('until /threads turns threads on, a session is left as it is: its rows, its prompts, its band and its tools', async ($, on) => {
   // what the mod offers the model, answered here before the stand-in engine beneath
   const registered: string[] = []
   on('tool.register', ($, e) => {
@@ -260,36 +270,81 @@ test('a session with no threads is left as it is: its rows, its prompts and its 
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
   expect(registered).toEqual([])
 
-  // its rows are the engine's drawing alone: no "+ thread", no room for one
+  // its rows are the engine's drawing alone: no tag, no "+ thread", no room for one
   const drawnAlone = async (row: Row) => {
     const drawing = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...row })
     const tree = await drawing.drawn()
     await drawing.unmount()
     return { type: (tree as { type: string }).type, ...chromeIn(tree) }
   }
-  for (const row of [userRow('plain words'), assistantRow('plain reply')]) {
+  for (const row of [userRow('plain words'), userRow('# design\na'), assistantRow('plain reply')]) {
     expect(await drawnAlone(row)).toEqual({ type: 'Text', ...noChrome })
   }
-  // its prompts go on as typed, with nothing beside them
+  // its prompts go on as typed, with nothing beside them: a heading is plain text
+  await $.prompt.submit(say('# design\na'))
+  expect(prompts.at(-1)).toBe('# design\na')
+  // it has no band, and the model starts no thread
+  const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...BAND })
+  expect(await band.find({ type: 'Svg' })).toBeUndefined()
+  expect(await band.find({ text: /start a thread/ })).toBeUndefined()
+  expect((await $.tool.call({ tool: 'mcp__thread-chat__create_thread', tool_use_id: 't1', name: 'ideas' })).deny).toContain('off')
+
+  // /threads turns them on: the model is told how threads work, and every row offers
+  // "+ thread", with no thread yet
+  expect((await flipThreads($)).text).toContain('Threads are on')
   await $.prompt.submit(say('hello'))
-  expect(prompts.at(-1)).toBe('hello')
+  expect(prompts.at(-1)).toContain('# Conversation threads')
+  expect((await drawnAlone(userRow('plain words'))).hasAdd).toBe(true)
+  expect((await drawnAlone(assistantRow('plain reply'))).hasAdd).toBe(true)
+  await band.redraw()
+  expect(await band.find({ text: /start a thread with # name/ })).toBeDefined()
+  expect(await band.find({ key: 'thread:design' })).toBeUndefined()
 
   // the agent switch offers the model create_thread
-  const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...BAND })
   await band.pointer({ type: 'down', x: 1, y: 0, button: 'left', in: 'agent-switch' })
   await band.pointer({ type: 'up', x: 1, y: 0, button: 'left', in: 'agent-switch' })
   expect(registered).toEqual(['create_thread'])
-  await band.pointer({ type: 'down', x: 1, y: 0, button: 'left', in: 'agent-switch' })
-  await band.pointer({ type: 'up', x: 1, y: 0, button: 'left', in: 'agent-switch' })
+})
 
-  // a first heading puts the session to use: its rows offer "+ thread" from then on
+test('/threads again turns threads off, keeping them, and the model is told once each way', async ($, on) => {
+  const prompts = engine(on)
+  await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
+  await flipThreads($)
   await $.prompt.submit(say('# design\na'))
+  const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...BAND })
+  await band.pointer({ type: 'down', x: 1, y: 0, button: 'left', in: 'thread:design' })
+  const mine = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...userRow('# design\nmine') })
+  const plain = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...assistantRow('just chatting') })
+  expect(await tagOf(mine, 'design')).toBeDefined()
+  expect(await plain.find({ text: /just chatting/ })).toBeUndefined()
+
+  // Off: no band, no tags and no filter, a heading plain text; the model is told once
+  expect((await flipThreads($)).text).toContain('Threads are off')
+  for (const site of [band, mine, plain]) await site.redraw()
+  expect(await band.find({ key: 'thread:design' })).toBeUndefined()
+  expect(await tagOf(mine, 'design')).toBeUndefined()
+  expect(await mine.find({ text: /# design\nmine/ })).toBeDefined()
+  expect(await plain.find({ text: /just chatting/ })).toBeDefined()
+  await $.prompt.submit(say('# perf\nb'))
+  expect(prompts.at(-1)).toStartWith('# perf\nb\n--\nThe user turned conversation threads off.')
+  await $.prompt.submit(say('more'))
+  expect(prompts.at(-1)).toBe('more')
+  const merge = await $.command.run({ command: 'merge-threads', args: 'design into perf', origin: { kind: 'composer' }, presentation: {} as never })
+  expect(merge.text).toBe('Threads are off in this chat; /threads turns them on.')
+
+  // On again: the threads and the pick are as they were, and the model is told all again
+  await flipThreads($)
+  for (const site of [band, mine]) await site.redraw()
+  expect(await band.find({ key: 'thread:design' })).toBeDefined()
+  expect(await band.find({ key: 'thread:perf' })).toBeUndefined()
+  expect(await tagOf(mine, 'design')).toBeDefined()
+  await $.prompt.submit(say('back'))
   expect(prompts.at(-1)).toContain('# Conversation threads')
-  expect((await drawnAlone(userRow('plain words'))).hasAdd).toBe(true)
 })
 
 test("another agent's loop (an engine fork, a subagent) cannot start a thread, the agent switch on or off", async ($, on) => {
   engine(on)
+  await flipThreads($)
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
   const tool = 'mcp__thread-chat__create_thread'
   const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...BAND })
@@ -310,6 +365,7 @@ test("another agent's loop (an engine fork, a subagent) cannot start a thread, t
 
 test("a plugin's prompt is not the person's, though the desktop names its row theirs", async ($, on) => {
   engine(on)
+  await flipThreads($)
   await $.prompt.submit(say('# design\na'))
   // As the engine stores a plugin's prompt, and as the desktop shows it: framed.
   const framed =
@@ -335,6 +391,7 @@ test("a plugin's prompt is not the person's, though the desktop names its row th
 
 test("the person's message stays the engine's drawing, its headings swapped for tags above", async ($, on) => {
   engine(on)
+  await flipThreads($)
   const text = 'look at this\n# design\nthe pills are tall\n# perf\nslow'
   await $.prompt.submit(say(text))
   await $.prompt.submit(say('#perf\nstill slow'))
@@ -366,6 +423,7 @@ test("the person's message stays the engine's drawing, its headings swapped for 
 
 test('a heading snapped at send still draws as its thread where the screen shows it as typed', async ($, on) => {
   engine(on)
+  await flipThreads($)
   await $.prompt.submit(say('# Threads\na'))
   await $.prompt.submit(say('#thr\nwhy so tall?'))
 
@@ -398,6 +456,7 @@ test('a session keeps its threads and what its headings meant for its next run',
     return { value: undefined }
   })
   engine(on, null)
+  await flipThreads($)
   await $.prompt.submit(say('# Threads\na'))
   await $.prompt.submit(say('#thr\nb'))
   const saved = kept['session:session-1'] as { threads: { name: string }[]; snaps: Record<string, string> }
@@ -405,48 +464,89 @@ test('a session keeps its threads and what its headings meant for its next run',
   expect(saved.snaps).toEqual({ thr: 'threads' })
 })
 
-test('a restarted session takes up the threads it kept', async ($, on) => {
-  engine(on, {
-    'session:session-1': {
-      threads: [{ name: 'Threads', color: '#4fa3e0', isSelected: true, createdBy: 'user' }],
-      aliases: {},
-      snaps: { thr: 'threads' },
-    },
+test('a session keeps whether threads are on for its next run', async ($, on) => {
+  const kept: Record<string, unknown> = {}
+  on('store.get', ($, e) => ({ value: kept[e.key] }))
+  on('store.set', ($, e) => {
+    kept[e.key] = e.value
+    return { value: undefined }
   })
+  on('store.keys', () => ({ value: Object.keys(kept) }))
+  engine(on, null)
+  const isOnKept = () => (kept['session:session-1'] as { isOn?: unknown } | undefined)?.isOn
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
-  const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...BAND })
-  expect(await band.find({ key: 'thread:threads' })).toBeDefined()
-  const row = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...userRow('#thr\nwhy so tall?') })
-  expect(await tagOf(row, 'Threads')).toBeDefined()
+  expect(isOnKept()).toBe(false)
+  await flipThreads($)
+  expect(isOnKept()).toBe(true)
+  await flipThreads($)
+  expect(isOnKept()).toBe(false)
 })
 
-test('a rewound session, under a new id, takes up the threads of the session it came from', async ($, on) => {
-  const said = ['# Threads\nwhy is the band two rows high?', 'It wraps because both mods share one row.', '# Meta\nhow long do the tests take?']
-  const rows = (texts: string[]) => texts.map((text, i) => ({ id: `row-${i}`, role: 'user', mark: markOf(text) }))
-  const store: Record<string, unknown> = {
-    'session:old': {
-      threads: [
-        { name: 'Threads', color: '#4fa3e0', isSelected: false, createdBy: 'user' },
-        { name: 'Meta', color: '#9b6fd6', isSelected: false, createdBy: 'user' },
-      ],
-      aliases: { threading: 'threads' },
-      snaps: {},
-    },
-    'view:old': rows(said),
-    'session:unrelated': { threads: [{ name: 'Elsewhere', color: '#58b36b', isSelected: false, createdBy: 'user' }] },
-    'view:unrelated': rows(['a different conversation altogether', 'with nothing in common at all']),
-  }
-  engine(on, store)
-  on('session.messages', () => ({ value: said.map(text => ({ role: 'user' as const, text, toolUses: [] })) }))
-  await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
+// Whether threads were on, as a session kept it: a record kept before /threads has no
+// switch, and counts as on where it has threads.
+const KEPT_SWITCHES = [
+  [undefined, 'kept before /threads'],
+  [true, 'on'],
+  [false, 'off'],
+] as const
 
-  const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...BAND })
-  expect(await band.find({ key: 'thread:threads' })).toBeDefined()
-  expect(await band.find({ key: 'thread:meta' })).toBeDefined()
-  expect(await band.find({ key: 'thread:elsewhere' })).toBeUndefined()
-  const row = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...userRow('# Threading\nstill means Threads') })
-  expect(await tagOf(row, 'Threads')).toBeDefined()
-})
+for (const [isOn, kept] of KEPT_SWITCHES) {
+  test(`a restarted session takes up the threads it kept, on or off as they were (${kept})`, async ($, on) => {
+    engine(on, {
+      'session:session-1': {
+        ...(isOn === undefined ? {} : { isOn }),
+        threads: [{ name: 'Threads', color: '#4fa3e0', isSelected: true, createdBy: 'user' }],
+        aliases: {},
+        snaps: { thr: 'threads' },
+      },
+    })
+    await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
+    const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...BAND })
+    expect((await band.find({ key: 'thread:threads' })) !== undefined).toBe(isOn !== false)
+    // kept off, the threads come back with /threads
+    if (isOn === false) {
+      await flipThreads($)
+      await band.redraw()
+    }
+    expect(await band.find({ key: 'thread:threads' })).toBeDefined()
+    const row = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...userRow('#thr\nwhy so tall?') })
+    expect(await tagOf(row, 'Threads')).toBeDefined()
+  })
+
+  test(`a rewound session, under a new id, takes up the threads of the session it came from, on or off as they were (${kept})`, async ($, on) => {
+    const said = ['# Threads\nwhy is the band two rows high?', 'It wraps because both mods share one row.', '# Meta\nhow long do the tests take?']
+    const rows = (texts: string[]) => texts.map((text, i) => ({ id: `row-${i}`, role: 'user', mark: markOf(text) }))
+    const store: Record<string, unknown> = {
+      'session:old': {
+        ...(isOn === undefined ? {} : { isOn }),
+        threads: [
+          { name: 'Threads', color: '#4fa3e0', isSelected: false, createdBy: 'user' },
+          { name: 'Meta', color: '#9b6fd6', isSelected: false, createdBy: 'user' },
+        ],
+        aliases: { threading: 'threads' },
+        snaps: {},
+      },
+      'view:old': rows(said),
+      'session:unrelated': { threads: [{ name: 'Elsewhere', color: '#58b36b', isSelected: false, createdBy: 'user' }] },
+      'view:unrelated': rows(['a different conversation altogether', 'with nothing in common at all']),
+    }
+    engine(on, store)
+    on('session.messages', () => ({ value: said.map(text => ({ role: 'user' as const, text, toolUses: [] })) }))
+    await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
+
+    const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...BAND })
+    expect((await band.find({ key: 'thread:threads' })) !== undefined).toBe(isOn !== false)
+    if (isOn === false) {
+      await flipThreads($)
+      await band.redraw()
+    }
+    expect(await band.find({ key: 'thread:threads' })).toBeDefined()
+    expect(await band.find({ key: 'thread:meta' })).toBeDefined()
+    expect(await band.find({ key: 'thread:elsewhere' })).toBeUndefined()
+    const row = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...userRow('# Threading\nstill means Threads') })
+    expect(await tagOf(row, 'Threads')).toBeDefined()
+  })
+}
 
 test('a reload joins the threads saved for the session to those it holds', async ($, on) => {
   const kept: Record<string, unknown> = {}
@@ -457,6 +557,7 @@ test('a reload joins the threads saved for the session to those it holds', async
   })
   on('store.keys', () => ({ value: Object.keys(kept) }))
   engine(on, null)
+  await flipThreads($)
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
   await $.prompt.submit(say('# Fresh\nx'))
   // A restored record put back for the session while it runs.
@@ -485,6 +586,7 @@ const isHidden = async (drawing: { drawn: () => Promise<unknown> }) =>
 
 test('while filtering, rows of no thread show only since the last message', async ($, on) => {
   engine(on)
+  await flipThreads($)
   await $.prompt.submit(say('# design\nhello'))
 
   const model = { kind: 'model', model: 'test' } as const
@@ -537,6 +639,7 @@ test('while filtering, rows of no thread show only since the last message', asyn
 
 test('with one thread picked, a message with no heading goes to that thread', async ($, on) => {
   const prompts = engine(on)
+  await flipThreads($)
   await $.prompt.submit(say('# design\nhello\n# perf\nfast?'))
   const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...BAND })
   await band.press({ key: 'thread:perf' })
@@ -568,6 +671,7 @@ test('with one thread picked, a message with no heading goes to that thread', as
 
 test('a reply to a selected part of a reply goes to the thread that part is in', async ($, on) => {
   const prompts = engine(on)
+  await flipThreads($)
   // The transcript the plugin reads replies from, oldest first; the desktop's
   // selection is of the drawn text, its Markdown marks and link targets gone.
   on('session.messages', () => ({
@@ -637,6 +741,7 @@ test('a reply to a selected part of a reply goes to the thread that part is in',
 
 test('a reply of several sections draws one by the engine and the rest as markdown', async ($, on) => {
   engine(on)
+  await flipThreads($)
   await $.prompt.submit(say('# design\na\n# perf\nb'))
   const reply = await $.ui.mount({
     plugin: 'thread-chat',
@@ -651,6 +756,7 @@ test('a reply of several sections draws one by the engine and the rest as markdo
 
 test('the pill of the one picked thread shows that messages with no heading go there', async ($, on) => {
   engine(on)
+  await flipThreads($)
   await $.prompt.submit(say('# design\na\n# perf\nb'))
   const desktop = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...BAND })
   const terminal = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...BAND })
@@ -673,6 +779,7 @@ test('the pill of the one picked thread shows that messages with no heading go t
 
 test('a message or a reply part moves to another thread from its tag, and the model is told', async ($, on) => {
   const prompts = engine(on)
+  await flipThreads($)
   await $.prompt.submit(say('# design\na\n# perf\nb'))
   const click = (drawing: { pointer: (p: never) => Promise<unknown> }, key: string) =>
     drawing.pointer({ type: 'down', x: 1, y: 0, button: 'left', in: key } as never)
@@ -719,6 +826,7 @@ test('a message or a reply part moves to another thread from its tag, and the mo
 
 test('the move picker starts a new thread from a typed name, even with no threads yet', async ($, on) => {
   const prompts = engine(on)
+  await flipThreads($)
   const fillOf = async (drawing: Parameters<typeof tagOf>[0], name: string) =>
     /fill="(#[0-9a-f]+)"/.exec(String((await tagOf(drawing, name))?.props.source))?.[1]
 
@@ -848,6 +956,7 @@ function addPlacement(tree: unknown, part: RegExp) {
 
 test('"+ thread" has a row of its own above the part it is for, never over it', async ($, on) => {
   engine(on)
+  await flipThreads($)
   await $.prompt.submit(say('# design\na'))
   const kept = { isAbove: true, isLaidOver: false, hasRoom: true, isRevealed: true }
 
@@ -891,6 +1000,7 @@ const RELAY = 'Thought updates:\nvoice-tone: found it\nperf (done): it is fine'
 test('a row with nothing of its own to show gets no "+ thread" and no room for one', async ($, on) => {
   // Beneath, a plugin draws some rows as nothing, as the multitask plugin draws "(quiet)".
   engine(on, {}, text => text === 'hidden by a plugin')
+  await flipThreads($)
   await $.prompt.submit(say('# design\na'))
   const chromeOf = async (row: Row) => {
     const drawing = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...row })
@@ -934,6 +1044,7 @@ test('a row with nothing of its own to show gets no "+ thread" and no room for o
 
 test('while filtering, a quiet, relay or empty row from before the last message draws nothing', async ($, on) => {
   engine(on)
+  await flipThreads($)
   await $.prompt.submit(say('# design\na'))
   const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...BAND })
   await band.press({ key: 'thread:design' })
@@ -979,6 +1090,7 @@ function pickerPlacement(tree: unknown, part: RegExp) {
 
 test('the move picker opens at the top of its part, beside its tag or in place of "+ thread"', async ($, on) => {
   engine(on)
+  await flipThreads($)
   await $.prompt.submit(say('# design\na\n# perf\nb'))
   const open = async (drawing: { press: (p: { key: string }) => Promise<unknown>; redraw: () => Promise<unknown> }, key: string) => {
     await drawing.press({ key })
@@ -1015,6 +1127,7 @@ test('the move picker opens at the top of its part, beside its tag or in place o
 
 test('a tag\'s "▾" sits right after its name, alike in messages and replies', async ($, on) => {
   engine(on)
+  await flipThreads($)
   await $.prompt.submit(say('# design\na'))
   const rows = [
     await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...userRow('# design\nhi'), requestId: 'u1' }),
@@ -1037,6 +1150,7 @@ test('a tag\'s "▾" sits right after its name, alike in messages and replies', 
 
 test('the "none" pill has no dot and a dashed outline; off the desktop it is dim', async ($, on) => {
   engine(on)
+  await flipThreads($)
   await $.prompt.submit(say('# design\na\n# perf\nb'))
 
   const desktop = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...assistantRow('# design\nx'), requestId: 'r1' })
@@ -1079,6 +1193,7 @@ function pillPictures(tree: unknown, key: string) {
 
 test('what opens the picker or picks a thread lights under the pointer', async ($, on) => {
   engine(on)
+  await flipThreads($)
   await $.prompt.submit(say('# design\na\n# perf\nb'))
   const [design, perf] = [PALETTE[0], PALETTE[1]]
 
@@ -1128,6 +1243,7 @@ test('what opens the picker or picks a thread lights under the pointer', async (
 
 test("a reply part's border pads it alike on every side, and its tag meets its text", async ($, on) => {
   engine(on)
+  await flipThreads($)
   await $.prompt.submit(say('# design\na\n# perf\nb'))
   const text = '# design\nuse a queue\n# perf\nit is fine'
   // The padding props of each thread border, so a lone shorthand shows every side alike.
@@ -1151,6 +1267,7 @@ test("a reply part's border pads it alike on every side, and its tag meets its t
 // of them when one is slow to draw: a transcript's rows must not add one per message.
 test('a long desktop transcript draws Clients only in the band and the one open picker', async ($, on) => {
   engine(on)
+  await flipThreads($)
   await $.prompt.submit(say('# design\na\n# perf\nb'))
   const threadCount = 2
   const users = ['plain words', '# design\nhi', 'look\n# perf\nthis']
@@ -1210,6 +1327,7 @@ test('the band keeps one row with 12 threads beside another mod, and nothing the
     return Box({ flexDirection: 'row', children: [Text({ children: ['other mod'] })] })
   })
   engine(on)
+  await flipThreads($)
   const names = ['threads', 'multitasking', 'design', 'perf', 'auth', 'billing', 'search', 'onboarding', 'analytics', 'docs', 'release', 'security']
   await $.prompt.submit(say(names.map(n => `# ${n}\nx`).join('\n')))
   const isOther = (n: Drawn) => n.type === 'Text' && (n.children ?? []).join('') === 'other mod'
