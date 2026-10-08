@@ -1,23 +1,27 @@
 # Changelog rules
 
-`CHANGELOG.md` at the repository root tells the people who use the thread-chat and multitask mods what changed. It follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+`CHANGELOG.md` tells people who use the thread-chat and multitask mods what changed. It follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## When to update it
+## What goes in
 
-- A commit that changes anything a user of a mod would notice (behaviour, commands, settings, controls, what the agent is briefed to do) updates `CHANGELOG.md` in that same commit.
-- A commit with no user-visible change (refactors, tests, tooling, developer docs) leaves it alone.
+- Only user-visible changes made after the first commit (5c2a542), which added both mods; their original features are not listed as new.
+- In: changes a user would notice (new or changed behaviour, controls, commands, settings) and fixes to bugs a user could hit.
+- Out: refactors, tests, tooling, docs, changes to how the agent is briefed unless the user sees a different result, and anything not on main.
+- Several changes to one feature in the same period make one entry describing the end state.
 
-## What an entry says
+## How an entry reads
 
-- One line per change, in plain language, saying what a user notices.
-- It goes under `## Unreleased`, then the mod (`### thread-chat` or `### multitask`), then the category: `#### Added`, `#### Changed`, `#### Fixed` or `#### Removed`. Add a heading only when it gets its first line; keep the categories in that order.
-- State it as fact that is true of the code being committed. No plans, work in progress, known gaps or speculation.
-- No internal details: no file, function, hook or variable names and no implementation reasons. Name only what a user sees or types, such as commands, settings and controls.
-- The repository is public: nothing about any particular machine, person, account, path, organisation or private project. Keep examples generic.
-- When a change makes an existing Unreleased line untrue, correct that line in the same commit.
+- Under `## Unreleased`, in `### Added`, `### Changed`, `### Fixed` or `### Removed`, in that order and only those with entries. No per-mod sections.
+- One line, aiming under ~100 characters, starting with a past-tense verb:
+  - Added <what> to <where>[ when/so <condition>]
+  - Changed <what> to <new behaviour>[ when <condition>]
+  - Fixed issue where <what> did <wrong thing>[ when <condition>]
+  - Removed <what> from <where>
+- The mod is named inside the line as the <where> ("to thread-chat's move picker", "in multitask"), with no prefix tag.
+- Backticks only for commands, settings and controls. No implementation details, file or function names, or reasons.
+- Generic, public-safe wording: nothing about a particular machine, person, account, path, organisation or private project.
 
-## Releasing
+## When
 
-- Both mods share one version, kept the same in `thread-chat/.claude-plugin/plugin.json` and `multitask/.claude-plugin/plugin.json`.
-- To release: set the new version in both `plugin.json` files (the first release may keep 0.1.0), rename `## Unreleased` to `## x.y.z - YYYY-MM-DD` with that version and the release date, and start a new, empty `## Unreleased` above it. On the first release, also remove the preamble line saying nothing has been released yet.
-- Released sections are history: edit them only to correct an error.
+- Update the line in the same commit as the change; when a later change makes a line untrue, fix that line in the same commit.
+- To release, rename `## Unreleased` to `## x.y.z - YYYY-MM-DD` and start a new, empty `## Unreleased` above it. Both mods share one version, set the same in `thread-chat/.claude-plugin/plugin.json` and `multitask/.claude-plugin/plugin.json`.
