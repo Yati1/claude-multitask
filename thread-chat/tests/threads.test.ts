@@ -249,6 +249,45 @@ test('with no threads the band says how to start one; the agent switch gates the
   expect(await band.find({ text: /start a thread/ })).toBeUndefined()
 })
 
+test('a session with no threads is left as it is: its rows, its prompts and its tools', async ($, on) => {
+  // what the mod offers the model, answered here before the stand-in engine beneath
+  const registered: string[] = []
+  on('tool.register', ($, e) => {
+    registered.push(e.name)
+    return { value: { tool: `mcp__thread-chat__${e.name}` } }
+  })
+  const prompts = engine(on)
+  await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
+  expect(registered).toEqual([])
+
+  // its rows are the engine's drawing alone: no "+ thread", no room for one
+  const drawnAlone = async (row: Row) => {
+    const drawing = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...row })
+    const tree = await drawing.drawn()
+    await drawing.unmount()
+    return { type: (tree as { type: string }).type, ...chromeIn(tree) }
+  }
+  for (const row of [userRow('plain words'), assistantRow('plain reply')]) {
+    expect(await drawnAlone(row)).toEqual({ type: 'Text', ...noChrome })
+  }
+  // its prompts go on as typed, with nothing beside them
+  await $.prompt.submit(say('hello'))
+  expect(prompts.at(-1)).toBe('hello')
+
+  // the agent switch offers the model create_thread
+  const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...BAND })
+  await band.pointer({ type: 'down', x: 1, y: 0, button: 'left', in: 'agent-switch' })
+  await band.pointer({ type: 'up', x: 1, y: 0, button: 'left', in: 'agent-switch' })
+  expect(registered).toEqual(['create_thread'])
+  await band.pointer({ type: 'down', x: 1, y: 0, button: 'left', in: 'agent-switch' })
+  await band.pointer({ type: 'up', x: 1, y: 0, button: 'left', in: 'agent-switch' })
+
+  // a first heading puts the session to use: its rows offer "+ thread" from then on
+  await $.prompt.submit(say('# design\na'))
+  expect(prompts.at(-1)).toContain('# Conversation threads')
+  expect((await drawnAlone(userRow('plain words'))).hasAdd).toBe(true)
+})
+
 test("another agent's loop (an engine fork, a subagent) cannot start a thread, the agent switch on or off", async ($, on) => {
   engine(on)
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
@@ -271,6 +310,7 @@ test("another agent's loop (an engine fork, a subagent) cannot start a thread, t
 
 test("a plugin's prompt is not the person's, though the desktop names its row theirs", async ($, on) => {
   engine(on)
+  await $.prompt.submit(say('# design\na'))
   // As the engine stores a plugin's prompt, and as the desktop shows it: framed.
   const framed =
     'The multitask plugin sent a message:\nThought updates. Reply (quiet) unless something here needs you.\n\n## voice-tone (idle)\nfound it'
@@ -682,7 +722,12 @@ test('the move picker starts a new thread from a typed name, even with no thread
   const fillOf = async (drawing: Parameters<typeof tagOf>[0], name: string) =>
     /fill="(#[0-9a-f]+)"/.exec(String((await tagOf(drawing, name))?.props.source))?.[1]
 
-  // with no threads, a message and a reply of no thread still offer "+ thread"
+  // with no threads, once the agent may start them, a message and a reply of no
+  // thread offer "+ thread"
+  const switchBand = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...BAND })
+  await switchBand.pointer({ type: 'down', x: 1, y: 0, button: 'left', in: 'agent-switch' })
+  await switchBand.pointer({ type: 'up', x: 1, y: 0, button: 'left', in: 'agent-switch' })
+  await switchBand.unmount()
   const mine = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...userRow('plain words'), requestId: 'u1' })
   const reply = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...assistantRow('plain reply'), requestId: 'r1' })
   for (const row of [mine, reply]) expect(await row.find({ type: 'Button', key: 'tag:' })).toBeDefined()

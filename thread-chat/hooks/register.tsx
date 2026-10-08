@@ -78,6 +78,44 @@ async function addThreads($: EngineInterface, names: string[], createdBy: Thread
   if (names.length > 0) await update($, threads, list => withThreads(list, names, createdBy))
 }
 
+// Whether the session uses threads: it has one (or a merge), or the person let the
+// agent start them. Until then the mod leaves the session be: nothing beside the
+// person's messages, no tags or "+ thread" round the chat's rows, nothing kept on disk.
+const isInUse = (list: Thread[], merged: Record<string, string>, mayCreate: boolean) =>
+  list.length > 0 || Object.keys(merged).length > 0 || mayCreate
+
+async function inUse($: EngineInterface): Promise<boolean> {
+  return isInUse(await read($, threads), await read($, aliases), await read($, agentMayCreate))
+}
+
+const CREATE_SPEC = {
+  name: 'create_thread',
+  description:
+    'Start a new conversation thread the user can follow and filter. Then write to it under a level-1 heading with its exact name. Refused unless the user has enabled agent-created threads.',
+  inputSchema: {
+    type: 'object',
+    properties: { name: { type: 'string', description: 'Short thread name, 1-4 words' } },
+    required: ['name'],
+  },
+}
+
+// create_thread is the model's from the person letting the agent start threads on:
+// a session that never does has no tool of this mod's. Registered again, it is replaced.
+async function offerCreateTool($: EngineInterface) {
+  try {
+    await $.tool.register(CREATE_SPEC)
+  } catch {
+    // the switch stands; the model is told it may, and the next flip tries again
+  }
+}
+
+// Flips whether the agent may start threads, offering it the tool as it comes on.
+async function flipAgentSwitch($: EngineInterface) {
+  let now = false
+  await update($, agentMayCreate, may => (now = !may))
+  if (now) await offerCreateTool($)
+}
+
 // What a heading means, by one rule for sending and drawing alike: `+name` a new
 // thread by that name; else the thread by that name, or the one a merge or an
 // earlier send recorded for it; else the closest thread (a typo, another
@@ -421,7 +459,7 @@ function threadState(list: Thread[], merged: Record<string, string>, mayCreate: 
     ...(mergedNames.length === 0 ? [] : [`Merged threads (an old heading means the new one): ${mergedNames.join('; ')}.`]),
     mayCreate
       ? `You may start a new thread with ${CREATE_TOOL} when a distinct topic deserves its own thread, then write to it under its heading. Do it sparingly.`
-      : `Do not start new threads yourself; the user has not enabled that (${CREATE_TOOL} will refuse).`,
+      : 'Do not start new threads yourself; the user has not enabled that.',
   ].join(' ')
 }
 
@@ -436,7 +474,7 @@ async function briefing($: EngineInterface): Promise<string[]> {
   const merged = await read($, aliases)
   const mayCreate = await read($, agentMayCreate)
   const was = await read($, briefed)
-  const isUnused = list.length === 0 && Object.keys(merged).length === 0 && !mayCreate
+  const isUnused = !isInUse(list, merged, mayCreate)
   if (was === null ? isUnused : mergesKey(was.merged) === mergesKey(merged) && was.mayCreate === mayCreate) return []
   await update($, briefed, () => ({ merged, mayCreate }))
   await save($)
@@ -1052,16 +1090,8 @@ export const register: Register = on => {
       const kept = await keptRows($, await $.session.id()).catch(() => [])
       if (kept.length > 0) await update($, viewRows, () => kept)
     }
-    await $.tool.register({
-      name: 'create_thread',
-      description:
-        'Start a new conversation thread the user can follow and filter. Then write to it under a level-1 heading with its exact name. Refused unless the user has enabled agent-created threads.',
-      inputSchema: {
-        type: 'object',
-        properties: { name: { type: 'string', description: 'Short thread name, 1-4 words' } },
-        required: ['name'],
-      },
-    })
+    // The agent switch outlives a reload of this code: its tool is offered again.
+    if (await read($, agentMayCreate)) await offerCreateTool($)
     await $.command.register({
       name: 'merge-threads',
       description: 'Merge one conversation thread into another',
@@ -1069,14 +1099,16 @@ export const register: Register = on => {
     })
 
     // Threads saved by an earlier version of this mod lack fields this one draws.
-    await update($, threads, list =>
-      list.map(t => ({
-        name: t.name,
-        color: t.color ?? '#888888',
-        isSelected: t.isSelected === true,
-        createdBy: t.createdBy ?? 'user',
-      })),
-    )
+    if ((await read($, threads)).length > 0) {
+      await update($, threads, list =>
+        list.map(t => ({
+          name: t.name,
+          color: t.color ?? '#888888',
+          isSelected: t.isSelected === true,
+          createdBy: t.createdBy ?? 'user',
+        })),
+      )
+    }
 
     // A restarted, resumed or reloaded session takes up the threads it kept, joined to
     // any it holds; a rewound or forked one, which starts under a new id with no record
@@ -1084,6 +1116,7 @@ export const register: Register = on => {
     // to where it was rewound.
     const id = await $.session.id()
     let saved = (await $.store.get(storeKey(id))) as Partial<Saved> | undefined
+    let taken: ViewRow[] = []
     if (saved === undefined) {
       // Best effort: a session whose messages or store cannot be read starts empty.
       const parent = await parentOf($, id).catch(() => undefined)
@@ -1091,13 +1124,16 @@ export const register: Register = on => {
         saved = (await $.store.get(storeKey(parent))) as Partial<Saved> | undefined
         const rows = (await read($, viewRows)).length === 0 ? await keptRows($, parent).catch(() => []) : []
         if (rows.length > 0) {
-          const kept = rowsUpTo(rows, await $.session.messages().catch(() => []))
-          await update($, viewRows, () => kept)
-          await keepViewRows($, id, kept)
+          taken = rowsUpTo(rows, await $.session.messages().catch(() => []))
+          await update($, viewRows, () => taken)
         }
       }
     }
     if (saved?.threads !== undefined) await takeUp($, saved)
+    // A session using threads keeps the rows it took up from the one it came from;
+    // one that is not keeps none on disk. Its record (no threads) is saved all the
+    // same: it stops its next run looking for a session it came from.
+    if (taken.length > 0 && (await inUse($))) await keepViewRows($, id, taken)
     await save($)
 
     return next(e)
@@ -1120,6 +1156,8 @@ export const register: Register = on => {
     const links = { ...(await read($, snaps)), ...merged }
     const list = await read($, threads)
     const { names, meanings } = decideHeadings(e.text, list, links, merged)
+    // Until the session uses threads, a message with no heading goes on as it came.
+    if (names.length === 0 && !isInUse(list, merged, await read($, agentMayCreate))) return next(e)
     if (names.length === 0) {
       // A reply to parts of earlier replies goes to the thread they came from, even
       // while another is picked: the person pointed at that thread's text.
@@ -1177,10 +1215,11 @@ export const register: Register = on => {
     }
   })
 
-  // A turn's rows are kept for the session's next run as the turn ends.
+  // A turn's rows are kept for the session's next run as the turn ends, once it uses
+  // threads: all of them then, those from before its first thread too.
   on('turn.complete', async ($, e, next) => {
     const result = await next(e)
-    if (e.agentId === undefined) {
+    if (e.agentId === undefined && (await inUse($))) {
       if ((await read($, threads)).length > 0) await save($)
       const rows = await read($, viewRows)
       if (rows.length > 0) await keepViewRows($, await $.session.id(), rows)
@@ -1284,7 +1323,7 @@ export const register: Register = on => {
   // the only Clients, so their count stays near the number of threads.
   on('ui.message', async ($, e, next) => {
     if ((e.data as { flip?: unknown } | null)?.flip === true) {
-      if (e.element === AGENT_SWITCH) await update($, agentMayCreate, may => !may)
+      if (e.element === AGENT_SWITCH) await flipAgentSwitch($)
       else if (e.element.startsWith('thread:')) await toggleThread($, e.element.slice('thread:'.length))
       else if (e.element.startsWith('pick:')) await moveTo($, e.element.slice('pick:'.length))
       else if (e.element === NEW_THREAD_PILL) await setNaming($, true)
@@ -1307,6 +1346,8 @@ export const register: Register = on => {
     }
     const list = await read($, threads)
     const merged = await read($, aliases)
+    // Until the session uses threads, the person's message is the engine's drawing alone.
+    if (!isInUse(list, merged, await read($, agentMayCreate))) return next(e)
     const snapped = await read($, snaps)
     const resolve = (name: string) => personThreadOf(name, list, { ...snapped, ...merged })
     const selected = await selectedKeys($)
@@ -1386,9 +1427,11 @@ export const register: Register = on => {
       const { Box } = $.ui.resolve(e)
       return <Box display="none" />
     }
-    // With no threads yet a part still offers "+ thread": its picker can start one.
     const list = await read($, threads)
     const merged = await read($, aliases)
+    // Until the session uses threads, a reply is the engine's drawing alone: no
+    // "+ thread", or room for one, round its parts.
+    if (!isInUse(list, merged, await read($, agentMayCreate))) return next(e)
     const selected = await selectedKeys($)
     const resolve = (name: string) => threadOf(name, list, merged)
     const written = splitSections(e.props.text, name => resolve(name) !== undefined)
@@ -1594,7 +1637,7 @@ export const register: Register = on => {
               label={mayCreate ? '( ●)' : '(● )'}
               variant={mayCreate ? 'primary' : 'secondary'}
               dimColor={!mayCreate}
-              onPress={() => update($, agentMayCreate, may => !may)}
+              onPress={() => flipAgentSwitch($)}
             />
           </Box>
         </Box>

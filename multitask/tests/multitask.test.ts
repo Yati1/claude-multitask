@@ -116,20 +116,67 @@ test('quiet is exact and updates are one line each under a short header', async 
   expect(relayNames(text)).toEqual(['auth', 'docs'])
 })
 
-test('a quiet reply draws as nothing on every surface', async ($, on) => {
+test('a quiet reply draws as nothing on every surface while Multitask is on, and as the engine draws it while off', async ($, on) => {
   engine(on)
-  for (const surface of ['terminal', 'desktop'] as const) {
-    for (const text of ['(quiet)', NO_RESPONSE]) {
-      const row = await $.ui.mount({
-        plugin: 'multitask',
-        surface,
-        component: 'AssistantMessage',
-        props: { text, isFirstOfReply: true },
-      })
-      expect(await row.find({ text: /quiet|No response/ })).toBeUndefined()
-      await row.unmount()
+  const drawn = async (surface: 'terminal' | 'desktop', text: string) => {
+    const row = await $.ui.mount({
+      plugin: 'multitask',
+      surface,
+      component: 'AssistantMessage',
+      props: { text, isFirstOfReply: true },
+    })
+    const tree = (await row.drawn()) as { type: string; props?: { display?: string } }
+    await row.unmount()
+    return tree.props?.display === 'none' ? 'nothing' : tree.type
+  }
+  const each = async (expected: string) => {
+    for (const surface of ['terminal', 'desktop'] as const) {
+      for (const text of ['(quiet)', NO_RESPONSE]) expect({ surface, text, as: await drawn(surface, text) }).toEqual({ surface, text, as: expected })
     }
   }
+  await each('engine')
+  await $.command.run({ command: 'multitask', args: '', origin: { kind: 'composer' }, presentation: {} as never })
+  await each('nothing')
+})
+
+test('a session that never switches Multitask on is left as it is: no tools, no notes, no folded notices', async ($, on) => {
+  // what the mod offers the model, answered here before the stand-in engine beneath
+  const registered: string[] = []
+  on('tool.register', ($, e) => {
+    registered.push(e.name)
+    return { value: { tool: `mcp__multitask__${e.name}` } }
+  })
+  const seen = engine(on)
+  await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
+  expect(registered).toEqual([])
+  await $.prompt.submit({ text: 'hello', origin: { kind: 'composer' }, wait: false })
+  expect(seen.prompts).toEqual(['hello'])
+
+  // switched on, the voice has its tools; a reload while it has thoughts offers them again
+  const flip = () => $.command.run({ command: 'multitask', args: '', origin: { kind: 'composer' }, presentation: {} as never })
+  await flip()
+  expect(registered).toEqual(['think', 'tell', 'unqueue', 'stop', 'thoughts'])
+  await $.tool.call({ tool: 'mcp__multitask__think', tool_use_id: 'c1', name: 'auth bug', task: 'Find why login fails' })
+  await flip()
+  registered.length = 0
+  await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
+  expect(registered).toEqual(['think', 'tell', 'unqueue', 'stop', 'thoughts'])
+
+  // off, the engine's notice that a thought finished is the engine's drawing alone
+  const notice = async () => {
+    const row = await $.ui.mount({
+      plugin: 'multitask',
+      surface: 'desktop',
+      component: 'UserMessage',
+      props: { text: 'agent-1 finished', origin: { kind: 'task-notification' }, isExpanded: false, task: { id: 'agent-1' } } as never,
+    })
+    const tree = (await row.drawn()) as { type: string; props?: { display?: string } }
+    await row.unmount()
+    return tree.props?.display === 'none' ? 'nothing' : tree.type
+  }
+  expect(await notice()).toBe('engine')
+  await flip()
+  expect(await notice()).toBe('nothing')
 })
 
 test('the voice\'s quiet reply goes on as "No response requested.", held back only while it could still be quiet', async ($, on) => {

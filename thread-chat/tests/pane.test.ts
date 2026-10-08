@@ -460,6 +460,8 @@ test('every message is kept with its text, however long, writing only the files 
   // an earlier version kept the session's rows in the store, without text
   const { kept, files, writes } = engine(on, { 'view:session-1': [{ id: 'p0', role: 'user', mark: markOf('# design\nlong ago') }] })
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
+  // a session using threads
+  await $.prompt.submit(say('# design\nlong ago'))
   const reply = (uuid: string, text: string) =>
     $.session
       .append({ message: { type: 'assistant', role: 'assistant', content: [{ type: 'text', text }] }, door: 'response', origin: model, uuid })
@@ -491,6 +493,25 @@ test('every message is kept with its text, however long, writing only the files 
   writes.length = 0
   await done()
   expect(writes).toEqual([])
+})
+
+test('a session keeps no rows on disk until it uses threads, then every one, those from before too', async ($, on) => {
+  const { kept, files, writes } = engine(on)
+  await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
+  const reply = (uuid: string, text: string) =>
+    $.session
+      .append({ message: { type: 'assistant', role: 'assistant', content: [{ type: 'text', text }] }, door: 'response', origin: model, uuid })
+      .catch(() => undefined)
+  const done = () => $.turn.complete({ answer: '', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })
+  await reply('a1', 'before any thread')
+  await done()
+  expect(writes).toEqual([])
+  expect(kept['view:session-1']).toBeUndefined()
+
+  await $.prompt.submit(say('# design\nnow'))
+  await reply('a2', '# design\nin a thread')
+  await done()
+  expect(rowsIn(kept, files, 'session-1').map(row => row.id)).toEqual(['a1', 'a2'])
 })
 
 test('rows are kept one per id, every one, and read back from their files as written', async () => {
