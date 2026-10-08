@@ -2,16 +2,22 @@ import { atom, read, update } from 'claude-code'
 import type { AgentStatus, EngineInterface, Register, RenderElement, Timer, TurnCompleteReason } from 'claude-code'
 
 import type { Thought, ThoughtStatus, Update } from '../types'
+import type { HookStream, TurnStepChunk, TurnStepResult } from 'claude-code'
 import {
+  NO_RESPONSE,
+  QUIET,
   RELAY_NOTES,
   THOUGHT,
   VOICE,
   VOICE_OFF,
   VOICE_REMINDER,
   describeThoughts,
+  formatNews,
   formatUpdates,
+  heardOf,
   isQuiet,
   isRelayText,
+  newsOf,
   oneLine,
   relayNames,
 } from './prompts'
@@ -22,6 +28,7 @@ const inbox = atom({ plugin: 'multitask', key: 'inbox' } as const, [])
 const isMainBusy = atom({ plugin: 'multitask', key: 'isMainBusy' } as const, false)
 const toldVoice = atom({ plugin: 'multitask', key: 'toldVoice' } as const, false)
 const expanded = atom({ plugin: 'multitask', key: 'expanded' } as const, [])
+const heard = atom({ plugin: 'multitask', key: 'heard' } as const, {})
 
 const PANE = 'multitask-thoughts'
 const SWITCH = 'multitask-switch'
@@ -55,6 +62,9 @@ const INTERRUPT_GRACE_MS = 4000
 // How many of a thought's progress notes are kept, and how long each may be.
 const NOTES_KEPT = 5
 const NOTE_MAX = 500
+// How long the engine's notice that a thought's turn ended waits, at most, for that end
+// to be settled.
+const NOTICE_WAIT_MS = 1000
 
 const OFF = {
   deny: 'Multitask is off. The user turns it on with the switch above the prompt or /multitask.',
@@ -62,6 +72,10 @@ const OFF = {
 const NOT_VOICE = { deny: 'Only the voice starts, steers or lists thoughts; this call came from another agent.' }
 
 let flushTimer: Timer | undefined
+// The settling of each thought's latest turn end, by thought id, which the engine's
+// notice of that end waits for. Kept here, not in state: what one dispatch reads of state
+// stands still while it runs, so a wait for state to change would never see it.
+const settling = new Map<string, Promise<void>>()
 
 const TOOL_SPECS = [
   {
@@ -195,13 +209,8 @@ function scheduleFlush($: EngineInterface) {
 // Hands what the thoughts said to the voice as one message, once it is idle.
 async function flushInbox($: EngineInterface) {
   if (!(await read($, isOn)) || (await read($, isMainBusy))) return
-  let taken: Update[] = []
-  await update($, inbox, list => {
-    taken = list
-    return []
-  })
-  if (taken.length === 0) return
-  void $.prompt.submit({ text: formatUpdates(taken) })
+  const text = await takeRelay($)
+  if (text !== undefined) void $.prompt.submit({ text })
 }
 
 async function relay($: EngineInterface, fn: (list: Update[]) => Update[]) {
@@ -346,6 +355,87 @@ async function voiceNote($: EngineInterface): Promise<string | undefined> {
   if (now !== told) await update($, toldVoice, () => now)
   if (now) return told ? VOICE_REMINDER : VOICE
   return told ? VOICE_OFF : undefined
+}
+
+// What is new from the thoughts the voice has not heard of, but those a relay names (it
+// tells of them itself); none when nothing is. Once told, the voice has heard of them all.
+async function takeNews($: EngineInterface, relayed: ReadonlySet<string> = new Set()): Promise<string | undefined> {
+  const list = await read($, thoughts)
+  const was = await read($, heard)
+  const lines = list.filter(t => !relayed.has(t.name)).flatMap(t => newsOf(t, was[t.id]))
+  await update($, heard, () => Object.fromEntries(list.map(t => [t.id, heardOf(t)])))
+  return lines.length === 0 ? undefined : formatNews(lines)
+}
+
+// The updates waiting for the voice, taken, as one relay with what is new from the other
+// thoughts after them; none when no update waits.
+async function takeRelay($: EngineInterface): Promise<string | undefined> {
+  let taken: Update[] = []
+  await update($, inbox, list => {
+    taken = list
+    return []
+  })
+  if (taken.length === 0) return undefined
+  const news = await takeNews($, new Set(taken.map(u => u.thought)))
+  return news === undefined ? formatUpdates(taken) : `${formatUpdates(taken)}\n\n${news}`
+}
+
+// Waits, a short while at most, for the turn end an engine's notice tells of to be
+// settled (its update waiting for the voice), when the notice names a thought whose turn
+// ended. The notice can come while the settling still runs.
+async function settledFor($: EngineInterface, notice: string) {
+  const id = [...settling.keys()].find(one => notice.includes(one))
+  if (id === undefined) return
+  await Promise.race([settling.get(id), $.clock.sleep(NOTICE_WAIT_MS)])
+  settling.delete(id)
+}
+
+// The voice's reply as it streams, its text held back while it could still be QUIET: then
+// passed on as it came or, being QUIET, as NO_RESPONSE, which the desktop draws as
+// nothing. A reply that calls a tool, or thinks after its text, is passed on as it came.
+async function* unquiet(
+  stream: HookStream<TurnStepChunk, TurnStepResult>,
+): AsyncGenerator<TurnStepChunk, TurnStepResult> {
+  // Every piece since the reply's text began, in order (null once passed on), and that text.
+  let held: TurnStepChunk[] | null = []
+  let text = ''
+  let isRewritten = false
+  for await (const chunk of stream) {
+    if (held === null || (held.length === 0 && chunk.kind !== 'text')) {
+      yield chunk
+      continue
+    }
+    if (chunk.kind === 'stop') {
+      isRewritten = text.trim() === QUIET
+      yield* isRewritten ? quieted(held) : held
+      held = null
+      yield chunk
+      continue
+    }
+    held.push(chunk)
+    if (chunk.kind === 'engine') continue
+    if (chunk.kind === 'text') {
+      text += chunk.text
+      if (QUIET.startsWith(text.trim())) continue
+    }
+    yield* held
+    held = null
+  }
+  if (held !== null) {
+    isRewritten = text.trim() === QUIET
+    yield* isRewritten ? quieted(held) : held
+  }
+  const result = await stream.result
+  return isRewritten ? { ...result, answer: NO_RESPONSE } : result
+}
+
+// The pieces of a quiet reply with its text as NO_RESPONSE, in the first piece of text.
+function quieted(held: TurnStepChunk[]): TurnStepChunk[] {
+  const first = held.findIndex(chunk => chunk.kind === 'text')
+  return held.flatMap((chunk, i): TurnStepChunk[] => {
+    if (chunk.kind !== 'text') return [chunk]
+    return i === first ? [{ ...chunk, text: NO_RESPONSE }] : []
+  })
 }
 
 // The voice's effort: the lighter of the session's and the chosen one, so the voice
@@ -513,21 +603,31 @@ export const register: Register = (on, options) => {
     return { result: `${describeThoughts([t])}\n\nRecent:\n${recent.join('\n')}` }
   })
 
-  // The engine's own note that a background agent ended would reach the voice
-  // twice; the relay already carries it. Beside the person's own message the voice
-  // is told when Multitask came on or went off: that is the one way it is told. A
-  // system prompt section would not follow the switch, as the engine sends the
-  // prompt it recorded at the first request until a compaction, and on a machine
-  // with managed settings it is never sent, the managed plugin skipping a user
-  // plugin's prompt.compose hook.
+  // The engine's own notice that a thought's turn ended would tell the voice what the
+  // relay tells it: while Multitask is on, the notice goes in as the relay, so one row
+  // wakes the voice; with nothing waiting, as it came, with what is new beside it.
+  // Beside the person's own message the voice is told when Multitask came on or went
+  // off, and what is new from its thoughts: that is the one way it is told. A system
+  // prompt section would not follow the switch, as the engine sends the prompt it
+  // recorded at the first request until a compaction, and on a machine with managed
+  // settings it is never sent, the managed plugin skipping a user plugin's
+  // prompt.compose hook.
   on('prompt.submit', async ($, e, next) => {
     if (e.origin.kind === 'task-notification') {
-      const list = await read($, thoughts)
-      if (list.some(t => e.text.includes(t.id))) return { drop: 'multitask relays its thoughts itself' }
+      // Waited for before anything is read, so what is read has it.
+      await settledFor($, e.text)
+      const t = (await read($, thoughts)).find(one => e.text.includes(one.id))
+      if (t === undefined || !(await read($, isOn))) return next(e)
+      const relayed = await takeRelay($)
+      if (relayed !== undefined) return next({ ...e, text: relayed })
+      const news = await takeNews($)
+      return news === undefined ? next(e) : next({ ...e, context: [...(e.context ?? []), news] })
     }
     if (!PERSON.has(e.origin.kind)) return next(e)
-    const note = await voiceNote($)
-    return note === undefined ? next(e) : next({ ...e, context: [...(e.context ?? []), note] })
+    const notes = [await voiceNote($), (await read($, isOn)) ? await takeNews($) : undefined].filter(
+      (note): note is string => note !== undefined,
+    )
+    return notes.length === 0 ? next(e) : next({ ...e, context: [...(e.context ?? []), ...notes] })
   })
 
   // A compaction may summarise the voice's part away: while Multitask is on, it is
@@ -554,12 +654,14 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
-  // A thought's latest turn is noted; the voice's requests think less hard.
+  // A thought's latest turn is noted. While Multitask is on, the voice's requests think
+  // less hard, and its quiet reply goes on as one the desktop draws as nothing.
   on('turn.step', async function* ($, e, next) {
     const id = e.agentId
     if (id === undefined) {
-      const isLighter = voiceEffort !== 'session' && e.effort !== undefined && (await read($, isOn))
-      return yield* next(isLighter ? { ...e, effort: lighterEffort(e.effort, voiceEffort) } : e)
+      if (!(await read($, isOn))) return yield* next(e)
+      const isLighter = voiceEffort !== 'session' && e.effort !== undefined
+      return yield* unquiet(next(isLighter ? { ...e, effort: lighterEffort(e.effort, voiceEffort) } : e))
     }
     const t = (await read($, thoughts)).find(one => one.id === id)
     if (t !== undefined && t.turnId !== e.turnId) {
@@ -578,7 +680,8 @@ export const register: Register = (on, options) => {
       await update($, isMainBusy, () => false)
       scheduleFlush($)
     } else if ((await read($, thoughts)).some(t => t.id === e.agentId)) {
-      void settleThought($, e.agentId, e.reason, e.answer)
+      const settle = settleThought($, e.agentId, e.reason, e.answer)
+      settling.set(e.agentId, settle.then(() => undefined, () => undefined))
     }
     return result
   })

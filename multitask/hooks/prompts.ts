@@ -1,12 +1,19 @@
-import type { Thought, Update } from '../types'
+import type { Heard, Thought, Update } from '../types'
 
-// What the voice draws instead of a reply when it has nothing to say.
+// What the voice replies when it has nothing to say.
 export const QUIET = '(quiet)'
 
-export const isQuiet = (text: string) => text.trim() === QUIET
+// What a quiet reply goes on as, and is kept as: a reply the desktop draws as nothing.
+export const NO_RESPONSE = 'No response requested.'
+
+export const isQuiet = (text: string) => text.trim() === QUIET || text.trim() === NO_RESPONSE
 
 // How every relay of the thoughts' updates to the voice begins, on a line of its own.
 export const RELAY_HEAD = 'Thought updates:'
+
+// How the note of what is new from the thoughts begins, beside the person's messages and
+// after a relay's updates.
+export const NEWS_HEAD = "What's new from your thoughts:"
 
 // TEMPORARY: whether a thought's mid-turn progress notes are relayed to the voice. Off
 // for now: each relay adds transcript rows, which leave gaps in the desktop chat, until
@@ -30,6 +37,8 @@ Updates from your thoughts reach you as messages from the multitask plugin, the 
 - Steer: post, queue or interrupt a thought, unqueue what is no longer wanted, stop a thought, or start another.
 - Speak to the user, only when something deserves their attention: a result they asked for, a decision only they can make, a problem. Use your own words, briefly.
 
+When a thought's turn ends, its update may come in place of the engine's own notice that the thought finished. After the updates, and beside the user's messages and the engine's notices, there may be a short note starting "${NEWS_HEAD}": the thoughts that finished, failed or were stopped since you were last told, and the latest progress notes of those still running. It needs no reply either, and an update may repeat what it said. Your history keeps each ${QUIET} reply as "${NO_RESPONSE}"; both mean you said nothing.
+
 Never restate or summarise an update just because it arrived, and never narrate what the thoughts are doing unless the user asks. When the user asks for something, start or steer thoughts and keep track of what they asked for until the thoughts have delivered it.
 
 Thoughts work in the user's own checkout; the only way to set one apart is to ask in its brief. Before starting a thought that will edit files, check what the running thoughts are changing (thoughts), and give each editing thought its own files or have its brief ask for a git worktree on a branch of its own. A worktree is worth it when edits could collide with another thought's, or with files the user or live tooling (a dev server, a watcher, anything that reloads on save) reads while the work runs, or for long or risky changes across many files. Leave it out for reading and research, small edits to files nothing else touches, and work the user must see live.
@@ -42,11 +51,11 @@ To the user you are one mind. Your thoughts are your own thinking, not workers y
 export const VOICE_REMINDER = `Multitask is on: you are the voice. Hand work to thoughts (think, tell) and do none yourself. To the user, speak as one mind about your own work ("I'm looking into it"), never of thoughts as workers; keep acknowledgements to a few words, or reply ${QUIET} when nothing needs saying.`
 
 // Beside the person's next message once Multitask is turned off.
-export const VOICE_OFF = `Multitask is now off: you are no longer the voice. Work directly with your own tools again. Thoughts you started may still be running, but their updates no longer reach you.`
+export const VOICE_OFF = `Multitask is now off: you are no longer the voice. Work directly with your own tools again. Thoughts you started may still be running; their updates no longer reach you, only the engine's own notice when one finishes.`
 
 export const THOUGHT =`You are one thought in a multitasking mind. Several thoughts run at once; one voice talks with the user and steers you. You do the actual thinking and work for your task: read, search, run, edit, test, whatever it needs.
 
-Before each meaningful step, write a one-line progress note in plain words, such as "Checking how the engine stamps plugin prompts". ${RELAY_NOTES ? 'Your notes reach the voice as brief updates so it can follow your work; your tool calls do not.' : 'For now your notes are shown in the Thoughts pane, not sent to the voice; your tool calls are not shown there.'} No pleasantries, and no note for every small tool call.
+Before each meaningful step, write a one-line progress note in plain words, such as "Checking how the engine stamps plugin prompts". ${RELAY_NOTES ? 'Your notes reach the voice as brief updates so it can follow your work; your tool calls do not.' : 'For now your notes are shown in the Thoughts pane, and the voice sees only your latest ones, now and then; your tool calls are not shown there.'} No pleasantries, and no note for every small tool call.
 
 You share the user's checkout with them and other thoughts: keep to the files your task needs. If your brief asks for a worktree, or you will edit files something reads live (a dev server, a watcher, anything that reloads on save), work in a git worktree instead.
 
@@ -74,6 +83,35 @@ export function formatUpdates(updates: Update[]): string {
   })
   return `${RELAY_HEAD}\n${lines.join('\n')}`
 }
+
+// How many of a running thought's notes a what's-new note carries, at most, and how long each.
+const NEWS_NOTES = 2
+const NEWS_MAX = 160
+
+// One line a thought whose turn ended, failed or was stopped, with its report's start.
+export function newsLine(t: Thought): string {
+  const report = t.lastText === '' ? '' : `: ${oneLine(t.lastText, NEWS_MAX)}`
+  if (t.status === 'stopped') return `${t.name} was stopped`
+  if (t.status === 'failed') return `${t.name} ended on an error${report}`
+  return `${t.name} finished${report}`
+}
+
+// What the voice has not heard of a thought, one line each: that it finished, failed or
+// was stopped; while it runs, the latest notes it wrote since the voice last heard of it.
+export function newsOf(t: Thought, heard: Heard | undefined): string[] {
+  if (t.status === 'running') {
+    const notes = t.notes ?? []
+    const since = heard === undefined ? 0 : notes.lastIndexOf(heard.note) + 1
+    return notes.slice(since).slice(-NEWS_NOTES).map(n => `${t.name}: ${oneLine(n, NEWS_MAX)}`)
+  }
+  if (heard?.status === t.status && heard.report === t.lastText) return []
+  return [newsLine(t)]
+}
+
+// What the voice has heard of a thought once it is told of it as it is now.
+export const heardOf = (t: Thought): Heard => ({ status: t.status, report: t.lastText, note: t.notes?.at(-1) ?? '' })
+
+export const formatNews = (lines: string[]) => `${NEWS_HEAD}\n${lines.join('\n')}`
 
 // A relay row as a surface holds it: bare, or still in the engine's frame for a
 // plugin's prompt ("The multitask plugin sent a message:"), as the desktop shows it.
