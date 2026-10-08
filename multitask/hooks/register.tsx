@@ -234,10 +234,25 @@ function firstLine(task: string): string {
   return task.trimStart().split('\n')[0]?.trimEnd() ?? ''
 }
 
+// The voice's tools are the model's from Multitask first coming on: a session that
+// never switches it on has no tool of this mod's. Registered again, each is replaced.
+async function offerVoiceTools($: EngineInterface) {
+  for (const spec of TOOL_SPECS) {
+    try {
+      await $.tool.register(spec)
+    } catch {
+      // the switch stands; the next time it comes on tries again
+    }
+  }
+}
+
 async function toggle($: EngineInterface): Promise<boolean> {
   let now = false
   await update($, isOn, was => (now = !was))
-  if (now) void $.ui.open({ id: PANE, title: 'Thoughts' })
+  if (now) {
+    await offerVoiceTools($)
+    void $.ui.open({ id: PANE, title: 'Thoughts' })
+  }
   return now
 }
 
@@ -583,7 +598,9 @@ export const register: Register = (on, options) => {
       prompt: THOUGHT,
       disallowedTools: Object.values(TOOL),
     })
-    for (const spec of TOOL_SPECS) await $.tool.register(spec)
+    // The switch and the thoughts outlive a reload of this code: the tools they had are
+    // offered again. Never switched on, the session gets none.
+    if ((await read($, isOn)) || (await read($, thoughts)).length > 0) await offerVoiceTools($)
     await $.command.register({ name: 'multitask', description: 'Turn Multitask on or off' })
     await $.command.register({ name: 'thoughts', description: 'Show the multitasking thoughts in a pane' })
     return next(e)
@@ -808,7 +825,7 @@ export const register: Register = (on, options) => {
     const result = await next(e)
     if (e.agentId === undefined) {
       await update($, isMainBusy, () => false)
-      scheduleFlush($)
+      if (await read($, isOn)) scheduleFlush($)
     } else if ((await read($, thoughts)).some(t => t.id === e.agentId)) {
       const settle = settleThought($, e.agentId, e.reason, e.answer)
       settling.set(e.agentId, settle.then(() => undefined, () => undefined))
@@ -824,9 +841,9 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
-  // The voice saying nothing draws as nothing.
+  // The voice saying nothing draws as nothing. Off, a reply is the engine's drawing alone.
   on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
-    if (!isQuiet(e.props.text)) return next(e)
+    if (!isQuiet(e.props.text) || !(await read($, isOn))) return next(e)
     const { Box } = $.ui.resolve(e)
     return <Box display="none" />
   })
@@ -835,6 +852,8 @@ export const register: Register = (on, options) => {
   // as one dim line (ctrl+o shows them whole); other surfaces draw nothing. A surface
   // may not know the row came from this plugin (the desktop holds it under another
   // origin, its text still in the engine's frame), so the relay is known by its text too.
+  // The engine's notice that a thought finished is folded the same way while Multitask
+  // is on; off, it is the engine's drawing alone.
   on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
     const origin = e.props.origin
     const isRelay = (origin.kind === 'plugin' && origin.name === 'multitask') || isRelayText(e.props.text)
@@ -842,6 +861,7 @@ export const register: Register = (on, options) => {
     const isThoughtNotice =
       origin.kind === 'task-notification' &&
       taskId !== undefined &&
+      (await read($, isOn)) &&
       (await read($, thoughts)).some(t => t.id === taskId)
     if (!isRelay && !isThoughtNotice) return next(e)
     if (e.surface !== 'terminal') {

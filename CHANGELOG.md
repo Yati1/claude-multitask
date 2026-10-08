@@ -6,7 +6,7 @@ Notable changes to the thread-chat and multitask mods. The format is based on [K
 
 ### Added
 
-- Added a picker to thread-chat's tags and `+ thread` to move a message or part to another thread.
+- Added a picker to thread-chat's tags, and `+ thread` once a chat has threads, to move messages.
 - Added a thread view to thread-chat (`/thread-view` or `view`) with every message of picked threads.
 - Added a hover highlight to thread-chat's thread tags and pills in the desktop app.
 - Added the `voiceEffort` setting to multitask to set how hard the voice thinks (`low` by default).
@@ -34,3 +34,4 @@ Notable changes to the thread-chat and multitask mods. The format is based on [K
 - Fixed issue where messages to a busy or interrupted multitask thought were silently lost.
 - Fixed issue where multitask left stray chat rows when the voice stayed quiet or a thought finished.
 - Fixed issue where hidden background agents could start multitask thoughts or thread-chat threads.
+- Fixed issue where thread-chat and multitask added empty rows to chats that did not use them.
