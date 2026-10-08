@@ -139,7 +139,7 @@ test('a quiet reply draws as nothing on every surface while Multitask is on, and
   await each('nothing')
 })
 
-test('a session that never switches Multitask on is left as it is: no tools, no notes, no folded notices', async ($, on) => {
+test('a session that never switches Multitask on is left as it is: no band, no tools, no notes, no folded notices', async ($, on) => {
   // what the mod offers the model, answered here before the stand-in engine beneath
   const registered: string[] = []
   on('tool.register', ($, e) => {
@@ -151,13 +151,21 @@ test('a session that never switches Multitask on is left as it is: no tools, no 
   expect(registered).toEqual([])
   await $.prompt.submit({ text: 'hello', origin: { kind: 'composer' }, wait: false })
   expect(seen.prompts).toEqual(['hello'])
+  const band = await $.ui.mount({ plugin: 'multitask', surface: 'desktop', ...BAND })
+  expect(await band.find({ text: /^Multitask$/ })).toBeUndefined()
 
-  // switched on, the voice has its tools; a reload while it has thoughts offers them again
+  // switched on, the voice has its tools and the band shows; a reload while it has
+  // thoughts offers them again, and the band stays while they do
   const flip = () => $.command.run({ command: 'multitask', args: '', origin: { kind: 'composer' }, presentation: {} as never })
   await flip()
   expect(registered).toEqual(['think', 'tell', 'unqueue', 'stop', 'thoughts'])
+  await band.redraw()
+  expect((await band.find({ type: 'Svg' }))?.props.alt).toBe('Multitask: on')
   await $.tool.call({ tool: 'mcp__multitask__think', tool_use_id: 'c1', name: 'auth bug', task: 'Find why login fails' })
   await flip()
+  await band.redraw()
+  expect((await band.find({ type: 'Svg' }))?.props.alt).toBe('Multitask: off')
+  expect((await band.find({ key: 'open-thoughts' }))?.props.label).toBe('thoughts 1')
   registered.length = 0
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
   expect(registered).toEqual(['think', 'tell', 'unqueue', 'stop', 'thoughts'])
@@ -313,12 +321,12 @@ test('the voice is refused work, and its thoughts relay, queue and unqueue', asy
   const off = await $.tool.call({ tool: 'mcp__multitask__think', tool_use_id: 'c0', name: 'a', task: 'x' })
   expect(off.deny).toBeDefined()
 
+  // Off with no thoughts there is no band: /multitask turns it on.
   const band = await $.ui.mount({ plugin: 'multitask', surface: 'desktop', ...BAND })
-  expect(await band.find({ text: /^Multitask$/ })).toBeDefined()
-  expect((await band.find({ type: 'Svg' }))?.props.alt).toBe('Multitask: off')
-  await band.pointer({ type: 'down', x: 1, y: 0, button: 'left', in: 'multitask-switch' })
-  await band.pointer({ type: 'up', x: 1, y: 0, button: 'left', in: 'multitask-switch' })
+  expect(await band.find({ text: /^Multitask$/ })).toBeUndefined()
+  await $.command.run({ command: 'multitask', args: '', origin: { kind: 'composer' }, presentation: {} as never })
   await band.redraw()
+  expect(await band.find({ text: /^Multitask$/ })).toBeDefined()
   expect((await band.find({ type: 'Svg' }))?.props.alt).toBe('Multitask: on')
 
   // On: the voice's own work is refused, its tools are not.
@@ -385,6 +393,13 @@ test('the voice is refused work, and its thoughts relay, queue and unqueue', asy
   // Posting reaches it at once.
   await $.tool.call({ tool: 'mcp__multitask__tell', tool_use_id: 'c6', thought: 'auth-bug', message: 'also check refresh' })
   expect(seen.sends.at(-1)?.text).toBe('also check refresh')
+
+  // The band's switch turns Multitask off; the band stays while the thought lives.
+  await band.pointer({ type: 'down', x: 1, y: 0, button: 'left', in: 'multitask-switch' })
+  await band.pointer({ type: 'up', x: 1, y: 0, button: 'left', in: 'multitask-switch' })
+  await band.redraw()
+  expect((await band.find({ type: 'Svg' }))?.props.alt).toBe('Multitask: off')
+  expect(await band.find({ key: 'open-thoughts' })).toBeDefined()
 })
 
 test('the voice is told as Multitask comes on and goes off, and thinks less hard while on', async ($, on) => {
@@ -891,8 +906,7 @@ test('the band shares one row with another mod: its controls keep their width, n
   })
   engine(on)
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
-  const terminal = await $.ui.mount({ plugin: 'multitask', surface: 'terminal', ...BAND })
-  await terminal.press({ key: 'multitask' })
+  await $.command.run({ command: 'multitask', args: '', origin: { kind: 'composer' }, presentation: {} as never })
 
   for (const surface of ['desktop', 'terminal'] as const) {
     const band = await $.ui.mount({ plugin: 'multitask', surface, ...BAND })

@@ -887,6 +887,8 @@ export const register: Register = (on, options) => {
 
     const on_ = await read($, isOn)
     const live = (await read($, thoughts)).filter(t => t.status !== 'stopped')
+    // Off with no thoughts left, there is no band: /multitask turns Multitask on.
+    if (!on_ && live.length === 0) return below
     // The count is of the thoughts running now; an idle or failed one only keeps the band up.
     const running = live.filter(t => t.status === 'running').length
     const queued = live.reduce((n, t) => n + t.queued.length, 0)
@@ -923,9 +925,7 @@ export const register: Register = (on, options) => {
       <Box flexDirection="row" columnGap={1} alignItems="center" flexShrink={0}>
         <Text>Multitask</Text>
         {toggleSwitch}
-        {(on_ || live.length > 0) && (
-          <Button key="open-thoughts" label={thoughtsLabel} onPress={() => void $.ui.open({ id: PANE, title: 'Thoughts' })} />
-        )}
+        <Button key="open-thoughts" label={thoughtsLabel} onPress={() => void $.ui.open({ id: PANE, title: 'Thoughts' })} />
       </Box>
     )
 

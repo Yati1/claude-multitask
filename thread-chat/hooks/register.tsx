@@ -37,6 +37,7 @@ import {
 } from './pane'
 import type { ViewDeps, ViewInputs } from './pane'
 
+const isOn = atom({ plugin: 'thread-chat', key: 'isOn' } as const, false)
 const threads = atom({ plugin: 'thread-chat', key: 'threads' } as const, [])
 const aliases = atom({ plugin: 'thread-chat', key: 'aliases' } as const, {})
 const agentMayCreate = atom({ plugin: 'thread-chat', key: 'agentMayCreate' } as const, false)
@@ -78,14 +79,18 @@ async function addThreads($: EngineInterface, names: string[], createdBy: Thread
   if (names.length > 0) await update($, threads, list => withThreads(list, names, createdBy))
 }
 
-// Whether the session uses threads: it has one (or a merge), or the person let the
-// agent start them. Until then the mod leaves the session be: nothing beside the
-// person's messages, no tags or "+ thread" round the chat's rows, nothing kept on disk.
-const isInUse = (list: Thread[], merged: Record<string, string>, mayCreate: boolean) =>
-  list.length > 0 || Object.keys(merged).length > 0 || mayCreate
+// Threads are on in a session from the person's /threads until they run it again. Off,
+// the mod leaves the session be: nothing beside the person's messages, whose `#`
+// headings are plain text, no tags or "+ thread" round the chat's rows, no band, no
+// tool, nothing kept on disk. Turned off, the session keeps its threads for coming on again.
+const OFF_TEXT = 'Threads are off in this chat; /threads turns them on.'
 
-async function inUse($: EngineInterface): Promise<boolean> {
-  return isInUse(await read($, threads), await read($, aliases), await read($, agentMayCreate))
+// Whether a session kept by a version of this mod from before /threads used threads:
+// it had one (or a merge), or the person let the agent start them. It counts as on.
+async function wasInUse($: EngineInterface): Promise<boolean> {
+  const list = await read($, threads)
+  const merged = await read($, aliases)
+  return list.length > 0 || Object.keys(merged).length > 0 || (await read($, agentMayCreate))
 }
 
 const CREATE_SPEC = {
@@ -99,8 +104,8 @@ const CREATE_SPEC = {
   },
 }
 
-// create_thread is the model's from the person letting the agent start threads on:
-// a session that never does has no tool of this mod's. Registered again, it is replaced.
+// create_thread is the model's once threads are on and the person lets the agent start
+// them: a session that never does has no tool of this mod's. Registered again, it is replaced.
 async function offerCreateTool($: EngineInterface) {
   try {
     await $.tool.register(CREATE_SPEC)
@@ -114,6 +119,16 @@ async function flipAgentSwitch($: EngineInterface) {
   let now = false
   await update($, agentMayCreate, may => (now = !may))
   if (now) await offerCreateTool($)
+}
+
+// Turns threads on or off, as /threads does, and keeps the switch for the session's
+// next run. Coming on where the agent may start threads, it is offered its tool.
+async function flipThreads($: EngineInterface): Promise<boolean> {
+  let now = false
+  await update($, isOn, was => (now = !was))
+  if (now && (await read($, agentMayCreate))) await offerCreateTool($)
+  await save($)
+  return now
 }
 
 // What a heading means, by one rule for sending and drawing alike: `+name` a new
@@ -215,6 +230,8 @@ function personThreadOf(name: string, list: Thread[], links: Record<string, stri
 const storeKey = (sessionId: string) => `session:${sessionId}`
 
 type Saved = {
+  // absent from a record kept before /threads
+  isOn: boolean
   threads: Thread[]
   aliases: Record<string, string>
   snaps: Record<string, string>
@@ -226,9 +243,10 @@ type Saved = {
   briefed: Brief | null
 }
 
-// Keeps the session's threads, merges, recorded meanings and latest rows for its next run.
+// Keeps the session's switch, threads, merges, recorded meanings and latest rows for its next run.
 async function save($: EngineInterface) {
   const saved: Saved = {
+    isOn: await read($, isOn),
     threads: await read($, threads),
     aliases: await read($, aliases),
     snaps: await read($, snaps),
@@ -326,10 +344,10 @@ async function isRecentReply($: EngineInterface, id: string, text: string): Prom
   return (await read($, recentTexts)).includes(textMarkOf(text))
 }
 
-// Whether a row that belongs to no thread is filtered out: while a thread is
-// picked, all but those since the person's last message are.
+// Whether a row that belongs to no thread is filtered out: while threads are on and a
+// thread is picked, all but those since the person's last message are.
 async function isFilteredOut($: EngineInterface, ids: string[]): Promise<boolean> {
-  if ((await selectedKeys($)).size === 0) return false
+  if (!(await read($, isOn)) || (await selectedKeys($)).size === 0) return false
   return !(await isRecent($, ids))
 }
 
@@ -465,20 +483,28 @@ function threadState(list: Thread[], merged: Record<string, string>, mayCreate: 
 
 const mergesKey = (merged: Record<string, string>) => JSON.stringify(Object.entries(merged).sort())
 
-// What the model is told of the threads beside the person's message: how they work,
-// once they matter (and again after a compaction), then where they stand whenever a
-// merge or the agent switch changed it. A thread it sees made (by a heading, its own
-// create_thread, a move it is told of) needs no telling.
+// What the model is told of the threads beside the person's message while they are on:
+// how they work, once they come on (and again after a compaction), then where they
+// stand whenever a merge or the agent switch changed it. A thread it sees made (by a
+// heading, its own create_thread, a move it is told of) needs no telling.
 async function briefing($: EngineInterface): Promise<string[]> {
   const list = await read($, threads)
   const merged = await read($, aliases)
   const mayCreate = await read($, agentMayCreate)
   const was = await read($, briefed)
-  const isUnused = !isInUse(list, merged, mayCreate)
-  if (was === null ? isUnused : mergesKey(was.merged) === mergesKey(merged) && was.mayCreate === mayCreate) return []
+  if (was !== null && mergesKey(was.merged) === mergesKey(merged) && was.mayCreate === mayCreate) return []
   await update($, briefed, () => ({ merged, mayCreate }))
   await save($)
   return [was === null ? protocol(list, merged, mayCreate) : `The threads changed. ${threadState(list, merged, mayCreate)}`]
+}
+
+// Told beside the person's first message once threads go off, if the model was told how
+// they work: it is told again, whole, should they come on again.
+async function offNote($: EngineInterface): Promise<string | undefined> {
+  if ((await read($, briefed)) === null) return undefined
+  await update($, briefed, () => null)
+  await save($)
+  return 'The user turned conversation threads off. Reply without thread headings; a level-1 heading in their messages is plain text now.'
 }
 
 // The SVG of a slide switch: a rounded track with the knob to the right when on.
@@ -1084,14 +1110,13 @@ async function keepViewRows($: EngineInterface, id: string, rows: ViewRow[]) {
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
+    await $.command.register({ name: 'threads', description: 'Turn conversation threads on or off in this chat' })
     await $.command.register({ name: VIEW, description: 'Show the picked threads alone, without tool rows, in a pane' })
     // A restarted or resumed session takes up the rows its thread view kept.
     if ((await read($, viewRows)).length === 0) {
       const kept = await keptRows($, await $.session.id()).catch(() => [])
       if (kept.length > 0) await update($, viewRows, () => kept)
     }
-    // The agent switch outlives a reload of this code: its tool is offered again.
-    if (await read($, agentMayCreate)) await offerCreateTool($)
     await $.command.register({
       name: 'merge-threads',
       description: 'Merge one conversation thread into another',
@@ -1130,17 +1155,37 @@ export const register: Register = on => {
       }
     }
     if (saved?.threads !== undefined) await takeUp($, saved)
-    // A session using threads keeps the rows it took up from the one it came from;
-    // one that is not keeps none on disk. Its record (no threads) is saved all the
-    // same: it stops its next run looking for a session it came from.
-    if (taken.length > 0 && (await inUse($))) await keepViewRows($, id, taken)
+    // Threads held on (a reload) stay on; else they are as the session, or the one it
+    // came from, kept them. A record kept before /threads, or none, is on where it used them.
+    if (!(await read($, isOn)) && (saved?.isOn ?? (await wasInUse($)))) await update($, isOn, () => true)
+    // The agent switch outlives a reload of this code: with threads on, its tool is offered again.
+    if ((await read($, isOn)) && (await read($, agentMayCreate))) await offerCreateTool($)
+    // A session with threads on keeps the rows it took up from the one it came from;
+    // one with them off keeps none on disk. Its record is saved all the same: it stops
+    // its next run looking for a session it came from.
+    if (taken.length > 0 && (await read($, isOn))) await keepViewRows($, id, taken)
     await save($)
 
     return next(e)
   })
 
+  on('command.run', { command: 'threads' }, async $ => {
+    const now = await flipThreads($)
+    return {
+      text: now
+        ? 'Threads are on: start or reply to one with a # name heading (or + thread in the desktop app).'
+        : 'Threads are off. They are kept for when /threads turns them on again.',
+    }
+  })
+
   on('prompt.submit', async ($, e, next) => {
     if (!PERSON.has(e.origin.kind)) return next(e)
+    // Off, the message goes on as it came, its headings plain text; the model told how
+    // threads work is told they are off, once.
+    if (!(await read($, isOn))) {
+      const off = await offNote($)
+      return off === undefined ? next(e) : next({ ...e, context: [...(e.context ?? []), off] })
+    }
     // The text goes on as typed, the one version everything reads; what its
     // headings mean is decided now, kept for drawing it, and told to the model.
     // Messages the person moved between threads since they last wrote go beside this
@@ -1156,8 +1201,6 @@ export const register: Register = on => {
     const links = { ...(await read($, snaps)), ...merged }
     const list = await read($, threads)
     const { names, meanings } = decideHeadings(e.text, list, links, merged)
-    // Until the session uses threads, a message with no heading goes on as it came.
-    if (names.length === 0 && !isInUse(list, merged, await read($, agentMayCreate))) return next(e)
     if (names.length === 0) {
       // A reply to parts of earlier replies goes to the thread they came from, even
       // while another is picked: the person pointed at that thread's text.
@@ -1215,11 +1258,11 @@ export const register: Register = on => {
     }
   })
 
-  // A turn's rows are kept for the session's next run as the turn ends, once it uses
-  // threads: all of them then, those from before its first thread too.
+  // A turn's rows are kept for the session's next run as the turn ends, while threads
+  // are on: all of them then, those from before they came on too.
   on('turn.complete', async ($, e, next) => {
     const result = await next(e)
-    if (e.agentId === undefined && (await inUse($))) {
+    if (e.agentId === undefined && (await read($, isOn))) {
       if ((await read($, threads)).length > 0) await save($)
       const rows = await read($, viewRows)
       if (rows.length > 0) await keepViewRows($, await $.session.id(), rows)
@@ -1228,6 +1271,7 @@ export const register: Register = on => {
   })
 
   on('command.run', { command: VIEW }, async $ => {
+    if (!(await read($, isOn))) return { text: OFF_TEXT }
     const opened = await openView($)
     return { text: opened.isPlaced ? 'Thread view opened.' : `Thread view not shown: ${opened.reason}` }
   })
@@ -1259,6 +1303,7 @@ export const register: Register = on => {
   )
 
   on('command.run', { command: 'merge-threads' }, async ($, e) => {
+    if (!(await read($, isOn))) return { text: OFF_TEXT }
     const [fromText, toText] = e.args.split(/\s+into\s+/i).map(part => nameOf(part.replace(/^#+/, '')))
     if (!fromText || !toText) return { text: 'Usage: /merge-threads <thread> into <thread>' }
 
@@ -1294,6 +1339,7 @@ export const register: Register = on => {
     if (e.agentId !== undefined) {
       return { deny: 'Only the main conversation starts threads; this call came from another agent.' }
     }
+    if (!(await read($, isOn))) return { deny: 'The user turned conversation threads off. Do not start threads.' }
     if (!(await read($, agentMayCreate))) {
       return { deny: 'The user has not enabled agent-created threads. Reply in existing threads only.' }
     }
@@ -1322,7 +1368,7 @@ export const register: Register = on => {
   // The band's chips and switch, and the one open move picker's pills, post here when clicked:
   // the only Clients, so their count stays near the number of threads.
   on('ui.message', async ($, e, next) => {
-    if ((e.data as { flip?: unknown } | null)?.flip === true) {
+    if ((e.data as { flip?: unknown } | null)?.flip === true && (await read($, isOn))) {
       if (e.element === AGENT_SWITCH) await flipAgentSwitch($)
       else if (e.element.startsWith('thread:')) await toggleThread($, e.element.slice('thread:'.length))
       else if (e.element.startsWith('pick:')) await moveTo($, e.element.slice('pick:'.length))
@@ -1335,6 +1381,8 @@ export const register: Register = on => {
   // its thread tags go above it in their colours, its heading lines go, and a
   // filter trims its text to the picked threads' sections.
   on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
+    // Off, every message is the engine's drawing alone, a filter picked before or not.
+    if (!(await read($, isOn))) return next(e)
     // A plugin's prompt is never the person's, though a surface may name it as theirs.
     // A row of no words (an image alone) is the engine's drawing alone: no tag or
     // "+ thread" goes round it.
@@ -1346,8 +1394,6 @@ export const register: Register = on => {
     }
     const list = await read($, threads)
     const merged = await read($, aliases)
-    // Until the session uses threads, the person's message is the engine's drawing alone.
-    if (!isInUse(list, merged, await read($, agentMayCreate))) return next(e)
     const snapped = await read($, snaps)
     const resolve = (name: string) => personThreadOf(name, list, { ...snapped, ...merged })
     const selected = await selectedKeys($)
@@ -1419,6 +1465,8 @@ export const register: Register = on => {
     // The thread view finds the person's moves of this reply's parts by the id the
     // screen draws it under, matched by its whole text before it is split.
     noteDrawnReply(e.requestId, e.props.text)
+    // Off, a reply is the engine's drawing alone: no tags, no "+ thread" or room for one.
+    if (!(await read($, isOn))) return next(e)
     // The voice's "(quiet)" (the multitask plugin draws it as nothing) and a block of no
     // words are the engine's drawing alone: no "+ thread", or room for one, round nothing.
     if (isBlankText(e.props.text)) {
@@ -1429,9 +1477,6 @@ export const register: Register = on => {
     }
     const list = await read($, threads)
     const merged = await read($, aliases)
-    // Until the session uses threads, a reply is the engine's drawing alone: no
-    // "+ thread", or room for one, round its parts.
-    if (!isInUse(list, merged, await read($, agentMayCreate))) return next(e)
     const selected = await selectedKeys($)
     const resolve = (name: string) => threadOf(name, list, merged)
     const written = splitSections(e.props.text, name => resolve(name) !== undefined)
@@ -1541,7 +1586,8 @@ export const register: Register = on => {
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const below = await next(e)
-    if (e.props.hasSurvey) return below
+    // Off, there is no band: other mods' controls have the row.
+    if (e.props.hasSurvey || !(await read($, isOn))) return below
 
     const list = await read($, threads)
     const mayCreate = await read($, agentMayCreate)
