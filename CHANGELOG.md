@@ -55,7 +55,7 @@ Both mods are at version 0.1.0 in their `plugin.json` and have not had a release
 
 - The band above the prompt shows a count of running thoughts and queued messages instead of listing every thought.
 - Only a thought's final report and errors are passed to the voice; its progress notes appear in the Thoughts pane instead, which keeps the chat free of empty gaps.
-- The Thoughts pane collapses finished and stopped thoughts, and shows only the first line of a running thought's task until it is opened.
+- The Thoughts pane collapses finished and stopped thoughts, and shows only the first line of a running thought's task until it is opened. A thought's last report shows as one line until you press "more", and is hidden once the thought works on.
 - The voice speaks to you as one mind rather than describing its thoughts as separate workers.
 - The voice and its thoughts are briefed to keep thoughts that edit files apart (their own files, or their own git worktree and branch), and not to merge into your checkout or commit to main unless you ask.
 

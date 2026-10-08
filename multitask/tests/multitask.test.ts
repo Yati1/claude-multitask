@@ -596,7 +596,7 @@ test("the Thoughts pane draws running thoughts first with their task's first lin
   expect(await pane.find({ text: /brief for done/ })).toBeUndefined()
 })
 
-test("a thought's card shows its report only while no note is newer", async ($, on) => {
+test("a thought's card shows its report's first line until opened, and none while it works on or a note is newer", async ($, on) => {
   engine(on)
   const clock = mock.clock(on)
   await $.session.start({ cwd: '.', surface: 'terminal', isInteractive: true })
@@ -617,31 +617,62 @@ test("a thought's card shows its report only while no note is newer", async ($, 
     requestId: 'multitask-thoughts',
     props: { title: 'Thoughts', isFocused: false, bodyColumns: 80, placement: 'dock', scroll: { offset: 0, bodyRows: 40 }, view: {} },
   })
+  // Its notes, and what of its report shows: its first line, or the whole of it, and the
+  // control that opens or folds it.
   const shown = async () => {
     await pane.redraw()
     return {
       notes: (await pane.findAll({ type: 'Text', text: /^· / })).map(n => n.text),
-      report: (await pane.find({ type: 'Markdown' }))?.text,
+      line: (await pane.find({ type: 'Text', text: /^Refresh|^The token/ }))?.text,
+      whole: (await pane.find({ type: 'Markdown' }))?.text,
+      toggle: (await pane.find({ key: 'report:agent-1' }))?.text,
     }
   }
+  const nothing = { line: undefined, whole: undefined, toggle: undefined }
 
   await says('u1', 'Checking the token')
-  await says('u2', 'The token expires early.')
-  await $.turn.complete({ ...finished('agent-1'), answer: 'The token expires early.' })
+  await says('u2', 'The token expires early.\n\nIt is set an hour short.')
+  await $.turn.complete({ ...finished('agent-1'), answer: 'The token expires early.\n\nIt is set an hour short.' })
   await clock.settle()
   await $.ui.press({ plugin: 'multitask', key: 'expand:agent-1' })
-  expect(await shown()).toEqual({ notes: ['· Checking the token'], report: 'The token expires early.' })
+  const notes = ['· Checking the token']
+  expect(await shown()).toEqual({
+    notes,
+    line: 'The token expires early. It is set an hour short.',
+    whole: undefined,
+    toggle: 'more',
+  })
+  // With the pointer anywhere on the report, its control lights in the thought's colour.
+  const toggle = pathTo(await pane.drawn(), n => n.props?.key === 'report:agent-1') ?? []
+  const card = toggle.find(n => n.props?.borderStyle === 'round')
+  expect(toggle.some(n => n.type === 'Box' && n.props?.key === 'reportbox:agent-1')).toBe(true)
+  expect(toggle.at(-1)?.hover).toEqual({ color: card?.props?.borderColor })
+  // More shows it whole; less folds it again.
+  await $.ui.press({ plugin: 'multitask', key: 'report:agent-1' })
+  expect(await shown()).toEqual({
+    notes,
+    line: undefined,
+    whole: 'The token expires early.\n\nIt is set an hour short.',
+    toggle: 'less',
+  })
 
-  // Told more, it works on: its fresh notes show, the old report does not.
+  // Told more, it works on: the old report is gone at once, before any note; its fresh notes show.
   await $.tool.call({ tool: 'mcp__multitask__tell', tool_use_id: 'c2', thought: 'auth-bug', message: 'and refresh?' })
+  expect(await shown()).toEqual({ notes, ...nothing })
+  for await (const _ of $.turn.step({ turnId: 'turn-2', index: 0, model: 'opus', messageCount: 1, agentId: 'agent-1' })) void _
   await says('u3', 'Reading the refresh path')
-  expect(await shown()).toEqual({ notes: ['· Checking the token', '· Reading the refresh path'], report: undefined })
+  expect(await shown()).toEqual({ notes: [...notes, '· Reading the refresh path'], ...nothing })
 
-  // Its next report shows again.
+  // Its next report shows, folded again though the last was opened.
   await says('u4', 'Refresh is fine.')
-  await $.turn.complete({ ...finished('agent-1'), answer: 'Refresh is fine.' })
+  await $.turn.complete({ ...finished('agent-1'), turnId: 'turn-2', answer: 'Refresh is fine.' })
   await clock.settle()
-  expect(await shown()).toEqual({ notes: ['· Checking the token', '· Reading the refresh path'], report: 'Refresh is fine.' })
+  expect(await shown()).toEqual({
+    notes: [...notes, '· Reading the refresh path'],
+    line: 'Refresh is fine.',
+    whole: undefined,
+    toggle: 'more',
+  })
 })
 
 type Drawn = { type?: string; props?: Record<string, unknown>; hover?: Record<string, unknown>; children?: unknown[] }
