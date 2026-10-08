@@ -25,6 +25,10 @@ export type Thought = {
 // turn (isDone), with the text it ended on or none
 export type Update = { thought: string; text: string; isDone?: boolean }
 
+// What the voice was last told of a thought, by a relay or a what's-new note: its status,
+// its report and its latest progress note as they were then
+export type Heard = { status: ThoughtStatus; report: string; note: string }
+
 declare module 'claude-code' {
   interface PluginState {
     multitask: {
@@ -32,6 +36,8 @@ declare module 'claude-code' {
       thoughts: Thought[]
       inbox: Update[]
       isMainBusy: boolean
+      // what the voice was last told of each thought, by thought id
+      heard: Record<string, Heard>
       // whether the voice was last told, beside the person's message, that Multitask is on;
       // false again after a compaction while on, so its whole part is told again
       toldVoice: boolean

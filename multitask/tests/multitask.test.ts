@@ -1,10 +1,12 @@
-import type { AgentInfo, On } from 'claude-code'
+import type { AgentInfo, On, TurnStepChunk } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 
-import { RELAY_NOTES, VOICE_REMINDER, formatUpdates, isQuiet, relayNames } from '../hooks/prompts'
+import { NO_RESPONSE, RELAY_NOTES, VOICE, VOICE_REMINDER, formatUpdates, isQuiet, relayNames } from '../hooks/prompts'
 
 type Seen = {
   prompts: string[]
+  // set to have the model answer each request with these pieces
+  reply?: TurnStepChunk[]
   sends: { to: string; text: string }[]
   ran: string[]
   efforts: unknown[]
@@ -49,7 +51,10 @@ function engine(
   on('session.compact', () => ({ messages: [{ role: 'user' as const, text: 'the summary', toolUses: [] }] }))
   on('turn.step', async function* ($, e) {
     seen.efforts.push(e.effort)
-    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn' as const, usage: null }
+    const reply = seen.reply ?? []
+    for (const chunk of reply) yield chunk
+    const answer = reply.flatMap(chunk => (chunk.kind === 'text' ? [chunk.text] : [])).join('')
+    return { turnId: e.turnId, index: e.index, answer, toolUses: [], stopReason: 'end_turn' as const, usage: null }
   })
   on('tool.check', () => ({ decision: 'ask' as const }))
   on('tool.call', ($, e) => {
@@ -82,6 +87,7 @@ const finished = (agentId: string) => ({
 
 test('quiet is exact and updates are one line each under a short header', async () => {
   expect(isQuiet(' (quiet)\n')).toBe(true)
+  expect(isQuiet('No response requested.')).toBe(true)
   expect(isQuiet('(quiet) but also this')).toBe(false)
   const text = formatUpdates([
     { thought: 'auth', text: 'Checking the token' },
@@ -95,15 +101,47 @@ test('quiet is exact and updates are one line each under a short header', async 
 test('a quiet reply draws as nothing on every surface', async ($, on) => {
   engine(on)
   for (const surface of ['terminal', 'desktop'] as const) {
-    const row = await $.ui.mount({
-      plugin: 'multitask',
-      surface,
-      component: 'AssistantMessage',
-      props: { text: '(quiet)', isFirstOfReply: true },
-    })
-    expect(await row.find({ text: /quiet/ })).toBeUndefined()
-    await row.unmount()
+    for (const text of ['(quiet)', NO_RESPONSE]) {
+      const row = await $.ui.mount({
+        plugin: 'multitask',
+        surface,
+        component: 'AssistantMessage',
+        props: { text, isFirstOfReply: true },
+      })
+      expect(await row.find({ text: /quiet|No response/ })).toBeUndefined()
+      await row.unmount()
+    }
   }
+})
+
+test('the voice\'s quiet reply goes on as "No response requested.", held back only while it could still be quiet', async ($, on) => {
+  const seen = engine(on)
+  await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
+  const step = async (pieces: TurnStepChunk[], agentId?: string) => {
+    seen.reply = pieces
+    const stream = $.turn.step({ turnId: 't', index: 0, model: 'opus', messageCount: 1, ...(agentId === undefined ? {} : { agentId }) })
+    const out: TurnStepChunk[] = []
+    for (let piece = await stream.next(); ; piece = await stream.next()) {
+      if (piece.done === true) return { out, answer: piece.value.answer }
+      out.push(piece.value)
+    }
+  }
+  const text = (piece: string): TurnStepChunk => ({ kind: 'text', index: 0, text: piece })
+  const thinking: TurnStepChunk = { kind: 'thinking', index: 0, text: 'Nothing new.' }
+  const stop: TurnStepChunk = { kind: 'stop', stopReason: 'end_turn', usage: null }
+  const quiet = [thinking, text('(qu'), text('iet)\n'), stop]
+
+  // With Multitask off, it goes on as it came.
+  expect(await step(quiet)).toEqual({ out: quiet, answer: '(quiet)\n' })
+
+  await $.command.run({ command: 'multitask', args: '', origin: { kind: 'composer' }, presentation: {} as never })
+  // Split across pieces, it goes on as one, in its first piece's place.
+  expect(await step(quiet)).toEqual({ out: [thinking, text(NO_RESPONSE), stop], answer: NO_RESPONSE })
+  // A reply that goes on past it is passed on whole, as it came.
+  const more = [thinking, text('(qu'), text('iet) but one thing:'), text(' the build broke.'), stop]
+  expect(await step(more)).toEqual({ out: more, answer: '(quiet) but one thing: the build broke.' })
+  // A thought's reply goes on as it came.
+  expect(await step(quiet, 'agent-1')).toEqual({ out: quiet, answer: '(quiet)\n' })
 })
 
 test('updates handed to the voice draw as nothing on the desktop and one dim line in the terminal', async ($, on) => {
@@ -321,6 +359,89 @@ test('the voice is told as Multitask comes on and goes off, and thinks less hard
   expect(await step()).toBe('xhigh')
   await say('plain')
   expect(seen.prompts.at(-1)).toBe('plain')
+})
+
+test("what is new from the thoughts goes beside the person's messages and after a relay, each thing once", async ($, on) => {
+  const seen = engine(on, [
+    { id: 'agent-1', description: 'auth-bug', type: 'multitask:thought', status: 'running' },
+    { id: 'agent-2', description: 'docs', type: 'multitask:thought', status: 'running' },
+  ])
+  const clock = mock.clock(on)
+  await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
+  const say = async (text: string) => {
+    await $.prompt.submit({ text, origin: { kind: 'composer' }, wait: false })
+    return seen.prompts.at(-1)
+  }
+  const says = (agentId: string, uuid: string, text: string) =>
+    $.session.append({
+      message: { type: 'assistant', role: 'assistant', content: [{ type: 'text', text }] },
+      door: 'response',
+      origin: { kind: 'model', model: 'test' },
+      uuid,
+      agentId,
+    }).catch(() => undefined) // the kit has no transcript to store the row in
+  await $.command.run({ command: 'multitask', args: '', origin: { kind: 'composer' }, presentation: {} as never })
+  await say('look into login and the docs')
+  await $.tool.call({ tool: 'mcp__multitask__think', tool_use_id: 'c1', name: 'auth bug', task: 'Find why login fails' })
+  await $.tool.call({ tool: 'mcp__multitask__think', tool_use_id: 'c2', name: 'docs', task: 'Check the docs' })
+
+  // A running thought's latest notes; then nothing, until there is more.
+  await says('agent-1', 'u1', 'Checking the token')
+  expect(await say('how is it going?')).toBe(
+    `how is it going?\n--\n${VOICE_REMINDER}\n--\nWhat's new from your thoughts:\nauth-bug: Checking the token`,
+  )
+  expect(await say('and now?')).toBe(`and now?\n--\n${VOICE_REMINDER}`)
+
+  // A relay tells of its own thoughts, then what is new from the others.
+  await says('agent-1', 'u2', 'Reading the refresh path')
+  await $.turn.complete({ ...finished('agent-2'), answer: 'The docs are current.' })
+  await clock.advance(2500)
+  expect(seen.prompts.at(-1)).toBe(
+    "Thought updates:\ndocs (done): The docs are current.\n\nWhat's new from your thoughts:\nauth-bug: Reading the refresh path",
+  )
+  expect(await say('thanks')).toBe(`thanks\n--\n${VOICE_REMINDER}`)
+
+  // A thought that ended unheard of is told once.
+  await $.tool.call({ tool: 'mcp__multitask__stop', tool_use_id: 'c3', thought: 'auth-bug' })
+  expect(await say('anything else?')).toBe(
+    `anything else?\n--\n${VOICE_REMINDER}\n--\nWhat's new from your thoughts:\nauth-bug was stopped`,
+  )
+  expect(await say('ok')).toBe(`ok\n--\n${VOICE_REMINDER}`)
+})
+
+test("the engine's notice that a thought's turn ended goes in as the relay while Multitask is on, and as it came otherwise", async ($, on) => {
+  const seen = engine(on)
+  const clock = mock.clock(on)
+  await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
+  const flip = () => $.command.run({ command: 'multitask', args: '', origin: { kind: 'composer' }, presentation: {} as never })
+  const notice = (result: string) =>
+    `<task-notification>\n<task-id>agent-1</task-id>\n<status>completed</status>\n<result>${result}</result>\n</task-notification>`
+  const notify = (text: string) => $.prompt.submit({ text, origin: { kind: 'task-notification' }, wait: false })
+  await flip()
+  await $.tool.call({ tool: 'mcp__multitask__think', tool_use_id: 'c1', name: 'auth bug', task: 'Find why login fails' })
+
+  // Come as the turn ends, while its end may still be settling, it waits for that, then
+  // carries the update in place of its own text; nothing is dropped, and no relay follows.
+  await $.turn.complete({ ...finished('agent-1'), answer: 'Token expiry is off by one.' })
+  expect((await notify(notice('Token expiry is off by one.'))).drop).toBeUndefined()
+  expect(seen.prompts).toEqual(['Thought updates:\nauth-bug (done): Token expiry is off by one.'])
+  await clock.advance(2500)
+  expect(seen.prompts).toHaveLength(1)
+  // What it told is not told again beside the person's next message.
+  await $.prompt.submit({ text: 'ok', origin: { kind: 'composer' }, wait: false })
+  expect(seen.prompts.at(-1)).toBe(`ok\n--\n${VOICE}`)
+
+  // With nothing waiting, it goes in as it came.
+  expect((await notify(notice('Token expiry is off by one.'))).drop).toBeUndefined()
+  expect(seen.prompts.at(-1)).toBe(notice('Token expiry is off by one.'))
+
+  // So it does with Multitask off.
+  await flip()
+  await $.turn.complete({ ...finished('agent-1'), answer: 'Logout is fine.' })
+  expect((await notify(notice('Logout is fine.'))).drop).toBeUndefined()
+  expect(seen.prompts.at(-1)).toBe(notice('Logout is fine.'))
+  await clock.advance(2500)
+  expect(seen.prompts).toHaveLength(4)
 })
 
 test('an interrupt cuts the running turn and hands the message over; a second one cuts the next turn', async ($, on) => {
