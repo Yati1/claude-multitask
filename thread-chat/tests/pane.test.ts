@@ -3,6 +3,7 @@ import { expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 
 import type { ViewRow } from '../types'
+import { PALETTE } from '../hooks/parse'
 import {
   chunksOf,
   dataFolderOf,
@@ -145,14 +146,35 @@ const PANE = {
 const model = { kind: 'model', model: 'test' } as const
 
 type Drawing = {
-  findAll: (query: { type?: string; text?: string | RegExp }) => Promise<{ props: Record<string, unknown>; text: string }[]>
+  drawn: () => Promise<unknown>
 }
 
-// What the view shows, in order: who wrote each section, and its text.
+type Drawn = { type?: string; props?: Record<string, unknown>; children?: unknown[] }
+
+// The strings an element shows, its own and its children's, in order.
+const shownIn = (node: unknown): string =>
+  typeof node === 'string' ? node : ((node as Drawn | undefined)?.children ?? []).map(shownIn).join('')
+
+// What the view shows, in order: who wrote each section, and its text. The person's
+// sections are filled bubbles, their words the last Text in them; Claude's are markdown.
 async function sectionsOf(pane: Drawing) {
-  const who = (await pane.findAll({ type: 'Text', text: /^(you|Claude)$/ })).map(t => t.text)
-  const said = (await pane.findAll({ type: 'Markdown' })).map(m => String(m.props.text))
-  return who.map((name, i) => `${name}: ${said[i]}`)
+  const sections: string[] = []
+  const walk = (node: unknown) => {
+    if (typeof node !== 'object' || node === null) return
+    const { type, props = {}, children = [] } = node as Drawn
+    if (type === 'Markdown') {
+      sections.push(`Claude: ${String(props.text)}`)
+      return
+    }
+    if (type === 'Box' && props.backgroundColor !== undefined) {
+      const words = children.filter(child => (child as Drawn).type === 'Text').at(-1)
+      sections.push(`you: ${shownIn(words)}`)
+      return
+    }
+    for (const child of children) walk(child)
+  }
+  walk(await pane.drawn())
+  return sections
 }
 
 test('the thread view shows the picked threads alone, earlier replies too, and no tool rows', async ($, on) => {
@@ -199,14 +221,18 @@ test('the thread view shows the picked threads alone, earlier replies too, and n
     expect(await sectionsOf(pane)).toEqual(['you: hello', 'Claude: use a queue', 'Claude: next step'])
     expect(await pane.find({ type: 'Text', text: /All threads/ })).toBeUndefined()
 
-    // each section's tag; the person's sections carry a marker in the thread's colour
+    // each section's tag; the person's section a bubble in the surface's fill, and the
+    // thread's colour in the tags alone, nothing filled or outlined in it
     const tags =
       surface === 'terminal'
         ? (await pane.findAll({ type: 'Text', text: 'DESIGN' })).length
         : (await pane.findAll({ type: 'Svg' })).filter(p => p.props.alt === 'design').length
     expect(tags).toBe(3)
-    const markers = (await pane.findAll({ type: 'Box' })).filter(b => b.props.backgroundColor !== undefined)
-    expect(markers.map(b => b.props.backgroundColor)).toEqual(['#4fa3e0'])
+    const filled = (await pane.findAll({ type: 'Box' })).filter(b => b.props.backgroundColor !== undefined)
+    expect(filled.map(b => b.props.backgroundColor)).toEqual([surface === 'terminal' ? 'userMessageBackground' : '#8888881a'])
+    const elements = [...(await pane.findAll({ type: 'Box' })), ...(await pane.findAll({ type: 'Text' }))]
+    const painted = elements.filter(el => PALETTE.some(color => el.props.backgroundColor === color || el.props.borderColor === color))
+    expect(painted).toEqual([])
     // no Client: every overlay on the desktop shares their one frame
     expect(await pane.findAll({ type: 'Client' })).toEqual([])
 
@@ -308,6 +334,38 @@ test('a long section draws as markdown in pieces a Markdown element takes', asyn
     const pieces = (await pane.findAll({ type: 'Markdown' })).map(m => String(m.props.text))
     expect(pieces.map(piece => piece.length <= 10000)).toEqual([true, true, true])
     expect(pieces.join('\n') === long).toBe(true)
+    await pane.unmount()
+  }
+})
+
+test("the person's messages draw as the chat's bubbles: their words as typed, a quote they replied to dim above them", async ($, on) => {
+  engine(on)
+  await flipThreads($)
+  // a reply to a selection, as the desktop writes one, typed on Windows
+  const typed = '<!-- reply 1 -->\r\n> use a\r\n> queue\r\n**why** a queue?\r\n- not a list'
+  await $.session
+    .append({
+      message: { type: 'user', role: 'user', content: [{ type: 'text', text: typed }] },
+      door: 'prompt',
+      origin: { kind: 'composer' },
+      uuid: 'p1',
+    })
+    .catch(() => undefined)
+
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const pane = await $.ui.mount({ plugin: 'thread-chat', surface, ...PANE })
+    expect(await sectionsOf(pane)).toEqual(['you: **why** a queue?\n- not a list'])
+    expect(await pane.findAll({ type: 'Markdown' })).toEqual([])
+    // the selection on one dim line beside a bar; no marker
+    const dim = (await pane.findAll({ type: 'Text' })).filter(t => t.props.dimColor === true).map(t => t.text)
+    expect(dim).toEqual(['All threads. Pick threads above the prompt to follow just those.', '│', 'use a queue'])
+    expect(await pane.findAll({ text: /<!--/ })).toEqual([])
+    // on the desktop, at the right, rounded
+    if (surface === 'desktop') {
+      const bubble = (await pane.findAll({ type: 'Box' })).find(b => b.props.backgroundColor !== undefined)
+      expect(bubble?.props.borderStyle).toBe('round')
+      expect((await pane.findAll({ type: 'Box' })).some(b => b.props.justifyContent === 'flex-end')).toBe(true)
+    }
     await pane.unmount()
   }
 })

@@ -11,6 +11,7 @@ Notable changes to the thread-chat, multitask and react mods. The format is base
 ### Changed
 
 - Changed thread-chat's agent to pick the right threads for its reply, even for unheaded messages.
+- Changed thread-chat's thread view to match the chat: your messages as bubbles, replies as text.
 
 ### Fixed
 
