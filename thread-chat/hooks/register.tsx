@@ -28,7 +28,6 @@ import {
   marksOf,
   needsMessages,
   noteDrawnReply,
-  pickedOf,
   rowsOfChunks,
   rowsUpTo,
   viewKey,
@@ -44,8 +43,8 @@ const threads = atom({ plugin: 'thread-chat', key: 'threads' } as const, [])
 const aliases = atom({ plugin: 'thread-chat', key: 'aliases' } as const, {})
 const agentMayCreate = atom({ plugin: 'thread-chat', key: 'agentMayCreate' } as const, false)
 const snaps = atom({ plugin: 'thread-chat', key: 'snaps' } as const, {})
-const recent = atom({ plugin: 'thread-chat', key: 'recent' } as const, [])
-const recentTexts = atom({ plugin: 'thread-chat', key: 'recentTexts' } as const, [])
+const current = atom({ plugin: 'thread-chat', key: 'current' } as const, '')
+const deleted = atom({ plugin: 'thread-chat', key: 'deleted' } as const, [])
 const sentTo = atom({ plugin: 'thread-chat', key: 'sentTo' } as const, {})
 const moved = atom({ plugin: 'thread-chat', key: 'moved' } as const, {})
 const picking = atom({ plugin: 'thread-chat', key: 'picking' } as const, '')
@@ -74,14 +73,72 @@ function withThreads(list: Thread[], names: string[], createdBy: Thread['created
     .map((name, i) => ({
       name,
       color: PALETTE[(list.length + i) % PALETTE.length] ?? '#888888',
-      isSelected: false,
       createdBy,
     }))
   return added.length === 0 ? list : [...list, ...added]
 }
 
+// Starts the threads named that are new, and brings back those named that were
+// archived: a heading, the agent's create_thread or a typed name used them. A name of
+// a deleted thread starts it again, its key no longer deleted.
 async function addThreads($: EngineInterface, names: string[], createdBy: Thread['createdBy']) {
-  if (names.length > 0) await update($, threads, list => withThreads(list, names, createdBy))
+  if (names.length === 0) return
+  const keys = new Set(names.map(keyOf))
+  await update($, threads, list =>
+    withThreads(list, names, createdBy).map(t => (t.isArchived === true && keys.has(keyOf(t.name)) ? withoutArchived(t) : t)),
+  )
+  if ((await read($, deleted)).some(key => keys.has(key))) await update($, deleted, all => all.filter(key => !keys.has(key)))
+}
+
+// A thread as this version keeps it: the fields it draws, and no others (an earlier
+// version's filter pick, `isSelected`, goes).
+function cleanThread(t: Partial<Thread> & { name: string }): Thread {
+  return {
+    name: t.name,
+    color: t.color ?? '#888888',
+    createdBy: t.createdBy ?? 'user',
+    ...(t.isArchived === true ? { isArchived: true } : {}),
+  }
+}
+
+const withoutArchived = (t: Thread): Thread => cleanThread({ ...t, isArchived: false })
+
+// The key of the one thread an earlier version's filter had picked alone, where messages
+// with no heading went: this version's picked thread. '' where none or several were.
+function pickedByFilter(list: readonly unknown[]): string {
+  const picked = list.filter(t => (t as { isSelected?: unknown }).isSelected === true)
+  const only = picked.length === 1 ? (picked[0] as { name?: unknown }) : undefined
+  return typeof only?.name === 'string' ? keyOf(only.name) : ''
+}
+
+// Where a deleted thread's key points in the links a heading is resolved by: a key no
+// thread has, so the heading means no thread, never another thread by a close name.
+const GONE = '\u0000deleted'
+
+// The links a heading is resolved by: the meanings decided at send, the merges, and each
+// deleted thread's key pointing to none.
+function linksFor(merged: Record<string, string>, gone: readonly string[], snapped: Record<string, string> = {}) {
+  return { ...snapped, ...merged, ...Object.fromEntries(gone.map(key => [key, GONE])) }
+}
+
+// Whether a name means a thread the person deleted: its own name, or one a merge or an
+// earlier send pointed to it, followed to a deleted thread's key.
+function isGone(name: string, list: Thread[], links: Record<string, string>): boolean {
+  let key = keyOf(name)
+  for (let hop = 0; hop < 8; hop++) {
+    if (key === GONE) return true
+    if (list.some(t => keyOf(t.name) === key)) return false
+    const next = links[key]
+    if (next === undefined) return false
+    key = next
+  }
+  return false
+}
+
+// Sections under a deleted thread's heading as sections of no thread: the heading line
+// goes with the thread, and the text stays.
+function withoutGone(sections: Section[], isGoneName: (name: string) => boolean): Section[] {
+  return sections.map(s => (s.thread !== null && isGoneName(s.thread) ? { thread: null, text: s.text } : s))
 }
 
 // Threads are on in a session from the person's /threads until they run it again. Off,
@@ -101,7 +158,7 @@ async function wasInUse($: EngineInterface): Promise<boolean> {
 const CREATE_SPEC = {
   name: 'create_thread',
   description:
-    'Start a new conversation thread the user can follow and filter. Then write to it under a level-1 heading with its exact name. Refused unless the user has enabled agent-created threads.',
+    'Start a new conversation thread the user can follow and read on its own. Then write to it under a level-1 heading with its exact name. Refused unless the user has enabled agent-created threads.',
   inputSchema: {
     type: 'object',
     properties: { name: { type: 'string', description: 'Short thread name, 1-4 words' } },
@@ -174,15 +231,27 @@ function runOnOf(
 }
 
 // A person's message in sections, each heading typed with its first line on the
-// same line split from it first.
+// same line split from it first. A section under a deleted thread's heading is of no
+// thread, its heading gone.
 function personSectionsOf(
   text: string,
   list: Thread[],
   snapped: Record<string, string>,
   merged: Record<string, string>,
+  gone: readonly string[] = [],
 ): Section[] {
-  const links = { ...snapped, ...merged }
-  return splitSections(splitRunOns(text, typed => runOnOf(typed, list, links, merged)), () => true)
+  const links = linksFor(merged, gone, snapped)
+  const sections = splitSections(splitRunOns(text, typed => runOnOf(typed, list, links, merged)), () => true)
+  return withoutGone(sections, name => isGone(resolveHeading(name, list, links), list, links))
+}
+
+// A reply in sections: a level-1 heading naming a thread starts its section, and one
+// naming no thread is the reply's own text. A section under a deleted thread's heading
+// is of no thread, its heading gone.
+function replySectionsOf(text: string, list: Thread[], merged: Record<string, string>, gone: readonly string[] = []): Section[] {
+  const links = linksFor(merged, gone)
+  const sections = splitSections(text, name => threadOf(name, list, links) !== undefined || isGone(name, list, links))
+  return withoutGone(sections, name => isGone(name, list, links))
 }
 
 type Meaning = { typed: string; meant: string; isRunOn?: boolean }
@@ -240,23 +309,25 @@ type Saved = {
   threads: Thread[]
   aliases: Record<string, string>
   snaps: Record<string, string>
-  recent: string[]
-  recentTexts: string[]
+  // absent from a record kept before the thread picker, whose threads may carry the
+  // filter's `isSelected`
+  current: string
+  deleted: string[]
   sentTo: Record<string, string>
   moved: Record<string, string>
   untold: string[]
   briefed: Brief | null
 }
 
-// Keeps the session's switch, threads, merges, recorded meanings and latest rows for its next run.
+// Keeps the session's switch, threads, merges, recorded meanings and picked thread for its next run.
 async function save($: EngineInterface) {
   const saved: Saved = {
     isOn: await read($, isOn),
     threads: await read($, threads),
     aliases: await read($, aliases),
     snaps: await read($, snaps),
-    recent: await read($, recent),
-    recentTexts: await read($, recentTexts),
+    current: await read($, current),
+    deleted: await read($, deleted),
     sentTo: await read($, sentTo),
     moved: await read($, moved),
     untold: await read($, untold),
@@ -303,28 +374,30 @@ async function parentOf($: EngineInterface, id: string): Promise<string | undefi
 }
 
 // Joins a saved record to what this run holds, so neither loses anything: the threads
-// either knows (this run's first picks kept), the merges and recorded meanings of both
-// (this run's winning), and this run's rows when it has any. A thread this run holds
-// is not merged away by an older record.
+// either knows (this run's own kept as they are), the merges, deletions and recorded
+// meanings of both (this run's winning), and this run's picked thread when it has one.
+// A thread this run holds is not merged away or deleted by an older record. A record
+// kept before the thread picker gives the one thread its filter picked alone.
 async function takeUp($: EngineInterface, saved: Partial<Saved>) {
   const held = new Set((await read($, threads)).map(t => keyOf(t.name)))
   const older = Object.fromEntries(Object.entries(saved.aliases ?? {}).filter(([key]) => !held.has(key)))
   const links = { ...older, ...(await read($, aliases)) }
+  const gone = new Set([...(saved.deleted ?? []).filter(key => !held.has(key)), ...(await read($, deleted))])
   await update($, aliases, () => links)
+  await update($, deleted, () => [...gone])
   await update($, threads, list => {
     const mine = new Map(list.map(t => [keyOf(t.name), t]))
     const savedKeys = new Set((saved.threads ?? []).map(t => keyOf(t.name)))
     const ordered = [
-      ...(saved.threads ?? []).map(t => mine.get(keyOf(t.name)) ?? { ...t, isSelected: false }),
+      ...(saved.threads ?? []).map(t => mine.get(keyOf(t.name)) ?? cleanThread(t)),
       ...list.filter(t => !savedKeys.has(keyOf(t.name))),
     ]
-    return ordered.filter(t => links[keyOf(t.name)] === undefined)
+    return ordered.filter(t => links[keyOf(t.name)] === undefined && !gone.has(keyOf(t.name)))
   })
   await update($, snaps, all => ({ ...(saved.snaps ?? {}), ...all }))
   await update($, sentTo, all => ({ ...(saved.sentTo ?? {}), ...all }))
   await update($, moved, all => ({ ...(saved.moved ?? {}), ...all }))
-  await update($, recent, all => (all.length > 0 ? all : (saved.recent ?? [])))
-  await update($, recentTexts, all => (all.length > 0 ? all : (saved.recentTexts ?? [])))
+  await update($, current, key => key || (saved.current ?? pickedByFilter(saved.threads ?? [])))
   await update($, untold, all => [...(saved.untold ?? []).filter(note => !all.includes(note)), ...all])
   await update($, briefed, brief => brief ?? saved.briefed ?? null)
 }
@@ -332,29 +405,6 @@ async function takeUp($: EngineInterface, saved: Partial<Saved>) {
 // A row's id as the screen knows it: blocks of one stored row drawn apart take
 // ids that keep the row's first 24 characters.
 const stemOf = (id: string) => id.slice(0, 24)
-
-// Whether a drawn row (by any of its ids) came since the person's last message.
-async function isRecent($: EngineInterface, ids: string[]): Promise<boolean> {
-  const stems = new Set((await read($, recent)).map(stemOf))
-  return ids.some(id => stems.has(stemOf(id)))
-}
-
-// A reply text's start, as the mark it is matched by: spacing evened out.
-const textMarkOf = (text: string) => text.replace(/\s+/g, ' ').trim().slice(0, 160)
-
-// Whether a drawn reply came since the person's last message: by its id, or by its
-// text where the screen knows it by an id of its own.
-async function isRecentReply($: EngineInterface, id: string, text: string): Promise<boolean> {
-  if (await isRecent($, [id])) return true
-  return (await read($, recentTexts)).includes(textMarkOf(text))
-}
-
-// Whether a row that belongs to no thread is filtered out: while threads are on and a
-// thread is picked, all but those since the person's last message are.
-async function isFilteredOut($: EngineInterface, ids: string[]): Promise<boolean> {
-  if (!(await read($, isOn)) || (await selectedKeys($)).size === 0) return false
-  return !(await isRecent($, ids))
-}
 
 // Messages sent with no heading to one thread (the one picked, or the one a reply's
 // quotes came from), until their rows are stored.
@@ -380,11 +430,16 @@ async function sentThreadOf(
 // Where a quote came from: the place ('' no thread) of the newest reply's part that
 // holds it, read as the reply draws (`replies` newest first); undefined where no reply
 // holds it, or the newest that does holds it in parts of different places, or across them.
-function quotedPlaceOf(replies: string[], quote: string, resolve: (name: string) => Thread | undefined): string | undefined {
+function quotedPlaceOf(
+  replies: string[],
+  quote: string,
+  sectionsOf: (text: string) => Section[],
+  resolve: (name: string) => Thread | undefined,
+): string | undefined {
   for (const reply of replies) {
     if (!holdsQuote(reply, quote)) continue
     const places = new Set(
-      splitSections(reply, name => resolve(name) !== undefined)
+      sectionsOf(reply)
         .filter(s => holdsQuote(s.text, quote))
         .map(s => (s.thread === null ? '' : keyOf(resolve(s.thread)?.name ?? s.thread))),
     )
@@ -406,36 +461,14 @@ async function quotedThreadOf($: EngineInterface, quotes: string[], list: Thread
     return undefined
   }
   const merged = await read($, aliases)
-  const resolve = (name: string) => threadOf(name, list, merged)
+  const gone = await read($, deleted)
+  const links = linksFor(merged, gone)
+  const resolve = (name: string) => threadOf(name, list, links)
+  const sectionsOf = (text: string) => replySectionsOf(text, list, merged, gone)
   const replies = rows.filter(r => r.role === 'assistant' && r.text !== '').map(r => r.text).reverse()
-  const places = new Set(quotes.flatMap(q => quotedPlaceOf(replies, q, resolve) ?? []))
+  const places = new Set(quotes.flatMap(q => quotedPlaceOf(replies, q, sectionsOf, resolve) ?? []))
   const only = places.size === 1 ? [...places][0] : undefined
-  return only === undefined || only === '' ? undefined : threadOf(only, list, merged)
-}
-
-// The marks of a stored reply's text blocks, each as a screen may draw it alone.
-function textMarksOf(content: readonly { type: string; [field: string]: unknown }[]): string[] {
-  return content.flatMap(block => (block.type === 'text' && typeof block.text === 'string' ? [textMarkOf(block.text)] : []))
-}
-
-// The ids of the tool calls a stored row makes; each draws as a row of its own.
-function toolCallIds(content: readonly { type: string; [field: string]: unknown }[]): string[] {
-  return content.flatMap(block => (block.type === 'tool_use' && typeof block.id === 'string' ? [block.id] : []))
-}
-
-// Brings the chat's end into view: the latest row the screen knows by its id.
-// Rows that draw nothing of their own (a tool's result, a reminder) are passed over;
-// where nothing scrolls (the desktop scrolls its chat for no plugin), the chat stays put.
-async function scrollToEnd($: EngineInterface) {
-  const ids = (await read($, recent)).slice(-20).reverse()
-  try {
-    for (const id of ids) {
-      const scrolled = await $.ui.scroll({ to: { requestId: id }, block: 'end' })
-      if (scrolled.deny === undefined || /person|not scrollable/.test(scrolled.deny)) return
-    }
-  } catch {
-    return
-  }
+  return only === undefined || only === '' ? undefined : threadOf(only, list, links)
 }
 
 // The decisions in `meanings` as links from a typed heading's key to its thread's.
@@ -467,18 +500,28 @@ function protocol(list: Thread[], merged: Record<string, string>, mayCreate: boo
   return [
     '# Conversation threads',
     'This conversation can hold several threads at once. The user starts or replies to a thread with a level-1 heading in their message: `# name` or `#name` (with or without the space). Text before the first heading is the unthreaded conversation. A heading may be abbreviated or mistyped, or written `#+name` to start a new thread; a note beside the message then says which thread each heading means.',
-    'Reply the same way, under whichever thread or threads your reply\'s content belongs to: each part under a level-1 heading carrying that thread\'s exact name, one section per thread. The thread the user wrote in, or was viewing, is usually the right one. A message with no heading may just be missing one: if it clearly continues an existing thread, reply under that thread\'s heading. Keep only material that fits no thread unthreaded, before any thread heading. Use `##` or deeper for structure inside a section: a level-1 heading that is not a thread name drops back into the unthreaded conversation.',
-    'This holds for the rest of the conversation; a note beside a later message says when threads are merged or your leave to start them changes.',
+    'Reply the same way, under whichever thread or threads your reply\'s content belongs to: each part under a level-1 heading carrying that thread\'s exact name, one section per thread. The thread the user wrote in, or picked to post to, is usually the right one. A message with no heading may just be missing one: if it clearly continues an existing thread, reply under that thread\'s heading. Keep only material that fits no thread unthreaded, before any thread heading. Use `##` or deeper for structure inside a section: a level-1 heading that is not a thread name drops back into the unthreaded conversation.',
+    'This holds for the rest of the conversation; a note beside a later message says when threads are merged, archived or deleted, or your leave to start them changes.',
     threadState(list, merged, mayCreate),
   ].join('\n\n')
 }
 
-// Where the threads stand: those so far, the merges, and whether the model may start one.
+// Where the threads stand: those so far, those archived, the merges into a thread that
+// still stands, and whether the model may start one.
 function threadState(list: Thread[], merged: Record<string, string>, mayCreate: boolean): string {
-  const names = list.length === 0 ? 'none yet' : list.map(t => `"${t.name}"`).join(', ')
-  const mergedNames = Object.entries(merged).map(([from, to]) => `"${from}" is now "${to}"`)
+  const active = list.filter(t => t.isArchived !== true)
+  const archived = list.filter(t => t.isArchived === true)
+  const names = active.length === 0 ? 'none yet' : active.map(t => `"${t.name}"`).join(', ')
+  const mergedNames = Object.entries(merged)
+    .filter(([from]) => threadOf(from, list, merged) !== undefined)
+    .map(([from, to]) => `"${from}" is now "${to}"`)
   return [
     `Threads so far: ${names}.`,
+    ...(archived.length === 0
+      ? []
+      : [
+          `Archived threads (hidden from the user's thread picker; write in one only if the user brings it up): ${archived.map(t => `"${t.name}"`).join(', ')}.`,
+        ]),
     ...(mergedNames.length === 0 ? [] : [`Merged threads (an old heading means the new one): ${mergedNames.join('; ')}.`]),
     mayCreate
       ? `You may start a new thread with ${CREATE_TOOL} when a distinct topic deserves its own thread, then write to it under its heading. Do it sparingly.`
@@ -885,6 +928,22 @@ async function setNaming($: EngineInterface, isNaming: boolean) {
   await update($, naming, () => isNaming)
 }
 
+// The field a new thread's name is typed in, focused as it shows, and the "×" beside it
+// that goes back: the move picker's and the thread picker's alike, under keys of each's own.
+function drawNameField(
+  ui: { Input: Elements['terminal']['Input']; Button: Elements['terminal']['Button'] },
+  keys: { field: string; cancel: string },
+  submitLabel: string,
+  onSubmit: (value: string) => unknown,
+  onCancel: () => unknown,
+): RenderElement[] {
+  const { Input, Button } = ui
+  return [
+    <Input key={keys.field} placeholder="name" submitLabel={submitLabel} autoFocus onSubmit={(value: string) => void onSubmit(value)} />,
+    <Button key={keys.cancel} label="×" plain dimColor onPress={() => void onCancel()} />,
+  ]
+}
+
 // The row of thread pills that moves a part, drawn in the flow at its top beside
 // its tag, or where its "+ thread" sits; "none", for no thread, has no colour and a
 // dashed outline. A last "+" pill swaps the pills, in the same row, for a field to
@@ -899,7 +958,9 @@ function drawPicker(
   isNaming: boolean,
 ): RenderElement {
   const choices: { key: string; name: string; color: string | undefined }[] = [
-    ...list.filter(t => keyOf(t.name) !== place).map(t => ({ key: keyOf(t.name), name: t.name, color: t.color })),
+    ...list
+      .filter(t => keyOf(t.name) !== place && t.isArchived !== true)
+      .map(t => ({ key: keyOf(t.name), name: t.name, color: t.color })),
     ...(place === '' ? [] : [{ key: '', name: 'none', color: undefined }]),
   ]
   const justify = align === 'end' ? 'flex-end' : 'flex-start'
@@ -915,17 +976,16 @@ function drawPicker(
     </Box>
   )
 
-  if (isNaming && canName) {
-    return row([
-      <Input
-        key={NEW_THREAD_FIELD}
-        placeholder="name"
-        submitLabel="move"
-        autoFocus
-        onSubmit={(value: string) => moveToNewThread($, value)}
-      />,
-      <Button key="pick-cancel" label="×" plain dimColor onPress={() => setNaming($, false)} />,
-    ])
+  if (isNaming && Input !== undefined) {
+    return row(
+      drawNameField(
+        { Input, Button },
+        { field: NEW_THREAD_FIELD, cancel: 'pick-cancel' },
+        'move',
+        value => moveToNewThread($, value),
+        () => setNaming($, false),
+      ),
+    )
   }
 
   if (e.surface !== 'desktop') {
@@ -960,32 +1020,61 @@ function drawPicker(
   )
 }
 
-// Picks or drops a thread in the filter, and takes the chat back to its end.
-async function toggleThread($: EngineInterface, key: string) {
+// Picks the thread messages with no heading go to, which the thread view shows ('' none).
+async function pickThread($: EngineInterface, key: string) {
+  await update($, current, () => key)
+  await save($)
+}
+
+// A thread's name by its key, for telling the model.
+async function nameByKey($: EngineInterface, key: string): Promise<string> {
+  return (await read($, threads)).find(t => keyOf(t.name) === key)?.name ?? key
+}
+
+// Merges the thread `fromKey` into `toKey`: an old heading means the one it joined, and
+// the picked thread follows it. The model is told beside the person's next message, as
+// where the threads stand changed.
+async function mergeThreads($: EngineInterface, fromKey: string, toKey: string) {
+  if (fromKey === toKey) return
+  await update($, aliases, merged => ({
+    ...Object.fromEntries(Object.entries(merged).map(([k, v]) => [k, v === fromKey ? toKey : v])),
+    [fromKey]: toKey,
+  }))
+  await update($, threads, all => all.filter(t => keyOf(t.name) !== fromKey))
+  await update($, current, key => (key === fromKey ? toKey : key))
+  await save($)
+}
+
+// Archives a thread, or brings it back: archived, it leaves the pickers but keeps its
+// messages, and is no longer the picked thread. The model is told beside the person's
+// next message.
+async function setArchived($: EngineInterface, key: string, isArchived: boolean) {
+  const name = await nameByKey($, key)
   await update($, threads, all =>
-    all.map(one => (keyOf(one.name) === key ? { ...one, isSelected: !one.isSelected } : one)),
+    all.map(t => (keyOf(t.name) !== key ? t : isArchived ? { ...t, isArchived: true } : withoutArchived(t))),
   )
-  await scrollToEnd($)
+  if (isArchived) await update($, current, cur => (cur === key ? '' : cur))
+  const note = isArchived
+    ? `The user archived the thread "${name}": it is hidden from their thread picker but kept. Write in it only if they bring it up.`
+    : `The user brought back the archived thread "${name}".`
+  await update($, untold, all => [...all, note])
+  await save($)
 }
 
-// The keys of the threads picked in the band; empty shows everything.
-async function selectedKeys($: EngineInterface): Promise<Set<string>> {
-  return new Set((await read($, threads)).filter(t => t.isSelected).map(t => keyOf(t.name)))
-}
-
-// Whether a section stays in view: all of them while no thread is picked, else
-// the picked threads' sections, and unthreaded ones in rows since the person's
-// last message.
-function isShown(
-  s: Section,
-  selected: Set<string>,
-  resolve: (name: string) => Thread | undefined,
-  isRecentRow: boolean,
-): boolean {
-  if (selected.size === 0) return true
-  const thread = s.thread === null ? undefined : resolve(s.thread)
-  if (thread === undefined) return isRecentRow
-  return selected.has(keyOf(thread.name))
+// Deletes a thread: its tags leave every message, whose text stays, of no thread; a
+// heading that names it, a merge into it, a send to it and a move to it are of no
+// thread. A thread started again by its name takes its key back. The model is told
+// beside the person's next message.
+async function deleteThread($: EngineInterface, key: string) {
+  const name = await nameByKey($, key)
+  await update($, threads, all => all.filter(t => keyOf(t.name) !== key))
+  await update($, deleted, all => (all.includes(key) ? all : [...all, key]))
+  await update($, current, cur => (cur === key ? '' : cur))
+  await update($, untold, all => [
+    ...all,
+    `The user deleted the thread "${name}": its messages no longer belong to any thread. Do not write under its heading unless they start it again.`,
+  ])
+  await save($)
 }
 
 // The text the person's bubble shows: a known thread's heading line goes, as the
@@ -1006,7 +1095,7 @@ function bubbleText(shown: Section[], resolve: (name: string) => Thread | undefi
 }
 
 // The thread view (pane.tsx) places a section by the rules the chat draws it by.
-const viewDeps: ViewDeps = { threadOf, personThreadOf, personSectionsOf, placeSection, stemOf }
+const viewDeps: ViewDeps = { threadOf, personThreadOf, personSectionsOf, replySectionsOf, linksFor, placeSection, stemOf }
 
 // Keeps the thread view's window on its newest rows as they come, until the person scrolls.
 async function pinViewToEnd($: EngineInterface) {
@@ -1044,6 +1133,8 @@ async function viewInputs($: EngineInterface): Promise<ViewInputs> {
     snapped: await read($, snaps),
     sent: await read($, sentTo),
     moves: await read($, moved),
+    current: await read($, current),
+    deleted: await read($, deleted),
     known,
     messages,
   }
@@ -1112,11 +1203,11 @@ async function drawThreadControls(
   $: EngineInterface,
   e: Parameters<EngineInterface['ui']['resolve']>[0],
 ): Promise<RenderElement> {
-  const list = await read($, threads)
-  const isFiltering = list.some(t => t.isSelected)
-  // With one thread alone picked, messages with no heading go to it.
-  const picked = list.filter(t => t.isSelected)
-  const sendTarget = picked.length === 1 ? picked[0] : undefined
+  const list = (await read($, threads)).filter(t => t.isArchived !== true)
+  const cur = await read($, current)
+  const isFiltering = cur !== ''
+  // Messages with no heading go to the picked thread.
+  const sendTarget = list.find(t => keyOf(t.name) === cur)
   // After the threads, a short button that opens the thread view: a Button, not a
   // Client, on every surface.
   const { Button } = $.ui.resolve(e)
@@ -1138,8 +1229,8 @@ async function drawThreadControls(
             </Text>
           )}
           {list.map(t => {
-            const isSelected = t.isSelected === true
-            const isSendTarget = isSelected && sendTarget === t
+            const isSelected = sendTarget === t
+            const isSendTarget = isSelected
             return drawPillSwitch(
               desktop,
               `chip:${keyOf(t.name)}`,
@@ -1154,7 +1245,7 @@ async function drawThreadControls(
         {viewButton && (
           <Box key="thread-view-tip" flexShrink={0}>
             {viewButton}
-            {drawTip($, e, 'Thread view: the picked threads alone, in a pane')}
+            {drawTip($, e, 'Thread view: the picked thread alone, in a pane')}
           </Box>
         )}
       </Box>
@@ -1172,9 +1263,9 @@ async function drawThreadControls(
             <Button
               key={`thread:${keyOf(t.name)}`}
               label={sendTarget === t ? `${t.name} ➤` : t.name}
-              variant={t.isSelected ? 'primary' : 'secondary'}
-              dimColor={isFiltering && !t.isSelected}
-              onPress={() => toggleThread($, keyOf(t.name))}
+              variant={sendTarget === t ? 'primary' : 'secondary'}
+              dimColor={isFiltering && sendTarget !== t}
+              onPress={() => pickThread($, cur === keyOf(t.name) ? '' : keyOf(t.name))}
             />
           </Box>
         ))}
@@ -1187,7 +1278,7 @@ async function drawThreadControls(
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'threads', description: 'Turn conversation threads on or off in this chat' })
-    await $.command.register({ name: VIEW, description: 'Show the picked threads alone, without tool rows, in a pane' })
+    await $.command.register({ name: VIEW, description: 'Show the picked thread alone, without tool rows, in a pane' })
     // A restarted or resumed session takes up the rows its thread view kept.
     if ((await read($, viewRows)).length === 0) {
       const kept = await keptRows($, await $.session.id()).catch(() => [])
@@ -1199,16 +1290,13 @@ export const register: Register = on => {
       argumentHint: '<thread> into <thread>',
     })
 
-    // Threads saved by an earlier version of this mod lack fields this one draws.
-    if ((await read($, threads)).length > 0) {
-      await update($, threads, list =>
-        list.map(t => ({
-          name: t.name,
-          color: t.color ?? '#888888',
-          isSelected: t.isSelected === true,
-          createdBy: t.createdBy ?? 'user',
-        })),
-      )
+    // Threads held by an earlier version of this mod lack fields this one draws, or carry
+    // its filter's pick: the one thread it picked alone is this version's picked thread.
+    const held = await read($, threads)
+    if (held.length > 0) {
+      const picked = pickedByFilter(held)
+      if (picked !== '' && (await read($, current)) === '') await update($, current, () => picked)
+      await update($, threads, list => list.map(cleanThread))
     }
 
     // A restarted, resumed or reloaded session takes up the threads it kept, joined to
@@ -1274,7 +1362,7 @@ export const register: Register = on => {
     }
 
     const merged = await read($, aliases)
-    const links = { ...(await read($, snaps)), ...merged }
+    const links = linksFor(merged, await read($, deleted), await read($, snaps))
     const list = await read($, threads)
     const { names, meanings } = decideHeadings(e.text, list, links, merged)
     if (names.length === 0) {
@@ -1287,13 +1375,13 @@ export const register: Register = on => {
           `This message belongs to the thread "${quoted.name}": the user replied to part of your message in that thread, so your reply most likely belongs under that thread's heading.`,
         ])
       }
-      // With one thread alone picked, a message with no heading goes to that thread.
-      const picked = list.filter(t => t.isSelected)
-      const only = picked.length === 1 ? picked[0] : undefined
-      if (only === undefined) return send([])
-      unsent.push({ text: e.text.trim(), key: keyOf(only.name) })
+      // With a thread picked above the prompt, a message with no heading goes to it.
+      const cur = await read($, current)
+      const picked = cur === '' ? undefined : list.find(t => keyOf(t.name) === cur && t.isArchived !== true)
+      if (picked === undefined) return send([])
+      unsent.push({ text: e.text.trim(), key: keyOf(picked.name) })
       return send([
-        `This message belongs to the thread "${only.name}": the user wrote it while viewing that thread alone, so your reply most likely belongs under that thread's heading.`,
+        `This message belongs to the thread "${picked.name}": the user posted it there with their thread picker, so your reply most likely belongs under that thread's heading.`,
       ])
     }
     await addThreads($, names, 'user')
@@ -1305,18 +1393,12 @@ export const register: Register = on => {
     return send([`Thread headings in this message, as the user meant them: ${meanings.map(meaningNote).join('; ')}.`])
   })
 
-  // The rows since the person's last message, noted as they are stored: a filter
-  // still shows those of them that belong to no thread.
+  // A message sent with no heading to one thread is known by its row once stored.
   on('session.append', async ($, e, next) => {
-    if (e.agentId === undefined) {
-      const ids = [e.uuid, ...toolCallIds(e.message.content)]
-      const isPersonMessage = PERSON.has(e.origin.kind) && (e.door === 'prompt' || e.door === 'delivery')
-      await update($, recent, all => (isPersonMessage ? ids : [...all, ...ids]))
-      const marks = e.message.type === 'assistant' ? textMarksOf(e.message.content) : []
-      if (isPersonMessage || marks.length > 0) await update($, recentTexts, all => (isPersonMessage ? [] : [...all, ...marks]))
-      // A message sent to the one picked thread is known by its row from here on.
+    const isPersonMessage = PERSON.has(e.origin.kind) && (e.door === 'prompt' || e.door === 'delivery')
+    if (e.agentId === undefined && isPersonMessage && unsent.length > 0) {
       const said = textOf(e.message.content)
-      const sent = isPersonMessage ? unsent.findIndex(u => said.includes(u.text)) : -1
+      const sent = unsent.findIndex(u => said.includes(u.text))
       const key = sent >= 0 ? unsent.splice(sent, 1)[0]?.key : undefined
       if (key !== undefined) await update($, sentTo, all => ({ ...all, [e.uuid]: key }))
     }
@@ -1352,18 +1434,18 @@ export const register: Register = on => {
     return { text: opened.isPlaced ? 'Thread view opened.' : `Thread view not shown: ${opened.reason}` }
   })
 
-  // Another pick of threads takes the thread view to the newest of what they hold.
-  on('state.set', { plugin: 'thread-chat', key: 'threads' }, async ($, e, next) => {
+  // Another thread picked takes the thread view to the newest of what it holds.
+  on('state.set', { plugin: 'thread-chat', key: 'current' }, async ($, e, next) => {
     const result = await next(e)
     try {
-      if (pickedOf(e.previous) !== pickedOf(e.value) && (await $.ui.panes()).some(p => p.id === VIEW)) await pinViewToEnd($)
+      if (e.previous !== e.value && (await $.ui.panes()).some(p => p.id === VIEW)) await pinViewToEnd($)
     } catch {
       // the pick stands whether or not the view moves
     }
     return result
   })
 
-  // The thread view: the picked threads' sections, each tagged in its thread's
+  // The thread view: the picked thread's sections, each tagged in its thread's
   // colour and drawn as markdown, as the chat draws them. No Client: a pane of
   // many rows must not add to the Clients every overlay on the desktop shares.
   on('ui.render', { component: 'Pane', requestId: VIEW }, async ($, e) =>
@@ -1391,18 +1473,7 @@ export const register: Register = on => {
       return { text: `Could not tell which threads to merge. Threads: ${list.map(t => t.name).join(', ') || 'none'}.` }
     }
 
-    const fromKey = keyOf(from.name)
-    const toKey = keyOf(to.name)
-    await update($, aliases, merged => ({
-      ...Object.fromEntries(Object.entries(merged).map(([k, v]) => [k, v === fromKey ? toKey : v])),
-      [fromKey]: toKey,
-    }))
-    await update($, threads, all =>
-      all
-        .filter(t => keyOf(t.name) !== fromKey)
-        .map(t => (keyOf(t.name) === toKey ? { ...t, isSelected: t.isSelected || from.isSelected } : t)),
-    )
-    await save($)
+    await mergeThreads($, keyOf(from.name), keyOf(to.name))
     return { text: `Merged thread "${from.name}" into "${to.name}": "# ${from.name}" now means "${to.name}".` }
   })
 
@@ -1445,7 +1516,10 @@ export const register: Register = on => {
   // only Clients, so their count stays near the number of threads.
   on('ui.message', async ($, e, next) => {
     if ((e.data as { flip?: unknown } | null)?.flip === true && (await read($, isOn))) {
-      if (e.element.startsWith('thread:')) await toggleThread($, e.element.slice('thread:'.length))
+      if (e.element.startsWith('thread:')) {
+        const key = e.element.slice('thread:'.length)
+        await pickThread($, (await read($, current)) === key ? '' : key)
+      }
       else if (e.element.startsWith('pick:')) await moveTo($, e.element.slice('pick:'.length))
       else if (e.element === NEW_THREAD_PILL) await setNaming($, true)
     }
@@ -1453,45 +1527,39 @@ export const register: Register = on => {
   })
 
   // The person's message stays the engine's own drawing (its images and all):
-  // its thread tags go above it in their colours, its heading lines go, and a
-  // filter trims its text to the picked threads' sections.
+  // its thread tags go above it in their colours, and its heading lines go.
   on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
-    // Off, every message is the engine's drawing alone, a filter picked before or not.
+    // Off, every message is the engine's drawing alone.
     if (!(await read($, isOn))) return next(e)
     // A plugin's prompt is never the person's, though a surface may name it as theirs.
     // A row of no words (an image alone) is the engine's drawing alone: no tag or
     // "+ thread" goes round it.
-    if (!PERSON.has(e.props.origin.kind) || isOthersPrompt(e.props.text) || e.props.text.trim() === '') {
-      // Another party's message (a notification, a plugin's) belongs to no thread.
-      if (!(await isFilteredOut($, [e.requestId]))) return next(e)
-      const { Box } = $.ui.resolve(e)
-      return <Box display="none" />
-    }
+    if (!PERSON.has(e.props.origin.kind) || isOthersPrompt(e.props.text) || e.props.text.trim() === '') return next(e)
     const list = await read($, threads)
     const merged = await read($, aliases)
     const snapped = await read($, snaps)
-    const resolve = (name: string) => personThreadOf(name, list, { ...snapped, ...merged })
-    const selected = await selectedKeys($)
-    const typed = personSectionsOf(e.props.text, list, snapped, merged)
-    // A message with no heading may have gone to the one thread picked as it was sent.
+    const gone = await read($, deleted)
+    const links = linksFor(merged, gone, snapped)
+    const resolve = (name: string) => personThreadOf(name, list, links)
+    const typed = personSectionsOf(e.props.text, list, snapped, merged, gone)
+    // A message with no heading may have gone to the thread picked as it was sent.
     const sentThread = typed.some(s => s.thread !== null) ? undefined : await sentThreadOf($, e.requestId, list, merged)
     const sent = sentThread === undefined ? typed : [{ thread: sentThread.name, text: e.props.text }]
     const moves = await read($, moved)
-    const sections = sent.map(s => placeSection(s, e.requestId, moves, resolve, list, merged))
+    const sections = sent.map(s => placeSection(s, e.requestId, moves, resolve, list, linksFor(merged, gone)))
     const open = await read($, picking)
     const isNaming = await read($, naming)
     const pickerPlace = open.startsWith(`${e.requestId}|`) ? open.slice(e.requestId.length + 1) : undefined
     // On the desktop, a message of no thread offers "+ thread" where the pointer hovers.
     const canAdd = e.surface === 'desktop'
-    const isPlain = selected.size === 0 && !sections.some(s => s.thread !== null) && pickerPlace === undefined
-    if (isPlain && !canAdd) return next(e)
+    const isPlain = !sections.some(s => s.thread !== null) && pickerPlace === undefined
+    const text = bubbleText(sections, resolve) || e.props.text
+    // A message of no thread is the engine's drawing alone, but for a deleted thread's
+    // heading line, which goes.
+    if (isPlain && !canAdd) return next(text.trim() === e.props.text.trim() ? e : { ...e, props: { ...e.props, text } })
 
     const { Box } = $.ui.resolve(e)
-    const isRecentRow = selected.size > 0 && (await isRecent($, [e.requestId]))
-    const shown = sections.filter(s => isShown(s, selected, resolve, isRecentRow))
-    if (shown.length === 0) return <Box display="none" />
-
-    const text = bubbleText(shown, resolve) || e.props.text
+    const shown = sections
     const message = await next(text === e.props.text ? e : { ...e, props: { ...e.props, text } })
     // A row a plugin beneath draws as nothing stays nothing: no tag or "+ thread" round it.
     if (isBlank(message)) return message
@@ -1544,34 +1612,34 @@ export const register: Register = on => {
     if (!(await read($, isOn))) return next(e)
     // The voice's "(quiet)" (the multitask plugin draws it as nothing) and a block of no
     // words are the engine's drawing alone: no "+ thread", or room for one, round nothing.
-    if (isBlankText(e.props.text)) {
-      const isHidden = (await selectedKeys($)).size > 0 && !(await isRecentReply($, e.requestId, e.props.text))
-      if (!isHidden) return next(e)
-      const { Box } = $.ui.resolve(e)
-      return <Box display="none" />
-    }
+    if (isBlankText(e.props.text)) return next(e)
     const list = await read($, threads)
     const merged = await read($, aliases)
-    const selected = await selectedKeys($)
-    const resolve = (name: string) => threadOf(name, list, merged)
-    const written = splitSections(e.props.text, name => resolve(name) !== undefined)
+    const gone = await read($, deleted)
+    const links = linksFor(merged, gone)
+    const resolve = (name: string) => threadOf(name, list, links)
+    const written = replySectionsOf(e.props.text, list, merged, gone)
     const moves = await read($, moved)
-    const sections = written.map(s => placeSection(s, e.requestId, moves, resolve, list, merged))
+    const sections = written.map(s => placeSection(s, e.requestId, moves, resolve, list, links))
     const open = await read($, picking)
     const isNaming = await read($, naming)
     const pickerPlace = open.startsWith(`${e.requestId}|`) ? open.slice(e.requestId.length + 1) : undefined
     // On the desktop, a part of no thread offers "+ thread" where the pointer hovers.
     const canAdd = e.surface === 'desktop'
-    const isPlain = selected.size === 0 && !sections.some(s => s.thread !== null) && pickerPlace === undefined
-    if (isPlain && !canAdd) return next(e)
+    const isPlain = !sections.some(s => s.thread !== null) && pickerPlace === undefined
+    // A reply of no thread is the engine's drawing alone, but for a deleted thread's
+    // heading lines, which go.
+    if (isPlain && !canAdd) {
+      const text = sections.map(s => s.text).join('\n\n')
+      const isUntouched = gone.length === 0 || text.trim() === e.props.text.trim() || text === ''
+      return next(isUntouched ? e : { ...e, props: { ...e.props, text } })
+    }
     // A thread's border keeps its part the same cells off on every side (REPLY_BORDER_PADDING).
     const borderPadding =
       e.surface === 'desktop' ? { padding: REPLY_BORDER_PADDING } : { paddingX: REPLY_BORDER_PADDING }
 
     const { Box } = $.ui.resolve(e)
-    const isRecentRow = selected.size > 0 && (await isRecentReply($, e.requestId, e.props.text))
-    const shown = sections.filter(s => isShown(s, selected, resolve, isRecentRow))
-    if (shown.length === 0) return <Box display="none" />
+    const shown = sections
 
     // A screen gets one message's text with a drawing, so the engine draws one part
     // of the reply; the other parts are drawn as markdown, as a reply's text is.
@@ -1636,27 +1704,6 @@ export const register: Register = on => {
     }
     if (parts.length === 0) return <Box display="none" />
     return <Box flexDirection="column" rowGap={1}>{parts}</Box>
-  })
-
-  // Tool rows belong to no thread: while a thread is picked, only those since the
-  // person's last message stay.
-  on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
-    if (!(await isFilteredOut($, [e.requestId]))) return next(e)
-    const { Box } = $.ui.resolve(e)
-    return <Box display="none" />
-  })
-
-  on('ui.render', { component: 'ToolResult' }, async ($, e, next) => {
-    if (!(await isFilteredOut($, [e.requestId]))) return next(e)
-    const { Box } = $.ui.resolve(e)
-    return <Box display="none" />
-  })
-
-  on('ui.render', { component: 'ToolGroup' }, async ($, e, next) => {
-    const ids = [e.requestId, ...e.props.calls.flatMap(call => (call.tool_use_id === undefined ? [] : [call.tool_use_id]))]
-    if (!(await isFilteredOut($, ids))) return next(e)
-    const { Box } = $.ui.resolve(e)
-    return <Box display="none" />
   })
 
   // The band above the prompt, shared with the other mods of this repository through

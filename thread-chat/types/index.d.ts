@@ -1,9 +1,10 @@
 export type Thread = {
   name: string
   color: string
-  // picked in the band's filter; none picked shows everything
-  isSelected: boolean
   createdBy: 'user' | 'agent'
+  // hidden from the thread picker and the move picker, but kept: its messages keep
+  // their tags, and a heading naming it brings it back
+  isArchived?: boolean
 }
 
 // A row of the main conversation the thread view draws: a person's message or a
@@ -41,14 +42,15 @@ declare module 'claude-code' {
       agentMayCreate: boolean
       // a heading's key as typed -> the key of the thread it was decided to mean at send
       snaps: Record<string, string>
-      // the main conversation's rows since the person's last message, that message
-      // first: each row's id and each tool call's, in the order they were stored
-      recent: string[]
-      // the start of each reply text in those rows: a screen may know a reply by an
-      // id of its own (the desktop's is the API message's), so a reply is matched by text
-      recentTexts: string[]
+      // the key of the thread picked above the prompt ('' none): where a message with
+      // no heading goes, and what the thread view shows
+      current: string
+      // the keys of threads the person deleted: a heading that names one, or a merge or
+      // an earlier send that points to one, belongs to no thread. A thread started again
+      // by that name takes its key back.
+      deleted: string[]
       // a person's message row id -> the key of the thread it went to: sent with no
-      // heading while that thread alone was picked
+      // heading while that thread was picked
       sentTo: Record<string, string>
       // `${row id}|${key of the thread a part was first placed in, '' none}` -> the key
       // of the thread the person moved it to ('' none)
@@ -58,7 +60,7 @@ declare module 'claude-code' {
       // whether the open move picker shows a field for a new thread's name in place
       // of its pills
       naming: boolean
-      // moves to tell the model beside the person's next message
+      // moves, archives and deletions to tell the model beside the person's next message
       untold: string[]
       // what the model was last told of the threads; null until it is told how they
       // work (and again after a compaction)

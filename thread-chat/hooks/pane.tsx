@@ -1,12 +1,12 @@
 import type { Args, ElementTable, RenderElement, SessionMessage } from 'claude-code'
 
 import type { Thread, ViewRow } from '../types'
-import { isPluginFramed, keyOf, splitSections } from './parse'
+import { isPluginFramed, keyOf } from './parse'
 import type { Section } from './parse'
 
-// The thread view: a pane of the picked threads' conversation alone, the person's
-// messages and Claude's replies a section at a time, with no tool rows and no gaps
-// where the chat hides a row.
+// The thread view: a pane of the picked thread's conversation alone (every thread's
+// while none is picked), the person's messages and Claude's replies a section at a
+// time, with no tool rows.
 //
 // It draws from the rows it kept as the session stored them (`session.append`),
 // each with its id and text: the transcript as the person sees it. A compaction
@@ -26,7 +26,9 @@ type Links = Record<string, string>
 export type ViewDeps = {
   threadOf: (name: string, list: Thread[], links: Links) => Thread | undefined
   personThreadOf: (name: string, list: Thread[], links: Links) => Thread | undefined
-  personSectionsOf: (text: string, list: Thread[], snapped: Links, merged: Links) => Section[]
+  personSectionsOf: (text: string, list: Thread[], snapped: Links, merged: Links, gone: readonly string[]) => Section[]
+  replySectionsOf: (text: string, list: Thread[], merged: Links, gone: readonly string[]) => Section[]
+  linksFor: (merged: Links, gone: readonly string[], snapped?: Links) => Links
   placeSection: (
     s: Section,
     row: string,
@@ -262,6 +264,10 @@ export type ViewInputs = {
   snapped: Links
   sent: Links
   moves: Links
+  // the key of the thread picked above the prompt ('' none), which the view shows alone
+  current: string
+  // the keys of deleted threads, whose sections are of no thread
+  deleted: string[]
   known: ViewRow[]
   messages: SessionMessage[]
 }
@@ -305,10 +311,11 @@ function sourcesOf(known: readonly ViewRow[], messages: readonly SessionMessage[
 type Entry = { id: string | undefined; role: 'user' | 'assistant'; thread: Thread | undefined; text: string }
 
 // The conversation's sections, in order, where the person last placed them, kept
-// to the picked threads (all of them while none is picked).
+// to the picked thread (all of them while none is picked).
 export function viewEntries(inputs: ViewInputs, deps: ViewDeps) {
-  const { list, merged, snapped, sent, moves, known, messages } = inputs
-  const picked = list.filter(t => t.isSelected)
+  const { list, snapped, sent, moves, current, deleted, known, messages } = inputs
+  const merged = deps.linksFor(inputs.merged, deleted)
+  const picked = list.filter(t => keyOf(t.name) === current)
   const selected = new Set(picked.map(t => keyOf(t.name)))
   const sources = sourcesOf(known, messages)
 
@@ -324,7 +331,7 @@ export function viewEntries(inputs: ViewInputs, deps: ViewDeps) {
   for (const { row, role, text } of sources) {
     if (role === 'assistant') {
       const resolve = (name: string) => deps.threadOf(name, list, merged)
-      const written = splitSections(text, name => resolve(name) !== undefined)
+      const written = deps.replySectionsOf(text, list, inputs.merged, deleted)
       const marks = new Set([markOf(text), ...written.map(s => markOf(s.text))])
       const at = movedRowOf(moves, row?.id, marks, deps.stemOf)
       for (const s of written) {
@@ -333,7 +340,7 @@ export function viewEntries(inputs: ViewInputs, deps: ViewDeps) {
       continue
     }
     const resolve = (name: string) => deps.personThreadOf(name, list, { ...snapped, ...merged })
-    const typed = deps.personSectionsOf(text, list, snapped, merged)
+    const typed = deps.personSectionsOf(text, list, snapped, inputs.merged, deleted)
     // A message with no heading may have gone to the one thread picked as it was sent.
     const sentKey =
       row === undefined || typed.some(s => s.thread !== null)
@@ -387,7 +394,7 @@ function drawEntry(draw: ViewDrawing, entry: Entry): RenderElement {
   )
 }
 
-// The pane's body: the picked threads' sections, oldest first, the newest at the bottom.
+// The pane's body: the picked thread's sections, oldest first, the newest at the bottom.
 export function drawView(draw: ViewDrawing, inputs: ViewInputs, deps: ViewDeps): RenderElement {
   const { Box, Text } = draw.ui
   const { entries, picked } = viewEntries(inputs, deps)
@@ -397,19 +404,10 @@ export function drawView(draw: ViewDrawing, inputs: ViewInputs, deps: ViewDeps):
 
   return (
     <Box flexDirection="column" rowGap={1}>
-      {picked.length === 0 && <Text dimColor>All threads. Pick threads above the prompt to follow just those.</Text>}
+      {picked.length === 0 && <Text dimColor>All threads. Pick a thread above the prompt to read it alone.</Text>}
       {hidden > 0 && <Text dimColor>{`${hidden} earlier sections not shown`}</Text>}
       {shown.length === 0 && <Text dimColor>{picked.length === 0 ? 'Nothing here yet.' : `Nothing in ${names} yet.`}</Text>}
       {shown.map(entry => drawEntry(draw, entry))}
     </Box>
   )
 }
-
-// The picked threads of a `threads` value, as one key: another pick differs.
-export const pickedOf = (value: unknown) =>
-  Array.isArray(value)
-    ? (value as Partial<Thread>[])
-        .filter(t => t.isSelected === true)
-        .map(t => keyOf(String(t.name)))
-        .join('|')
-    : ''
