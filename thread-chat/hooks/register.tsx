@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { BoxProps, Elements, EngineInterface, Register, RenderElement, RenderSurface } from 'claude-code'
 
-import type { Brief, Thread, ViewRow } from '../types'
+import type { Brief, Thread, ViewImage, ViewRow } from '../types'
 import {
   PALETTE,
   closestThread,
@@ -18,11 +18,16 @@ import {
 } from './parse'
 import type { RunOn, Section } from './parse'
 import {
+  IMAGE_DATA_MAX,
   chunksOf,
   dataFolderOf,
   drawView,
   fingerprintOf,
   hasToolCall,
+  imagePathsOf,
+  imageSizeOf,
+  imageTypeOf,
+  isDrawable,
   isKeptView,
   markHashOf,
   markOf,
@@ -32,14 +37,17 @@ import {
   pickedOf,
   rowsOfChunks,
   rowsUpTo,
+  thumbNameOf,
   viewKey,
   viewMoveOf,
   viewPlaceOf,
   viewRowOf,
+  withImagePaths,
   withInterim,
+  withKeptPaths,
   withViewRow,
 } from './pane'
-import type { ViewDeps, ViewInputs, ViewPlace } from './pane'
+import type { Picture, ViewDeps, ViewInputs, ViewPlace } from './pane'
 
 const isOn = atom({ plugin: 'thread-chat', key: 'isOn' } as const, false)
 const threads = atom({ plugin: 'thread-chat', key: 'threads' } as const, [])
@@ -55,6 +63,7 @@ const naming = atom({ plugin: 'thread-chat', key: 'naming' } as const, false)
 const untold = atom({ plugin: 'thread-chat', key: 'untold' } as const, [])
 const briefed = atom({ plugin: 'thread-chat', key: 'briefed' } as const, null)
 const viewRows = atom({ plugin: 'thread-chat', key: 'viewRows' } as const, [])
+const picturesRead = atom({ plugin: 'thread-chat', key: 'picturesRead' } as const, 0)
 
 const CREATE_TOOL = 'mcp__thread-chat__create_thread'
 // Thread-chat's dropdown in the band. Its face reads "Threads", its first option kept
@@ -1169,15 +1178,19 @@ async function viewInputs($: EngineInterface): Promise<ViewInputs> {
 // The file beside a session's rows that holds their marks' hashes, a line a row.
 const MARKS_FILE = 'marks.txt'
 
-// Where a session's view rows are kept between runs: files of their own, all of
-// every message's text, as the store holds 4 MiB in all; the store notes only how
-// many there are (KeptView). They are in the plugin's data folder under the Claude
-// Code configuration folder, a folder a session. None where the configuration
-// folder is not known.
-async function rowsFolder($: EngineInterface, id: string): Promise<string | undefined> {
+// The plugin's data folder, under the Claude Code configuration folder; none where
+// that folder is not known.
+async function dataFolder($: EngineInterface): Promise<string | undefined> {
   const home = (await $.env.get('USERPROFILE')) || (await $.env.get('HOME'))
   const config = (await $.env.get('CLAUDE_CONFIG_DIR')) || (home ? `${home}/.claude` : undefined)
-  const data = dataFolderOf($.plugin.root, $.plugin.name, config)
+  return dataFolderOf($.plugin.root, $.plugin.name, config)
+}
+
+// Where a session's view rows are kept between runs: files of their own, all of
+// every message's text, as the store holds 4 MiB in all; the store notes only how
+// many there are (KeptView). They are in the plugin's data folder, a folder a session.
+async function rowsFolder($: EngineInterface, id: string): Promise<string | undefined> {
+  const data = await dataFolder($)
   return data === undefined ? undefined : `${data}/views/${id.replace(/[^A-Za-z0-9_-]/g, '_')}`
 }
 
@@ -1222,6 +1235,239 @@ async function keepViewRows($: EngineInterface, id: string, rows: ViewRow[]) {
     // nothing more is kept this time
   }
 }
+
+// Takes up the pictures' files a session's kept rows note and its rows here lack: noted
+// there since this run read them (by a repair of rows an earlier version kept). Best
+// effort, as keeping them is.
+async function takeKeptPaths($: EngineInterface, id: string) {
+  try {
+    const rows = await read($, viewRows)
+    if (rows.length === 0) return
+    const kept = await keptRows($, id)
+    if (withKeptPaths(rows, kept) !== rows) await update($, viewRows, all => withKeptPaths(all, kept))
+  } catch {
+    // the rows stand as they are
+  }
+}
+
+// The person's message whose pictures wait for the row naming their files, which Claude
+// Code stores after it in the same turn.
+let awaitingPaths: string | undefined
+
+// The thread view's pictures, by the file each was saved to: their bytes once read
+// (`Picture`), `loading` until then, `failed` where they cannot be (the file gone, or
+// too large to draw and no way here to make it smaller). Read once a run of this code.
+const pictures = new Map<string, Picture | 'loading' | 'failed'>()
+// The files whose pictures wait to be read, in the order the view asked for them, and
+// whether they are being read (or soon will be).
+const pictureQueue: string[] = []
+let isReadingPictures = false
+
+// A picture too large to draw is drawn from a smaller copy: a JPEG at most this many
+// pixels across and down (twice a card's bounds, sharp on a dense screen), of this quality.
+const THUMB_BOX = { width: 400, height: 600 }
+const THUMB_QUALITY = 80
+// The pictures one run of PowerShell makes smaller, by the characters their job list takes:
+// it goes in an environment variable, which takes 32767 at most.
+const THUMB_JOBS_CHARS = 16_000
+// Whether this machine may have a way to make a picture smaller: false once none was
+// found, so the view stops asking.
+let canResize = true
+
+// A picture's bytes as the view draws them, from its file: at hand once read; else read
+// in the background, the view drawn again once they are.
+function pictureFor($: EngineInterface, image: ViewImage): Picture | 'loading' | undefined {
+  const { path } = image
+  if (path === undefined) return undefined
+  const known = pictures.get(path)
+  if (known !== undefined) return known === 'failed' ? undefined : known
+  pictures.set(path, 'loading')
+  pictureQueue.push(path)
+  if (!isReadingPictures) {
+    isReadingPictures = true
+    // once this drawing is done: a drawing writes nothing
+    $.clock.after(1, () => void readPictures($))
+  }
+  return 'loading'
+}
+
+// The thread view drawn again with the pictures read so far.
+async function drawPictures($: EngineInterface) {
+  try {
+    await update($, picturesRead, n => n + 1)
+  } catch {
+    try {
+      $.ui.invalidate('ui.render')
+    } catch {
+      // drawn with them next time it is drawn
+    }
+  }
+}
+
+// Reads the pictures the view waits for, the view drawn again as they come: those few
+// enough to draw from their files, the rest from smaller copies kept under the plugin's
+// data folder, made once.
+async function readPictures($: EngineInterface) {
+  try {
+    while (pictureQueue.length > 0) {
+      const paths = pictureQueue.splice(0)
+      const folder = await dataFolder($).catch(() => undefined)
+      const toMake: ThumbJob[] = []
+      for (const path of paths) {
+        const stat = await $.fs.stat(path).catch(() => undefined)
+        if (stat?.kind !== 'file') {
+          pictures.set(path, 'failed')
+          continue
+        }
+        if (Math.ceil(stat.size / 3) * 4 <= IMAGE_DATA_MAX) {
+          pictures.set(path, (await pictureFile($, path)) ?? 'failed')
+          continue
+        }
+        const thumb = folder === undefined ? undefined : `${folder}/thumbs/${thumbNameOf(path, stat.size, stat.mtimeMs)}`
+        const made = thumb === undefined ? undefined : await pictureFile($, thumb)
+        if (thumb === undefined || made !== undefined || !canResize) pictures.set(path, made ?? 'failed')
+        else toMake.push({ from: path, to: thumb })
+      }
+      await drawPictures($)
+      if (toMake.length === 0) continue
+      await makeThumbs($, toMake).catch(() => undefined)
+      for (const { from, to } of toMake) pictures.set(from, (await pictureFile($, to)) ?? 'failed')
+      await drawPictures($)
+    }
+  } finally {
+    isReadingPictures = false
+  }
+}
+
+// A picture file's bytes as the view draws them; none where it cannot be read, is not
+// a picture of a type drawn, is too large to draw, or is cut short.
+async function pictureFile($: EngineInterface, path: string): Promise<Picture | undefined> {
+  try {
+    const { base64 } = await $.fs.read(path, { as: 'bytes' })
+    const type = imageTypeOf(base64)
+    if (type === undefined || !isDrawable(type, base64)) return undefined
+    if (type === 'image/jpeg' && !atob(base64.slice(-8)).endsWith('\xff\xd9')) return undefined
+    return { type, data: base64, ...imageSizeOf(type, base64) }
+  } catch {
+    return undefined
+  }
+}
+
+// A picture to make smaller: its file, and the file its smaller copy is written to.
+type ThumbJob = { from: string; to: string }
+
+// Makes smaller copies of pictures with what this machine has: on Windows, PowerShell's
+// System.Drawing, the pictures of a run in one call; elsewhere sips (macOS), else
+// ImageMagick where it is installed. Each writes a JPEG within THUMB_BOX, and none
+// enlarges. A way that cannot start is not tried again; none that can, and the view
+// stops asking.
+async function makeThumbs($: EngineInterface, jobs: ThumbJob[]) {
+  if (!canResize || jobs.length === 0) return
+  if (jobs.some(job => /^(?:[A-Za-z]:[\\/]|\\\\)/.test(job.from))) {
+    let batch: ThumbJob[] = []
+    for (const job of [...jobs, undefined]) {
+      if (job !== undefined && JSON.stringify([...batch, job]).length <= THUMB_JOBS_CHARS) {
+        batch.push(job)
+        continue
+      }
+      if (batch.length > 0 && !(await resizeOnWindows($, batch))) {
+        canResize = false
+        return
+      }
+      batch = job === undefined ? [] : [job]
+    }
+    return
+  }
+  for (const job of jobs) {
+    if (!(await resizeElsewhere($, job))) {
+      canResize = false
+      return
+    }
+  }
+}
+
+// PowerShell's script for a run of pictures named in THREAD_CHAT_THUMBS: each drawn
+// smaller onto white (a JPEG has no transparency), written beside its place and then
+// moved there, so a copy cut short is never taken for one made.
+const RESIZE_SCRIPT = `
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.Drawing
+$codec = [System.Drawing.Imaging.ImageCodecInfo]::GetImageEncoders() | Where-Object { $_.MimeType -eq 'image/jpeg' }
+$options = New-Object System.Drawing.Imaging.EncoderParameters 1
+$options.Param[0] = New-Object System.Drawing.Imaging.EncoderParameter ([System.Drawing.Imaging.Encoder]::Quality), ([long]$env:THREAD_CHAT_THUMB_QUALITY)
+$box = [double]$env:THREAD_CHAT_THUMB_WIDTH, [double]$env:THREAD_CHAT_THUMB_HEIGHT
+$jobs = $env:THREAD_CHAT_THUMBS | ConvertFrom-Json
+foreach ($job in $jobs) {
+  try {
+    $source = [System.Drawing.Image]::FromFile($job.from)
+    try {
+      $scale = [Math]::Min(1.0, [Math]::Min($box[0] / $source.Width, $box[1] / $source.Height))
+      $width = [Math]::Max(1, [int][Math]::Round($source.Width * $scale))
+      $height = [Math]::Max(1, [int][Math]::Round($source.Height * $scale))
+      $thumb = New-Object System.Drawing.Bitmap $width, $height
+      try {
+        $graphics = [System.Drawing.Graphics]::FromImage($thumb)
+        $graphics.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+        $graphics.Clear([System.Drawing.Color]::White)
+        $graphics.DrawImage($source, 0, 0, $width, $height)
+        $graphics.Dispose()
+        [void][System.IO.Directory]::CreateDirectory([System.IO.Path]::GetDirectoryName($job.to))
+        $part = "$($job.to).part"
+        $thumb.Save($part, $codec, $options)
+        Move-Item -LiteralPath $part -Destination $job.to -Force
+      } finally { $thumb.Dispose() }
+    } finally { $source.Dispose() }
+  } catch { [Console]::Error.WriteLine("$($job.from): $_") }
+}
+`
+
+// Makes a run of pictures smaller on Windows; false where PowerShell cannot start.
+async function resizeOnWindows($: EngineInterface, jobs: ThumbJob[]): Promise<boolean> {
+  try {
+    await $.process.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', RESIZE_SCRIPT], {
+      env: {
+        THREAD_CHAT_THUMBS: JSON.stringify(jobs),
+        THREAD_CHAT_THUMB_WIDTH: String(THUMB_BOX.width),
+        THREAD_CHAT_THUMB_HEIGHT: String(THUMB_BOX.height),
+        THREAD_CHAT_THUMB_QUALITY: String(THUMB_QUALITY),
+      },
+      timeoutMs: Math.min(600_000, 20_000 + 2_000 * jobs.length),
+    })
+    return true
+  } catch {
+    // not started, or still running at the timeout: the copies made so far stand
+    return false
+  }
+}
+
+// The commands that make a picture smaller off Windows, in the order tried: sips
+// (macOS), then ImageMagick 7 and 6. The first of them that starts is used from then on.
+const RESIZERS: ((job: ThumbJob) => string[])[] = [
+  job => ['sips', '-Z', String(THUMB_BOX.width), '-s', 'format', 'jpeg', '-s', 'formatOptions', String(THUMB_QUALITY), job.from, '--out', job.to],
+  job => ['magick', job.from, '-auto-orient', '-thumbnail', `${THUMB_BOX.width}x${THUMB_BOX.height}>`, '-quality', String(THUMB_QUALITY), `jpeg:${job.to}`],
+  job => ['convert', job.from, '-auto-orient', '-thumbnail', `${THUMB_BOX.width}x${THUMB_BOX.height}>`, '-quality', String(THUMB_QUALITY), `jpeg:${job.to}`],
+]
+let resizerAt = 0
+
+// Makes one picture smaller off Windows; false where no command for it starts.
+async function resizeElsewhere($: EngineInterface, job: ThumbJob): Promise<boolean> {
+  // the commands write into the folder, but do not make it
+  const folder = job.to.slice(0, Math.max(job.to.lastIndexOf('/'), job.to.lastIndexOf('\\')))
+  if (!(await $.fs.exists(folder).catch(() => false))) await $.fs.write(`${folder}/README.txt`, THUMBS_README).catch(() => undefined)
+  while (resizerAt < RESIZERS.length) {
+    const argv = RESIZERS[resizerAt]?.(job)
+    if (argv === undefined) break
+    try {
+      await $.process.run(argv, { timeoutMs: 20_000 })
+      return true
+    } catch {
+      resizerAt += 1
+    }
+  }
+  return false
+}
+
+const THUMBS_README = 'Smaller copies of pictures pasted in Claude Code sessions, drawn in the thread view. Safe to delete: they are made again.\n'
 
 // Threads' controls in the band: a pill per thread, then `view`. They take the room the
 // band has left and give way first; nothing the pointer shows takes room.
@@ -1305,10 +1551,13 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'threads', description: 'Turn conversation threads on or off in this chat' })
     await $.command.register({ name: VIEW, description: 'Show the picked threads alone, without tool rows, in a pane' })
-    // A restarted or resumed session takes up the rows its thread view kept.
+    // A restarted or resumed session takes up the rows its thread view kept; a reloaded
+    // one, which holds its rows, the pictures' files noted in them since.
     if ((await read($, viewRows)).length === 0) {
       const kept = await keptRows($, await $.session.id()).catch(() => [])
       if (kept.length > 0) await update($, viewRows, () => kept)
+    } else {
+      await takeKeptPaths($, await $.session.id())
     }
     await $.command.register({
       name: 'merge-threads',
@@ -1446,11 +1695,21 @@ export const register: Register = on => {
       stored = await next(e)
       return stored
     } finally {
-      const row = stored?.deny === undefined ? viewRowOf(stored === undefined ? e : { ...e, message: stored.message }, PERSON) : undefined
+      const kept = stored?.message === undefined ? e : { ...e, message: stored.message }
+      const row = stored?.deny === undefined ? viewRowOf(kept, PERSON) : undefined
       if (row !== undefined) {
         await update($, viewRows, all => withViewRow(all, row))
         // A new message keeps the thread view at its end, unless the person scrolled up.
         if (viewPlace === 'end') void pinViewToEnd($)
+      }
+      // The pictures pasted with a person's message are known by the files Claude Code
+      // saved them to, which a hidden row after it names.
+      if (row?.role === 'user') awaitingPaths = row.images === undefined ? undefined : row.id
+      const paths = stored?.deny === undefined && awaitingPaths !== undefined ? imagePathsOf(kept) : undefined
+      if (paths !== undefined && awaitingPaths !== undefined) {
+        const id = awaitingPaths
+        awaitingPaths = undefined
+        await update($, viewRows, all => withImagePaths(all, id, paths))
       }
       // The view shows a turn's last reply: those a tool call follows in its turn are interim.
       if (e.agentId === undefined && stored?.deny === undefined) {
@@ -1472,8 +1731,11 @@ export const register: Register = on => {
     if (e.agentId === undefined) turnReplies = new Set()
     if (e.agentId === undefined && (await read($, isOn))) {
       if ((await read($, threads)).length > 0) await save($)
+      const id = await $.session.id()
+      // pictures' files a repair noted in the kept rows since are kept, not written over
+      await takeKeptPaths($, id)
       const rows = await read($, viewRows)
-      if (rows.length > 0) await keepViewRows($, await $.session.id(), rows)
+      if (rows.length > 0) await keepViewRows($, id, rows)
     }
     return result
   })
@@ -1518,6 +1780,8 @@ export const register: Register = on => {
   // rows must not add to the Clients every overlay on the desktop shares.
   on('ui.render', { component: 'Pane', requestId: VIEW }, async ($, e) => {
     settleView($, e.props.scroll.offset)
+    // drawn again as the pictures it waits for are read
+    await read($, picturesRead)
     return drawView(
       {
         surface: e.surface,
@@ -1527,6 +1791,7 @@ export const register: Register = on => {
         tagRow: thread => drawTagRow($, e, [drawTag($, e, thread, isOnRightOf(e.surface) ? 'end' : 'start')]),
         // its text is markdown, so its tag is not inset, as on the chat's markdown parts
         threadPart: (thread, body) => drawThreadPart($, e, thread, drawTag($, e, thread, 'start'), body),
+        picture: image => pictureFor($, image),
       },
       await viewInputs($),
       viewDeps,

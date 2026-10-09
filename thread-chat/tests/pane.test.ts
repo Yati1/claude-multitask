@@ -29,17 +29,25 @@ const VIEWS = '/config/plugins/data/thread-chat-inline/views'
 // as the conversation `$.session.messages()` reads (`transcript`, which a test may
 // rewrite as a compaction does), the mod store (`kept`, seeded with `store`), and
 // the files it reads and writes (`files`, seeded with `seed`; `writes` the paths
-// written, in order).
+// written, in order), binary files as base64 (`bytes`), and the commands it runs
+// (`runs`): PowerShell makes each picture it is given smaller, a JPEG (`THUMB`).
 function engine(on: On, store: Record<string, unknown> = {}, seed: Record<string, string> = {}) {
   const opened: string[] = []
   const transcript: SessionMessage[] = []
   const kept: Record<string, unknown> = { ...store }
   const files: Record<string, string> = { ...seed }
+  const bytes: Record<string, string> = {}
   const writes: string[] = []
+  const runs: { argv: readonly string[]; env: Record<string, string> }[] = []
   mock.env(on, { CLAUDE_CONFIG_DIR: '/config' })
   // the engine hands a path on resolved (on Windows, `C:\config\...`)
   const pathOf = (path: string) => path.replace(/\\/g, '/').replace(/^[A-Za-z]:/, '')
   on('fs.read', ($, e) => {
+    if (e.as === 'bytes') {
+      const base64 = bytes[pathOf(e.path)]
+      if (base64 === undefined) throw new Error(`ENOENT: ${e.path}`)
+      return { value: { base64 } }
+    }
     const text = files[pathOf(e.path)]
     if (text === undefined) throw new Error(`ENOENT: ${e.path}`)
     return { value: text }
@@ -48,6 +56,21 @@ function engine(on: On, store: Record<string, unknown> = {}, seed: Record<string
     files[pathOf(e.path)] = e.text
     writes.push(pathOf(e.path))
     return { value: undefined }
+  })
+  on('fs.stat', ($, e) => {
+    const base64 = bytes[pathOf(e.path)]
+    const text = files[pathOf(e.path)]
+    if (base64 === undefined && text === undefined) throw new Error(`ENOENT: ${e.path}`)
+    const size = base64 === undefined ? (text ?? '').length : Math.floor((base64.length * 3) / 4)
+    return { value: { kind: 'file' as const, size, mtimeMs: 1000, isLink: false } }
+  })
+  on('fs.exists', ($, e) => ({ value: bytes[pathOf(e.path)] !== undefined || files[pathOf(e.path)] !== undefined }))
+  on('process.run', ($, e) => {
+    const env = e.init?.env ?? {}
+    runs.push({ argv: e.argv, env })
+    const jobs = JSON.parse(env.THREAD_CHAT_THUMBS ?? '[]') as { from: string; to: string }[]
+    for (const job of jobs) if (bytes[pathOf(job.from)] !== undefined) bytes[pathOf(job.to)] = THUMB
+    return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
   on('store.get', ($, e) => ({ value: kept[e.key] }))
   on('store.set', ($, e) => {
@@ -91,7 +114,7 @@ function engine(on: On, store: Record<string, unknown> = {}, seed: Record<string
     }
     return next(e)
   })
-  return { opened, transcript, kept, files, writes }
+  return { opened, transcript, kept, files, bytes, writes, runs }
 }
 
 // The rows a session's files hold, as the store notes them.
@@ -875,46 +898,121 @@ function pngOf(width: number, height: number) {
   return btoa(`\x89PNG\r\n\x1a\n${word(13)}IHDR${word(width)}${word(height)}\x08\x06\x00\x00\x00`)
 }
 
-test('the pictures pasted with a message draw above it: thumbnails on a page, marks on the terminal', async ($, on) => {
-  const { kept, files } = engine(on)
+// A JPEG of 300 by 225 pixels, as small as one goes: its start, its frame's size, its end.
+const THUMB = btoa(`\xff\xd8\xff\xc0\x00\x11\x08\x00\xe1\x01\x2c\x03${'\x00'.repeat(9)}\xff\xd9`)
+
+// The clock, answering each wait at once: the view reads pictures once it is drawn.
+const waitNot = (on: On) => on('clock.after', () => ({ value: undefined }))
+
+// The view's pictures as drawn once those it waits for are read: each card's size and
+// what it holds (the picture's media type, `empty` while it is read), or `[image]`.
+async function picturesIn(pane: { findAll: (query: { type: string }) => Promise<{ type: string; props: Record<string, unknown>; text?: string }[]> }) {
+  const shown = async () =>
+    (await pane.findAll({ type: 'Svg' }))
+      .filter(svg => svg.props.alt === 'Pasted image')
+      .map(svg => {
+        const type = /href="data:([^;]+);base64,/.exec(String(svg.props.source))?.[1] ?? 'empty'
+        return `${String(svg.props.width)}x${String(svg.props.height)} ${type}`
+      })
+  // the files are read in the background, the view drawn again once they are
+  for (let i = 0; i < 50 && (await shown()).some(card => card.endsWith('empty')); i++) for (let j = 0; j < 100; j++) await Promise.resolve()
+  const marks = (await pane.findAll({ type: 'Text' })).filter(t => t.text === '[image]')
+  return [...(await shown()), ...marks.map(() => '[image]')]
+}
+
+test('the pictures pasted with a message draw above it from their files: thumbnails on a page, marks on the terminal', async ($, on) => {
+  const { kept, files, bytes, runs } = engine(on)
+  waitNot(on)
   await flipThreads($)
   const shot = pngOf(400, 300)
   // more than the desktop's largest picture takes
-  const huge = 'A'.repeat(140_000)
+  const huge = `${pngOf(1600, 1200)}${'A'.repeat(140_000)}`
+  bytes['/pics/shot.png'] = shot
+  bytes['/pics/huge.png'] = huge
   const image = (data: string): Block => ({ type: 'image', source: { type: 'base64', media_type: 'image/png', data } })
-  const paste = (uuid: string, content: Block[]) =>
-    $.session.append({ message: { type: 'user', role: 'user', content }, door: 'prompt', origin: { kind: 'composer' }, uuid }).catch(() => undefined)
-  await paste('p1', [image(shot), image(huge), { type: 'text', text: 'look at this' }])
-  await paste('p2', [image(shot)])
+  const append = (uuid: string, content: Block[], isMeta?: true) =>
+    $.session
+      .append({ message: { type: 'user', role: 'user', content, ...(isMeta && { isMeta }) }, door: 'prompt', origin: { kind: 'composer' }, uuid })
+      .catch(() => undefined)
+  // Claude Code names each picture's file in a hidden row after the message
+  const sources = (uuid: string, paths: string[]) => append(uuid, paths.map(path => ({ type: 'text', text: `[Image: source: ${path}]` })), true)
+  await append('p1', [image(shot), image(huge), image(shot), { type: 'text', text: 'look at this' }])
+  await sources('m1', ['C:\\pics\\shot.png', 'C:\\pics\\huge.png', 'C:\\pics\\gone.png'])
+  await append('p2', [image(shot)])
+  // a hidden row of other words names no file
+  await append('m2', [{ type: 'text', text: '[Image: source: C:\\pics\\other.png] and more' }], true)
+  await sources('m3', ['C:\\pics\\shot.png'])
+  // nor does one after the message's own
+  await sources('m4', ['C:\\pics\\late.png'])
+
+  // kept with their messages for the session's next run: each one's size and file, not its bytes
+  await $.turn.complete({ answer: '', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })
+  expect(rowsIn(kept, files, 'session-1').map(row => row.images)).toEqual([
+    [
+      { type: 'image/png', width: 400, height: 300, path: 'C:\\pics\\shot.png' },
+      { type: 'image/png', width: 1600, height: 1200, path: 'C:\\pics\\huge.png' },
+      { type: 'image/png', width: 400, height: 300, path: 'C:\\pics\\gone.png' },
+    ],
+    [{ type: 'image/png', width: 400, height: 300, path: 'C:\\pics\\shot.png' }],
+  ])
 
   for (const surface of ['terminal', 'desktop'] as const) {
     const pane = await $.ui.mount({ plugin: 'thread-chat', surface, ...PANE })
     // the words in a bubble; a message of pictures alone has none
     expect(await sectionsOf(pane)).toEqual(['you: look at this'])
-    const thumbs = (await pane.findAll({ type: 'Svg' })).filter(svg => svg.props.alt === 'Pasted image')
-    const marks = (await pane.findAll({ type: 'Text' })).filter(t => t.text === '[image]')
     if (surface === 'terminal') {
-      expect([thumbs.length, marks.length]).toEqual([0, 3])
+      expect(await picturesIn(pane)).toEqual(['[image]', '[image]', '[image]', '[image]'])
+      expect(runs.length).toBe(0)
     } else {
-      // cards 200 pixels across, as tall as the picture's shape, at the right; a mark
-      // for the one too large to draw
-      expect(thumbs.map(svg => [svg.props.width, svg.props.height])).toEqual([
-        [200, 150],
-        [200, 150],
-      ])
-      expect(String(thumbs[0]?.props.source)).toContain(`href="data:image/png;base64,${shot}"`)
-      expect(marks.length).toBe(1)
+      // cards 200 pixels across, as tall as the picture's shape, at the right: one too
+      // large to draw from a smaller copy; a mark for a file gone
+      expect(await picturesIn(pane)).toEqual(['200x150 image/png', '200x150 image/jpeg', '200x150 image/png', '[image]'])
+      const cards = (await pane.findAll({ type: 'Svg' })).map(svg => String(svg.props.source))
+      expect(cards[0]).toContain(`href="data:image/png;base64,${shot}"`)
+      expect(cards[1]).toContain(`href="data:image/jpeg;base64,${THUMB}"`)
       expect((await pane.findAll({ type: 'Box' })).some(b => b.props.flexWrap === 'wrap' && b.props.justifyContent === 'flex-end')).toBe(true)
+      // the smaller copy made once, by PowerShell on Windows, under the plugin's data folder
+      expect(runs.map(run => [run.argv[0], JSON.parse(run.env.THREAD_CHAT_THUMBS ?? '[]')])).toEqual([
+        ['powershell.exe', [{ from: 'C:\\pics\\huge.png', to: expect.stringMatching(/^\/config\/plugins\/data\/thread-chat-inline\/thumbs\/[0-9a-f]{8}-.*\.jpg$/) }]],
+      ])
     }
     await pane.unmount()
   }
+})
 
-  // kept with their messages for the session's next run, the one too large without its bytes
+test('pictures kept by an earlier version draw from their bytes; files a repair noted in the kept rows are taken up', async ($, on) => {
+  const shot = pngOf(400, 300)
+  const rows: ViewRow[] = [
+    { id: 'a', role: 'user', mark: 'a', text: 'a', images: [{ type: 'image/png', width: 400, height: 300, data: shot }, { type: 'image/png' }] },
+    { id: 'b', role: 'user', mark: 'b', text: 'b' },
+    { id: 'c', role: 'assistant', mark: 'c', text: 'c' },
+  ]
+  const { note, files: seed } = keptAs('session-1', rows)
+  const { kept, files, bytes } = engine(on, { 'session:session-1': { isOn: true, threads: [], aliases: {}, snaps: {} }, 'view:session-1': note }, seed)
+  waitNot(on)
+  bytes['/pics/b.png'] = pngOf(100, 50)
+  await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
+
+  const pane = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...PANE })
+  expect(await picturesIn(pane)).toEqual(['200x150 image/png', '[image]'])
+  await pane.unmount()
+
+  // a repair of the kept rows names the files of pictures this run's rows lack
+  const repaired = keptAs('session-1', [rows[0] as ViewRow, { ...(rows[1] as ViewRow), images: [{ type: 'image/png', path: 'C:\\pics\\b.png' }] }, rows[2] as ViewRow])
+  Object.assign(files, repaired.files)
+  await $.session
+    .append({ message: { type: 'assistant', role: 'assistant', content: [{ type: 'text', text: 'd' }] }, door: 'response', origin: model, uuid: 'd' })
+    .catch(() => undefined)
   await $.turn.complete({ answer: '', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })
+  // kept, not written over, and drawn: a picture of no known size takes its file's shape
   expect(rowsIn(kept, files, 'session-1').map(row => row.images)).toEqual([
-    [{ type: 'image/png', width: 400, height: 300, data: shot }, { type: 'image/png' }],
-    [{ type: 'image/png', width: 400, height: 300, data: shot }],
+    rows[0]?.images,
+    [{ type: 'image/png', path: 'C:\\pics\\b.png' }],
+    undefined,
+    undefined,
   ])
+  const again = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...PANE })
+  expect(await picturesIn(again)).toEqual(['200x150 image/png', '100x50 image/png', '[image]'])
 })
 
 test('rows are kept one per id, every one, and read back from their files as written', async () => {
