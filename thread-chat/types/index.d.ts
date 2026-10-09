@@ -85,6 +85,8 @@ declare module 'claude-code' {
       // how many of the thread view's pictures have been read from their files: each
       // one read draws the view again
       picturesRead: number
+      // whether the band's menu shows its switches, on a surface where a press opens it
+      menuOpen: boolean
     }
   }
 }

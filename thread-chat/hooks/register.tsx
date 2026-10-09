@@ -64,17 +64,18 @@ const untold = atom({ plugin: 'thread-chat', key: 'untold' } as const, [])
 const briefed = atom({ plugin: 'thread-chat', key: 'briefed' } as const, null)
 const viewRows = atom({ plugin: 'thread-chat', key: 'viewRows' } as const, [])
 const picturesRead = atom({ plugin: 'thread-chat', key: 'picturesRead' } as const, 0)
+const menuOpen = atom({ plugin: 'thread-chat', key: 'menuOpen' } as const, false)
 
 const CREATE_TOOL = 'mcp__thread-chat__create_thread'
-// Thread-chat's dropdown in the band. Its face reads "Threads", its first option kept
-// selected (the desktop app checks that one itself); below it a row per switch, which a
-// pick flips: threads on in this chat, and, while on, whether the agent may start them.
-// A switch that is on ends in our own check: a space and the light ✓, as the desktop's.
-const DROPDOWN = 'threads'
-const FACE = 'face'
-const THREADS_OPTION = 'threads'
-const AGENT_OPTION = 'agent-threads'
-const CHECK = ' ✓'
+// Thread-chat's menu in the band: a "Threads" button, and a row per switch, which a
+// press flips: threads on in this chat, and, while on, whether the agent may start them.
+// On the desktop the rows are a card shown while the pointer is on the button or it has
+// the focus; on the terminal a press on the button shows or hides them in the band.
+const MENU = 'threads'
+const THREADS_SWITCH = 'threads-on'
+const AGENT_SWITCH = 'agent-threads'
+// A switch's hit area over its picture, keyed by this and the switch's key.
+const SWITCH_HIT = 'switch:'
 // The thread view's pane id, which is also its command's name and its band button's key.
 const VIEW = 'thread-view'
 const VIEW_TITLE = 'Thread view'
@@ -152,11 +153,11 @@ async function flipThreads($: EngineInterface): Promise<boolean> {
   return now
 }
 
-// Flips the switch picked in the band's dropdown. The face, or the agent's switch while
-// threads are off, leaves things be.
-async function pickSwitch($: EngineInterface, value: string) {
-  if (value === THREADS_OPTION) await flipThreads($)
-  else if (value === AGENT_OPTION && (await read($, isOn))) await flipAgentSwitch($)
+// Flips a switch of the band's menu. The agent's switch while threads are off leaves
+// things be.
+async function flipMenuSwitch($: EngineInterface, key: string) {
+  if (key === THREADS_SWITCH) await flipThreads($)
+  else if (key === AGENT_SWITCH && (await read($, isOn))) await flipAgentSwitch($)
 }
 
 // What a heading means, by one rule for sending and drawing alike: `+name` a new
@@ -538,6 +539,25 @@ async function offNote($: EngineInterface): Promise<string | undefined> {
   await save($)
   return 'The user turned conversation threads off. Reply without thread headings; a level-1 heading in their messages is plain text now.'
 }
+
+// The SVG of a slide switch: a rounded track with the knob to the right when on.
+function switchPicture(isOn: boolean): string {
+  const track = isOn ? '#3b82f6' : '#8c8c8c'
+  const knob = isOn ? 23 : 11
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="34" height="20" viewBox="0 0 34 20"><rect x="1" y="2" width="32" height="16" rx="8" fill="${track}"/><circle cx="${knob}" cy="10" r="6" fill="#ffffff"/></svg>`
+}
+
+// The desktop's Select caret, a chevron 14px square in the secondary text colour of
+// the theme, after a 6px gap: the picture is the gap and the caret.
+const CARET_GAP = 6
+const CARET_SIZE = 14
+const CARET_PICTURE = [
+  `<svg xmlns="http://www.w3.org/2000/svg" width="${CARET_GAP + CARET_SIZE}" height="${CARET_SIZE}"`,
+  ` viewBox="${-CARET_GAP * (16 / CARET_SIZE)} 0 ${(CARET_GAP + CARET_SIZE) * (16 / CARET_SIZE)} 16">`,
+  '<style>.c{stroke:#c3c2b7}@media (prefers-color-scheme: light){.c{stroke:#52514e}}</style>',
+  '<path class="c" d="M4 6l4 4 4-4" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>',
+  '</svg>',
+].join('')
 
 const CHIP_HEIGHT = 20
 
@@ -943,6 +963,92 @@ function drawTip($: EngineInterface, e: Parameters<EngineInterface['ui']['resolv
   return (
     <Box position="absolute" display="none" hover={{ display: 'flex' }}>
       <Text>{text}</Text>
+    </Box>
+  )
+}
+
+type MenuSwitch = { key: string; label: string; isOn: boolean }
+
+// The switches of the band's menu: threads on in this chat, and, while they are, whether
+// the agent may start them.
+async function menuSwitches($: EngineInterface): Promise<MenuSwitch[]> {
+  const isThreadsOn = await read($, isOn)
+  return [
+    { key: THREADS_SWITCH, label: 'On in this chat', isOn: isThreadsOn },
+    ...(isThreadsOn ? [{ key: AGENT_SWITCH, label: 'Agent may start threads', isOn: await read($, agentMayCreate) }] : []),
+  ]
+}
+
+// A row of the desktop's menu card: its label, a Button that flips it, then its slide
+// switch, a picture with a hit area laid over it that flips it too.
+function drawMenuRow($: EngineInterface, elements: Elements['desktop'], s: MenuSwitch): RenderElement {
+  const { Box, Button, Svg, Client } = elements
+  return (
+    <Box flexDirection="row" alignItems="center" justifyContent="space-between" columnGap={2}>
+      <Button key={s.key} label={s.label} plain onPress={() => flipMenuSwitch($, s.key)} />
+      <Box flexShrink={0}>
+        <Svg source={switchPicture(s.isOn)} alt={`${s.label}: ${s.isOn ? 'on' : 'off'}`} width={34} height={CHIP_HEIGHT} />
+        <Box position="absolute" top={0} left={0} width="100%" height="100%">
+          <Client key={SWITCH_HIT + s.key} module="./switch.tsx" props={{ isOn: s.isOn }} width="100%" height="100%" />
+        </Box>
+      </Box>
+    </Box>
+  )
+}
+
+// The band's "Threads" menu. On the desktop, a button drawn as the desktop draws a
+// Select: the field's fill and its ring, stronger under the pointer, the radius, one
+// line high, the caret. The keyed Box it is holds the switches in a card the desktop
+// lifts over the band while the pointer is on the button or the card, or the focus is
+// in them. Elsewhere, a Button that shows or hides the switches beside it.
+async function drawMenu($: EngineInterface, e: Parameters<EngineInterface['ui']['resolve']>[0]): Promise<RenderElement> {
+  const switches = await menuSwitches($)
+  if (e.surface === 'desktop') {
+    const desktop = $.ui.resolve(e)
+    const { Box, Text, Svg } = desktop
+    return (
+      <Box
+        key={MENU}
+        flexDirection="row"
+        alignItems="center"
+        height={1}
+        paddingX={1}
+        paddingY={0}
+        borderStyle="single"
+        backgroundColor="userMessageBackground"
+        hover={{ borderColor: 'promptBorder' }}
+      >
+        <Text color="text">Threads</Text>
+        <Svg source={CARET_PICTURE} alt="menu" width={CARET_GAP + CARET_SIZE} height={CARET_SIZE} />
+        <Box position="absolute" display="none" hover={{ display: 'flex' }} flexDirection="column" rowGap={2}>
+          {switches.map(s => drawMenuRow($, desktop, s))}
+        </Box>
+      </Box>
+    )
+  }
+  const { Box, Text, Button } = $.ui.resolve(e)
+  const isOpen = await read($, menuOpen)
+  return (
+    <Box flexDirection="row" alignItems="center" columnGap={2}>
+      <Button
+        key={MENU}
+        label={isOpen ? 'Threads ▴' : 'Threads ▾'}
+        variant="secondary"
+        onPress={() => update($, menuOpen, open => !open)}
+      />
+      {isOpen &&
+        switches.map(s => (
+          <Box flexDirection="row" columnGap={1}>
+            <Text dimColor>{s.label}</Text>
+            <Button
+              key={s.key}
+              label={s.isOn ? '( ●)' : '(● )'}
+              variant={s.isOn ? 'primary' : 'secondary'}
+              dimColor={!s.isOn}
+              onPress={() => flipMenuSwitch($, s.key)}
+            />
+          </Box>
+        ))}
     </Box>
   )
 }
@@ -1907,10 +2013,12 @@ export const register: Register = on => {
     return result
   })
 
-  // The band's chips and the one open move picker's pills post here when clicked: the
-  // only Clients, so their count stays near the number of threads.
+  // The band's chips and menu switches, and the one open move picker's pills, post here
+  // when clicked: the only Clients, so their count stays near the number of threads.
   on('ui.message', async ($, e, next) => {
-    if ((e.data as { flip?: unknown } | null)?.flip === true && (await read($, isOn))) {
+    if ((e.data as { flip?: unknown } | null)?.flip !== true) return next(e)
+    if (e.element.startsWith(SWITCH_HIT)) await flipMenuSwitch($, e.element.slice(SWITCH_HIT.length))
+    else if (await read($, isOn)) {
       if (e.element.startsWith('thread:')) await toggleThread($, e.element.slice('thread:'.length))
       else if (e.element.startsWith('pick:')) await moveTo($, e.element.slice('pick:'.length))
       else if (e.element === NEW_THREAD_PILL) await setNaming($, true)
@@ -2111,9 +2219,9 @@ export const register: Register = on => {
     return <Box display="none" />
   })
 
-  // The band above the prompt: thread-chat's dropdown, then, while threads are on, their
+  // The band above the prompt: thread-chat's menu, then, while threads are on, their
   // pills and `view`, taking the room left and giving way first. They sit before what
-  // other mods draw there, which keeps its width. The mobile app draws no dropdown:
+  // other mods draw there, which keeps its width. The mobile app draws no menu:
   // /threads is there.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const below = await next(e)
@@ -2121,22 +2229,12 @@ export const register: Register = on => {
 
     const on_ = await read($, isOn)
     const { Box } = $.ui.resolve(e)
-    let dropdown: RenderElement | undefined
-    if (e.surface !== 'mobile') {
-      const { Select } = $.ui.resolve(e)
-      const checked = (label: string, isSet: boolean) => (isSet ? label + CHECK : label)
-      const options = [
-        { value: FACE, label: 'Threads' },
-        { value: THREADS_OPTION, label: checked('On in this chat', on_) },
-        ...(on_ ? [{ value: AGENT_OPTION, label: checked('Agent may start threads', await read($, agentMayCreate)) }] : []),
-      ]
-      dropdown = <Select key={DROPDOWN} options={options} value={FACE} onSelect={value => pickSwitch($, value)} />
-    }
-    if (dropdown === undefined && !on_) return below
+    const menu = e.surface === 'mobile' ? undefined : await drawMenu($, e)
+    if (menu === undefined && !on_) return below
 
     const mine = (
       <Box flexDirection="row" alignItems="center" columnGap={1} flexGrow={1} flexShrink={1} minWidth={0}>
-        {dropdown !== undefined && <Box flexShrink={0}>{dropdown}</Box>}
+        {menu !== undefined && <Box flexShrink={0}>{menu}</Box>}
         {on_ && (await drawThreadControls($, e))}
       </Box>
     )
