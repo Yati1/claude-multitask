@@ -919,7 +919,7 @@ test('the move picker starts a new thread from a typed name, even with no thread
   await more.redraw()
   expect(await tagOf(more, 'ideas')).toBeDefined()
   const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...BAND })
-  expect(picturesIn(await band.drawn()).slice(0, -1)).toEqual(['ideas', 'later on'])
+  expect(picturesIn(await band.drawn())).toEqual(['ideas', 'later on'])
 
   // the terminal's picker has the "+" and its field too; mobile draws neither
   const terminal = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...assistantRow('# ideas\nx'), requestId: 'r2' })
