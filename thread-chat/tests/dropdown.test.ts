@@ -52,7 +52,7 @@ test('thread-chat draws its dropdown in the band, its face reading Threads, and 
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
   for (const surface of ['desktop', 'terminal'] as const) {
     const band = await $.ui.mount({ plugin: 'thread-chat', surface, ...BAND })
-    expect(await dropdownOf(band)).toEqual({ type: 'Select', value: 'face', rows: ['Threads', 'Threads: off'] })
+    expect(await dropdownOf(band)).toEqual({ type: 'Select', value: 'face', rows: ['Threads', 'On in this chat'] })
     // no caption before it: the face says what it is
     expect((await band.find({ key: DROPDOWN }))?.props.label).toBeUndefined()
     await band.unmount()
@@ -74,29 +74,29 @@ test("the dropdown's rows flip threads and the agent switch, and its face stays 
   // the face, or the agent switch while threads are off, leaves things be
   await pick('face')
   await pick('agent-threads')
-  expect(await dropdownOf(band)).toEqual({ type: 'Select', value: 'face', rows: ['Threads', 'Threads: off'] })
+  expect(await dropdownOf(band)).toEqual({ type: 'Select', value: 'face', rows: ['Threads', 'On in this chat'] })
   expect((await $.tool.call({ tool, tool_use_id: 't1', name: 'ideas' })).deny).toContain('off')
 
-  // Threads: off turns them on, as /threads does, and the agent switch joins the list
+  // On in this chat turns them on, as /threads does, checking it, and the agent switch joins the list
   await pick('threads')
   expect(await dropdownOf(band)).toEqual({
     type: 'Select',
     value: 'face',
-    rows: ['Threads', 'Threads: on', 'Agent may start threads: off'],
+    rows: ['Threads', 'On in this chat ✓', 'Agent may start threads'],
   })
   expect(await band.find({ text: /start a thread with # name/ })).toBeDefined()
   expect((await $.tool.call({ tool, tool_use_id: 't2', name: 'ideas' })).deny).toBeDefined()
 
-  // the agent switch lets the agent start threads, and back
+  // the agent switch lets the agent start threads, checked, and back
   await pick('agent-threads')
-  expect((await dropdownOf(band)).rows.at(-1)).toBe('Agent may start threads: on')
+  expect((await dropdownOf(band)).rows.at(-1)).toBe('Agent may start threads ✓')
   expect((await $.tool.call({ tool, tool_use_id: 't3', name: 'ideas' })).deny).toBeUndefined()
   await pick('agent-threads')
-  expect((await dropdownOf(band)).rows.at(-1)).toBe('Agent may start threads: off')
+  expect((await dropdownOf(band)).rows.at(-1)).toBe('Agent may start threads')
 
-  // Threads: on turns them off
+  // On in this chat, checked, turns them off
   await pick('threads')
-  expect(await dropdownOf(band)).toEqual({ type: 'Select', value: 'face', rows: ['Threads', 'Threads: off'] })
+  expect(await dropdownOf(band)).toEqual({ type: 'Select', value: 'face', rows: ['Threads', 'On in this chat'] })
   const reply = await $.command.run({ command: 'merge-threads', args: 'a into b', origin: { kind: 'composer' }, presentation: {} as never })
   expect(reply.text).toBe('Threads are off in this chat; /threads turns them on.')
 })
