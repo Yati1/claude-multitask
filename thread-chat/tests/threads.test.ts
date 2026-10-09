@@ -6,10 +6,16 @@ import { markOf } from '../hooks/pane'
 import { PALETTE, closestThread, headingsIn, rewriteHeadings, splitSections } from '../hooks/parse'
 
 // The test stands in for the engine beneath the plugin, and records the prompts
-// that reach it, each with the notes beside it.
-// `store` seeds the mod store; `null` leaves the store to the test. A message whose
-// text `isHidden` names is drawn as nothing, as a plugin beneath (multitask) may.
-function engine(on: On, store: Record<string, unknown> | null = {}, isHidden: (text: string) => boolean = () => false): string[] {
+// that reach it, each with the notes beside it, and in `registered` the tools the mod
+// offers the model. `store` seeds the mod store; `null` leaves the store to the test.
+// A message whose text `isHidden` names is drawn as nothing, as a plugin beneath
+// (multitask) may.
+function engine(
+  on: On,
+  store: Record<string, unknown> | null = {},
+  isHidden: (text: string) => boolean = () => false,
+  registered: string[] = [],
+): string[] {
   const prompts: string[] = []
   if (store !== null) mock.store(on, store)
   on('session.id', () => ({ value: 'session-1' }))
@@ -18,7 +24,10 @@ function engine(on: On, store: Record<string, unknown> | null = {}, isHidden: (t
     prompts.push([e.text, ...(e.context ?? [])].join('\n--\n'))
     return { text: e.text }
   })
-  on('tool.register', ($, e) => ({ value: { tool: `mcp__thread-chat__${e.name}` } }))
+  on('tool.register', ($, e) => {
+    registered.push(e.name)
+    return { value: { tool: `mcp__thread-chat__${e.name}` } }
+  })
   on('command.register', ($, e) => ({ value: { command: e.name } }))
   // The engine draws a message as its text, so a test sees what it was asked to draw.
   on('ui.render', ($, e) => {
@@ -280,13 +289,9 @@ test('with no threads the band says how to start one; the agent switch in the dr
 })
 
 test('until /threads turns threads on, a session is left as it is: its rows, its prompts, its band but the dropdown, and its tools', async ($, on) => {
-  // what the mod offers the model, answered here before the stand-in engine beneath
+  // what the mod offers the model
   const registered: string[] = []
-  on('tool.register', ($, e) => {
-    registered.push(e.name)
-    return { value: { tool: `mcp__thread-chat__${e.name}` } }
-  })
-  const prompts = engine(on)
+  const prompts = engine(on, {}, undefined, registered)
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
   expect(registered).toEqual([])
 
@@ -618,7 +623,7 @@ test('while filtering, rows of no thread show only since the last message', asyn
       door,
       origin: door === 'prompt' ? { kind: 'composer' } : model,
       uuid,
-    }).catch(() => undefined) // the kit has no transcript to store the row in
+    })
   // an earlier exchange
   await stored('p1', 'prompt', [{ type: 'text', text: '# design\nhello' }])
   await stored('a1', 'response', [{ type: 'text', text: 'just chatting' }])
@@ -675,7 +680,6 @@ test('with one thread picked, a message with no heading goes to that thread', as
       origin: { kind: 'composer' },
       uuid: 'p9',
     })
-    .catch(() => undefined) // the kit has no transcript to store the row in
 
   const row = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...userRow('and the cache?'), requestId: 'p9' })
   expect(await tagOf(row, 'perf')).toBeDefined()
@@ -693,7 +697,6 @@ test('with one thread picked, a message with no heading goes to that thread', as
 
 test('a reply to a selected part of a reply goes to the thread that part is in', async ($, on) => {
   const prompts = engine(on)
-  await flipThreads($)
   // The transcript the plugin reads replies from, oldest first; the desktop's
   // selection is of the drawn text, its Markdown marks and link targets gone.
   on('session.messages', () => ({
@@ -707,6 +710,7 @@ test('a reply to a selected part of a reply goes to the thread that part is in',
       },
     ],
   }))
+  await flipThreads($)
   await $.prompt.submit(say('# design\na\n# perf\nb'))
   const note = (name: string) =>
     `This message belongs to the thread "${name}": the user replied to part of your message in that thread, so your reply most likely belongs under that thread's heading.`
@@ -722,7 +726,6 @@ test('a reply to a selected part of a reply goes to the thread that part is in',
       origin: { kind: 'composer' },
       uuid: 'q1',
     })
-    .catch(() => undefined) // the kit has no transcript to store the row in
   for (const surface of ['terminal', 'desktop'] as const) {
     const row = await $.ui.mount({ plugin: 'thread-chat', surface, ...userRow(reply), requestId: 'q1' })
     expect(await tagOf(row, 'design')).toBeDefined()
@@ -916,7 +919,7 @@ test('the move picker starts a new thread from a typed name, even with no thread
   await more.redraw()
   expect(await tagOf(more, 'ideas')).toBeDefined()
   const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...BAND })
-  expect(picturesIn(await band.drawn()).slice(0, -1)).toEqual(['ideas', 'later on'])
+  expect(picturesIn(await band.drawn())).toEqual(['ideas', 'later on'])
 
   // the terminal's picker has the "+" and its field too; mobile draws neither
   const terminal = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...assistantRow('# ideas\nx'), requestId: 'r2' })
