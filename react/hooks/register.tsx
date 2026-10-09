@@ -15,19 +15,11 @@ import {
   reactionsHeld,
   withReaction,
 } from './reactions'
-import { MENU_BUTTON, MENU_SWITCH, drawBand, drawMenuButton } from './menu'
-import type { ModName } from './menu'
 
 const isOn = atom({ plugin: 'react', key: 'isOn' } as const, false)
 const isBriefed = atom({ plugin: 'react', key: 'isBriefed' } as const, false)
 const reactions = atom({ plugin: 'react', key: 'reactions' } as const, [])
 const answering = atom({ plugin: 'react', key: 'answering' } as const, null)
-const menuOpen = atom({ plugin: 'react', key: 'menuOpen' } as const, false)
-
-// Reactions' switch in the band's `mods` menu.
-const SWITCH = 'mods-menu:react'
-// React's word in the label of the menu's button.
-const MENU_NAME: ModName = { rank: 30, word: 'emoji' }
 
 // The ways a person's own prompt arrives: typed in the terminal, the desktop
 // app (an SDK host) or Remote Control.
@@ -330,38 +322,6 @@ export const register: Register = on => {
     if (e.props.text.trim() !== NO_RESPONSE || !(await read($, isOn))) return next(e)
     const { Box } = $.ui.resolve(e)
     return <Box display="none" />
-  })
-
-  // The band above the prompt, shared with the other mods of this repository through
-  // ./menu.tsx: the switch in its `mods` menu that turns reactions on and off.
-  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    const below = await next(e)
-    if (e.props.hasSurvey) return below
-    return drawBand(below, {
-      ui: $.ui.resolve(e),
-      surface: e.surface,
-      switches: [{ rank: 30, key: SWITCH, label: 'Reactions', isOn: await read($, isOn), onPress: () => flip($) }],
-      name: MENU_NAME,
-      isOpen: () => read($, menuOpen),
-    })
-  })
-
-  // The menu's button, below the input on the desktop, shared as the band is. Every mod
-  // hears its press, whichever drew it, so the one laying out the band agrees with it; on
-  // the desktop a switch picked closes the menu, as a model picked closes the model picker.
-  on('ui.render', { component: 'SessionMode' }, async ($, e, next) => {
-    const below = await next(e)
-    if (e.surface !== 'desktop') return below
-    return drawMenuButton(below, $.ui.resolve(e), MENU_NAME, await read($, menuOpen))
-  })
-  on('ui.press', { element: MENU_BUTTON }, async ($, e, next) => {
-    await update($, menuOpen, open => !open)
-    return next(e)
-  })
-  on('ui.press', { element: MENU_SWITCH, surface: 'desktop' }, async ($, e, next) => {
-    const result = await next(e)
-    await update($, menuOpen, () => false)
-    return result
   })
 
   // A message with a reaction is the engine's drawing (or another mod's), the reaction

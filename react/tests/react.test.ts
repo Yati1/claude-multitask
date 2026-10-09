@@ -1,8 +1,7 @@
-import type { On, RenderElement, TurnStepChunk } from 'claude-code'
+import type { On, TurnStepChunk } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 
-import { MENU, MENU_BUTTON, drawBand, drawMenuButton } from '../hooks/menu'
 import { BRIEF, NO_RESPONSE, OFF_NOTE, couldBeEmoji, isOneEmoji, markOf, marksOf } from '../hooks/reactions'
 
 type Seen = {
@@ -301,90 +300,4 @@ test('a rewound or forked session, under a new id, takes up the switch and the r
   // its history may not hold the note, so the model is told again
   await say($, 'go on')
   expect(seen.prompts.at(-1)).toBe(`go on\n--\n${BRIEF}`)
-})
-
-const BAND = {
-  component: 'AbovePrompt',
-  props: {
-    hasSurvey: false,
-    isWorking: false,
-    maxRows: 10,
-    bodyColumns: 100,
-    scroll: { offset: 0, bodyRows: 10 },
-    view: {},
-  },
-} as const
-
-// Reactions' switch in the band's mods menu.
-const SWITCH = 'mods-menu:react'
-
-// The keys of the mods menu's switches, in the order drawn.
-async function switchKeys(band: { findAll: (query: { type: string }) => Promise<{ key: string | undefined }[]> }) {
-  return (await band.findAll({ type: 'Button' })).map(b => b.key ?? '').filter(key => key.startsWith('mods-menu:'))
-}
-
-// The row below the input that holds the mode labels, and on the desktop the button.
-const MODE = { component: 'SessionMode', props: { modes: [] } } as const
-
-test('alone, react draws one button for the menu, whose switch turns reactions on and off', async ($, on) => {
-  const seen = engine(on)
-  await start($)
-  // on the desktop the button is below the input and the menu is drawn while open
-  const mode = await $.ui.mount({ plugin: 'react', surface: 'desktop', ...MODE })
-  expect((await mode.find({ key: MENU_BUTTON }))?.props.label).toBe('Emoji')
-  await mode.press({ key: MENU_BUTTON })
-  for (const surface of ['desktop', 'terminal'] as const) {
-    const band = await $.ui.mount({ plugin: 'react', surface, ...BAND })
-    expect(await band.findAll({ key: MENU })).toHaveLength(1)
-    expect(await band.findAll({ key: MENU_BUTTON })).toHaveLength(surface === 'desktop' ? 0 : 1)
-    expect(await switchKeys(band)).toEqual([SWITCH])
-    expect((await band.find({ key: SWITCH }))?.props.label).toBe('off')
-    await band.unmount()
-  }
-  const band = await $.ui.mount({ plugin: 'react', surface: 'terminal', ...BAND })
-  await band.press({ key: SWITCH })
-  await band.redraw()
-  expect((await band.find({ key: SWITCH }))?.props.label).toBe('on')
-  await say($, 'hello')
-  expect(seen.prompts.at(-1)).toContain(BRIEF)
-})
-
-test('with the other mods drawn beneath, one button names every mod, and the menu holds every switch', async ($, on) => {
-  // thread-chat and multitask, drawn beneath through the same band and button as they draw them
-  on('ui.render', { component: 'AbovePrompt' }, async ($, e) => {
-    const ui = $.ui.resolve(e)
-    const parts = (name: string, rank: number, word: string, label: string, control: RenderElement, grows: boolean) => ({
-      ui,
-      surface: e.surface,
-      name: { rank, word },
-      controls: { rank, name, element: control, grows },
-      switches: [{ rank, key: `mods-menu:${name}`, label, isOn: true, onPress: () => undefined }],
-      isOpen: async () => true,
-    })
-    const pills = ui.Text({ children: ['pills'] })
-    const thoughts = ui.Button({ key: 'open-thoughts', label: 'thoughts', onPress: () => undefined })
-    const multitask = await drawBand({ type: 'engine', ref: 0 }, parts('multitask', 20, 'tasks', 'Multitask', thoughts, false))
-    return drawBand(multitask, parts('threads', 10, 'threads', 'Threads', pills, true))
-  })
-  on('ui.render', { component: 'SessionMode' }, async ($, e, next) => {
-    if (e.surface !== 'desktop') return next(e)
-    const ui = $.ui.resolve(e)
-    const multitask = drawMenuButton({ type: 'engine', ref: 0 }, ui, { rank: 20, word: 'tasks' }, true)
-    return drawMenuButton(multitask, ui, { rank: 10, word: 'threads' }, true)
-  })
-  engine(on)
-  await start($)
-  const mode = await $.ui.mount({ plugin: 'react', surface: 'desktop', ...MODE })
-  const buttons = await mode.findAll({ key: MENU_BUTTON })
-  expect(buttons).toHaveLength(1)
-  expect(buttons[0]?.props.label).toBe('Threads, tasks & emoji')
-  for (const surface of ['desktop', 'terminal'] as const) {
-    const band = await $.ui.mount({ plugin: 'react', surface, ...BAND })
-    expect(await band.findAll({ key: MENU })).toHaveLength(1)
-    expect(await band.findAll({ key: MENU_BUTTON })).toHaveLength(surface === 'desktop' ? 0 : 1)
-    expect(await switchKeys(band)).toEqual(['mods-menu:threads', 'mods-menu:multitask', SWITCH])
-    expect(await band.find({ text: /^pills$/ })).toBeDefined()
-    expect(await band.find({ key: 'open-thoughts' })).toBeDefined()
-    await band.unmount()
-  }
 })

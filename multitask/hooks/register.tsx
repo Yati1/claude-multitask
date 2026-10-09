@@ -3,6 +3,7 @@ import type {
   AgentStatus,
   EngineInterface,
   Register,
+  RenderElement,
   SessionSendAddress,
   SessionSendResult,
   Timer,
@@ -32,8 +33,6 @@ import {
   oneLine,
   relayNames,
 } from './prompts'
-import { MENU_BUTTON, MENU_SWITCH, drawBand, drawMenuButton } from './menu'
-import type { ModName } from './menu'
 
 const isOn = atom({ plugin: 'multitask', key: 'isOn' } as const, false)
 const thoughts = atom({ plugin: 'multitask', key: 'thoughts' } as const, [])
@@ -43,13 +42,13 @@ const toldVoice = atom({ plugin: 'multitask', key: 'toldVoice' } as const, false
 const expanded = atom({ plugin: 'multitask', key: 'expanded' } as const, [])
 const openReports = atom({ plugin: 'multitask', key: 'openReports' } as const, [])
 const heard = atom({ plugin: 'multitask', key: 'heard' } as const, {})
-const menuOpen = atom({ plugin: 'multitask', key: 'menuOpen' } as const, false)
 
 const PANE = 'multitask-thoughts'
-// Multitask's switch in the band's `mods` menu.
-const SWITCH = 'mods-menu:multitask'
-// Multitask's word in the label of the menu's button.
-const MENU_NAME: ModName = { rank: 20, word: 'tasks' }
+// Multitask's dropdown in the band. Its face is the mode the chat is in, Multitask or
+// Focus (Multitask off); picking the other mode switches to it.
+const DROPDOWN = 'multitask'
+const MULTITASK_MODE = 'multitask'
+const FOCUS_MODE = 'focus'
 const AGENT = 'multitask:thought'
 const TOOL = {
   think: 'mcp__multitask__think',
@@ -273,6 +272,13 @@ async function toggle($: EngineInterface): Promise<boolean> {
   }
   await keepSwitch($)
   return now
+}
+
+// Switches to the mode picked in the band's dropdown; the mode the chat is in already,
+// or anything else, leaves it be.
+async function pickMode($: EngineInterface, value: string) {
+  const wantsOn = value === MULTITASK_MODE ? true : value === FOCUS_MODE ? false : undefined
+  if (wantsOn !== undefined && wantsOn !== (await read($, isOn))) await toggle($)
 }
 
 // Where a session's switch is kept between runs of the app: whether it is on, when it
@@ -1005,9 +1011,9 @@ export const register: Register = (on, options) => {
     return <Text dimColor>◦ thought update{names.length > 0 ? `: ${names.join(', ')}` : ''}</Text>
   })
 
-  // The band above the prompt, shared with the other mods of this repository through
-  // ./menu.tsx: while Multitask is on or has thoughts left, `thoughts`; always, the switch
-  // in its `mods` menu that turns Multitask on and off.
+  // The band above the prompt: Multitask's dropdown and, while Multitask is on or has
+  // thoughts left, `thoughts`. They sit after what other mods draw there, keeping their
+  // width while the others give way. The mobile app draws no dropdown: /multitask is there.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const below = await next(e)
     if (e.props.hasSurvey) return below
@@ -1019,44 +1025,43 @@ export const register: Register = (on, options) => {
     const queued = live.reduce((n, t) => n + t.queued.length, 0)
     const thoughtsLabel =
       (running > 0 ? `thoughts ${running}` : 'thoughts') + (queued > 0 ? ` · ${queued} queued` : '')
-    const { Button } = $.ui.resolve(e)
-    // Off with no thoughts left, the band has no `thoughts`: the switch turns Multitask on.
-    const controls =
-      !on_ && live.length === 0
-        ? undefined
-        : {
-            rank: 20,
-            name: 'multitask',
-            element: (
-              <Button key="open-thoughts" label={thoughtsLabel} onPress={() => void $.ui.open({ id: PANE, title: 'Thoughts' })} />
-            ),
-          }
-    return drawBand(below, {
-      ui: $.ui.resolve(e),
-      surface: e.surface,
-      controls,
-      switches: [{ rank: 20, key: SWITCH, label: 'Multitask', isOn: on_, onPress: () => toggle($) }],
-      name: MENU_NAME,
-      isOpen: () => read($, menuOpen),
-    })
-  })
+    const { Box, Button } = $.ui.resolve(e)
+    let dropdown: RenderElement | undefined
+    if (e.surface !== 'mobile') {
+      const { Select } = $.ui.resolve(e)
+      dropdown = (
+        <Select
+          key={DROPDOWN}
+          options={[
+            { value: MULTITASK_MODE, label: 'Multitask' },
+            { value: FOCUS_MODE, label: 'Focus' },
+          ]}
+          value={on_ ? MULTITASK_MODE : FOCUS_MODE}
+          onSelect={value => pickMode($, value)}
+        />
+      )
+    }
+    // Off with no thoughts left, the band has no `thoughts`.
+    const showsThoughts = on_ || live.length > 0
+    if (dropdown === undefined && !showsThoughts) return below
 
-  // The menu's button, below the input on the desktop, shared as the band is. Every mod
-  // hears its press, whichever drew it, so the one laying out the band agrees with it; on
-  // the desktop a switch picked closes the menu, as a model picked closes the model picker.
-  on('ui.render', { component: 'SessionMode' }, async ($, e, next) => {
-    const below = await next(e)
-    if (e.surface !== 'desktop') return below
-    return drawMenuButton(below, $.ui.resolve(e), MENU_NAME, await read($, menuOpen))
-  })
-  on('ui.press', { element: MENU_BUTTON }, async ($, e, next) => {
-    await update($, menuOpen, open => !open)
-    return next(e)
-  })
-  on('ui.press', { element: MENU_SWITCH, surface: 'desktop' }, async ($, e, next) => {
-    const result = await next(e)
-    await update($, menuOpen, () => false)
-    return result
+    const mine = (
+      <Box flexDirection="row" alignItems="center" columnGap={1} flexShrink={0}>
+        {dropdown}
+        {showsThoughts && (
+          <Button key="open-thoughts" label={thoughtsLabel} onPress={() => void $.ui.open({ id: PANE, title: 'Thoughts' })} />
+        )}
+      </Box>
+    )
+    if (below.type === 'engine') return mine
+    return (
+      <Box flexDirection="row" alignItems="center" columnGap={2}>
+        <Box flexDirection="row" alignItems="center" flexGrow={1} flexShrink={1} minWidth={0}>
+          {below}
+        </Box>
+        {mine}
+      </Box>
+    )
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
