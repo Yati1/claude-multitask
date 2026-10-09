@@ -1,7 +1,8 @@
 import type { AgentInfo, On, TurnStepChunk } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
+import type { Engine } from 'claude-code/testing'
 
-import { NO_RESPONSE, RELAY_NOTES, VOICE, VOICE_REMINDER, formatUpdates, isQuiet, relayNames } from '../hooks/prompts'
+import { NO_RESPONSE, RELAY_NOTES, VOICE, VOICE_REMINDER, formatUpdates, isQuiet, marksOf, relayNames } from '../hooks/prompts'
 
 type Seen = {
   prompts: string[]
@@ -25,12 +26,16 @@ type Seen = {
 // The test stands in for the engine beneath the plugin, and records what reached it:
 // each prompt with the notes beside it, the effort each model request asked for, each
 // turn it was asked to cut, and how many agents it was asked to start. Its agents' runs
-// end with their turns, and a message that reaches one starts it again.
+// end with their turns, and a message that reaches one starts it again. `store` seeds the
+// mod store; `null` leaves the store to the test.
 function engine(
   on: On,
   agents: AgentInfo[] = [{ id: 'agent-1', description: 'auth-bug', type: 'multitask:thought', status: 'running' }],
+  store: Record<string, unknown> | null = {},
 ): Seen {
   const seen: Seen = { prompts: [], sends: [], ran: [], efforts: [], aborts: [], spawns: 0, names: [] }
+  if (store !== null) mock.store(on, store)
+  on('session.id', () => ({ value: 'session-1' }))
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('agent.register', () => ({ value: { agent: 'multitask:thought' } }))
   on('tool.register', ($, e) => ({ value: { tool: `mcp__multitask__${e.name}` } }))
@@ -439,6 +444,68 @@ test('the voice is told as Multitask comes on and goes off, and thinks less hard
   expect(await step()).toBe('xhigh')
   await say('plain')
   expect(seen.prompts.at(-1)).toBe('plain')
+})
+
+// A conversation's messages as the engine lists them, and the switch a session kept.
+const SAID = ['why does the band wrap onto two rows?', 'Both mods share one row, so it wraps.', 'can it stay on one row instead?']
+const listed = (texts: string[]) => texts.map(text => ({ role: 'user' as const, text, toolUses: [] }))
+const kept = (isOn: boolean, at: number, texts: string[]) => ({ isOn, at, marks: marksOf(listed(texts)) })
+
+test('a session keeps its switch for its next run, with its messages\' marks once it has been on', async ($, on) => {
+  const store: Record<string, unknown> = {}
+  on('store.get', ($, e) => ({ value: store[e.key] }))
+  on('store.set', ($, e) => {
+    store[e.key] = e.value
+    return { value: undefined }
+  })
+  on('store.keys', () => ({ value: Object.keys(store) }))
+  mock.clock(on, { now: 1000 })
+  engine(on, undefined, null)
+  on('session.messages', () => ({ value: listed(SAID) }))
+  const flip = () => $.command.run({ command: 'multitask', args: '', origin: { kind: 'composer' }, presentation: {} as never })
+
+  await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
+  expect(store['session:session-1']).toEqual({ isOn: false, at: 1000, marks: [] })
+  await flip()
+  expect(store['session:session-1']).toEqual(kept(true, 1000, SAID))
+  await flip()
+  expect(store['session:session-1']).toEqual(kept(false, 1000, SAID))
+})
+
+// Whether, once started, the session's switch is on: the voice is told its part.
+const isOnAtStart = async ($: Engine, seen: Seen) => {
+  await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
+  await $.prompt.submit({ text: 'hello', origin: { kind: 'composer' }, wait: false })
+  return seen.prompts.at(-1)?.includes('# Multitasking mind') === true
+}
+
+test('a restarted session takes up the switch it kept, with the voice\'s tools and the band', async ($, on) => {
+  const registered: string[] = []
+  on('tool.register', ($, e) => {
+    registered.push(e.name)
+    return { value: { tool: `mcp__multitask__${e.name}` } }
+  })
+  const seen = engine(on, undefined, { 'session:session-1': kept(true, 1, []) })
+  expect(await isOnAtStart($, seen)).toBe(true)
+  expect(registered).toEqual(['think', 'tell', 'unqueue', 'stop', 'thoughts'])
+  const band = await $.ui.mount({ plugin: 'multitask', surface: 'desktop', ...BAND })
+  expect((await band.find({ type: 'Svg' }))?.props.alt).toBe('Multitask: on')
+})
+
+test('a rewound or forked session, under a new id, takes up the switch of the session it came from', async ($, on) => {
+  const seen = engine(on, undefined, {
+    'session:old': kept(true, 1, [...SAID, 'and a later message the rewind left behind']),
+    'session:unrelated': kept(false, 2, ['a different conversation altogether', 'with nothing in common at all']),
+  })
+  on('session.messages', () => ({ value: listed(SAID) }))
+  expect(await isOnAtStart($, seen)).toBe(true)
+})
+
+test('of sessions that know as much of a rewound one, it takes up the switch of the one kept last', async ($, on) => {
+  // rewound from "old" into "later", switched off there, and rewound again
+  const seen = engine(on, undefined, { 'session:old': kept(true, 1, SAID), 'session:later': kept(false, 2, SAID) })
+  on('session.messages', () => ({ value: listed(SAID) }))
+  expect(await isOnAtStart($, seen)).toBe(false)
 })
 
 test("what is new from the thoughts goes beside the person's messages and after a relay, each thing once", async ($, on) => {

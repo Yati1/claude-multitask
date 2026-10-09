@@ -146,3 +146,17 @@ export function describeThoughts(thoughts: Thought[]): string {
     })
     .join('\n')
 }
+
+// Each message's start with its spacing dropped, hashed: how a session rewound or forked
+// from another, which starts under a new id with copies of the messages it kept, is
+// matched to it. A start too short to tell sessions apart ("ok", "(quiet)") is left out.
+export function marksOf(messages: readonly { text: string }[]): string[] {
+  return messages
+    .map(m => m.text.replace(/\s+/g, '').slice(0, 80))
+    .filter(start => start.length >= 12)
+    .map(start => {
+      let hash = 0x811c9dc5
+      for (let i = 0; i < start.length; i++) hash = Math.imul(hash ^ start.charCodeAt(i), 0x01000193)
+      return (hash >>> 0).toString(16).padStart(8, '0')
+    })
+}
