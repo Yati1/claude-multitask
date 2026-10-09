@@ -81,6 +81,9 @@ const NOTE_MAX = 500
 // How long the engine's notice that a thought's turn ended waits, at most, for that end
 // to be settled.
 const NOTICE_WAIT_MS = 1000
+// What marks the engine's own hand-back of an agent's final report to the session that
+// started it ("Another Claude session sent a message: ... [Subagent hand-back] ...").
+const HANDBACK = '[Subagent hand-back]'
 
 const OFF = {
   deny: 'Multitask is off. The user turns it on with the switch above the prompt or /multitask.',
@@ -88,10 +91,14 @@ const OFF = {
 const NOT_VOICE = { deny: 'Only the voice starts, steers or lists thoughts; this call came from another agent.' }
 
 let flushTimer: Timer | undefined
-// The settling of each thought's latest turn end, by thought id, which the engine's
-// notice of that end waits for. Kept here, not in state: what one dispatch reads of state
-// stands still while it runs, so a wait for state to change would never see it.
-const settling = new Map<string, Promise<void>>()
+// The settling of each thought's latest turn end, by thought id, with its name, which the
+// engine's notice or hand-back of that end waits for. Kept here, not in state: what one
+// dispatch reads of state stands still while it runs, so a wait for it would never see it.
+const settling = new Map<string, { name: string; done: Promise<void> }>()
+
+// Whether an engine's notice or hand-back is about this thought: the notice names its
+// agent id, the hand-back its sender (by id or, once named, by name).
+const isAbout = (text: string, id: string, name: string) => text.includes(id) || text.includes(`from="${name}"`)
 
 const TOOL_SPECS = [
   {
@@ -585,10 +592,10 @@ async function takeRelay($: EngineInterface): Promise<string | undefined> {
 // settled (its update waiting for the voice), when the notice names a thought whose turn
 // ended. The notice can come while the settling still runs.
 async function settledFor($: EngineInterface, notice: string) {
-  const id = [...settling.keys()].find(one => notice.includes(one))
-  if (id === undefined) return
-  await Promise.race([settling.get(id), $.clock.sleep(NOTICE_WAIT_MS)])
-  settling.delete(id)
+  const found = [...settling].find(([id, s]) => isAbout(notice, id, s.name))
+  if (found === undefined) return
+  await Promise.race([found[1].done, $.clock.sleep(NOTICE_WAIT_MS)])
+  settling.delete(found[0])
 }
 
 // The voice's reply as it streams, its text held back while it could still be QUIET: then
@@ -812,9 +819,11 @@ export const register: Register = (on, options) => {
     return { result: `${describeThoughts([t])}\n\nRecent:\n${recent.join('\n')}` }
   })
 
-  // The engine's own notice that a thought's turn ended would tell the voice what the
-  // relay tells it: while Multitask is on, the relay goes in as a hidden row and the notice
-  // as the wake-up after it; with nothing waiting, as it came, with what is new beside it.
+  // The engine's own notice that a thought's turn ended, and its hand-back of the thought's
+  // final report, would tell the voice what the relay tells it: while Multitask is on, the
+  // relay goes in as a hidden row and the notice as the wake-up after it. With nothing
+  // waiting, a notice goes in as it came and a hand-back as a bare wake-up (dropped, its
+  // reason would show), with what is new beside either.
   // Beside the person's own message the voice is told when Multitask came on or went
   // off, and what is new from its thoughts: that is the one way it is told. A system
   // prompt section would not follow the switch, as the engine sends the prompt it
@@ -822,15 +831,17 @@ export const register: Register = (on, options) => {
   // settings it is never sent, the managed plugin skipping a user plugin's
   // prompt.compose hook.
   on('prompt.submit', async ($, e, next) => {
-    if (e.origin.kind === 'task-notification') {
+    const isHandBack = e.origin.kind === 'peer' && e.text.includes(HANDBACK)
+    if (e.origin.kind === 'task-notification' || isHandBack) {
       // Waited for before anything is read, so what is read has it.
       await settledFor($, e.text)
-      const t = (await read($, thoughts)).find(one => e.text.includes(one.id))
+      const t = (await read($, thoughts)).find(one => isAbout(e.text, one.id, one.name))
       if (t === undefined || !(await read($, isOn))) return next(e)
       const relayed = await takeRelay($)
       if (relayed !== undefined) return next({ ...e, text: (await appendHidden($, relayed)) ? WAKE : relayed })
       const news = await takeNews($)
-      return news === undefined ? next(e) : next({ ...e, context: [...(e.context ?? []), news] })
+      const woken = isHandBack ? { ...e, text: WAKE } : e
+      return news === undefined ? next(woken) : next({ ...woken, context: [...(e.context ?? []), news] })
     }
     if (!PERSON.has(e.origin.kind)) return next(e)
     // While on, the marks a session rewound or forked from this one is known by are kept fresh.
@@ -892,9 +903,12 @@ export const register: Register = (on, options) => {
     if (e.agentId === undefined) {
       await update($, isMainBusy, () => false)
       if (await read($, isOn)) scheduleFlush($)
-    } else if ((await read($, thoughts)).some(t => t.id === e.agentId)) {
-      const settle = settleThought($, e.agentId, e.reason, e.answer)
-      settling.set(e.agentId, settle.then(() => undefined, () => undefined))
+    } else {
+      const t = (await read($, thoughts)).find(one => one.id === e.agentId)
+      if (t !== undefined) {
+        const settle = settleThought($, t.id, e.reason, e.answer)
+        settling.set(t.id, { name: t.name, done: settle.then(() => undefined, () => undefined) })
+      }
     }
     return result
   })
@@ -934,7 +948,12 @@ export const register: Register = (on, options) => {
       taskId !== undefined &&
       (await read($, isOn)) &&
       (await read($, thoughts)).some(t => t.id === taskId)
-    if (!isRelay && !isThoughtNotice) return next(e)
+    const isThoughtHandBack =
+      origin.kind === 'peer' &&
+      e.props.text.includes(HANDBACK) &&
+      (await read($, isOn)) &&
+      (await read($, thoughts)).some(t => isAbout(e.props.text, t.id, t.name))
+    if (!isRelay && !isThoughtNotice && !isThoughtHandBack) return next(e)
     if (e.surface !== 'terminal') {
       const { Box } = $.ui.resolve(e)
       return <Box display="none" />

@@ -609,6 +609,53 @@ test('updates go in as a hidden row, and the voice is woken by a wake-up that dr
   }
 })
 
+test("the engine's hand-back of a thought's report goes in as the wake-up while Multitask is on, and as it came otherwise", async ($, on) => {
+  const seen = engine(on)
+  seen.hidden = []
+  mock.clock(on)
+  await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
+  const flip = () => $.command.run({ command: 'multitask', args: '', origin: { kind: 'composer' }, presentation: {} as never })
+  const handBack = (from: string, report: string) =>
+    `Another Claude session sent a message:\n<agent-message from="${from}">\n[Subagent hand-back] ${report}\n</agent-message>`
+  const deliver = (text: string) => $.prompt.submit({ text, origin: { kind: 'peer' }, wait: false })
+  await flip()
+  await $.tool.call({ tool: 'mcp__multitask__think', tool_use_id: 'c1', name: 'auth bug', task: 'Find why login fails' })
+
+  // Right after the turn ends: the relay as a hidden row, the hand-back as the wake-up.
+  await $.turn.complete({ ...finished('agent-1'), answer: 'Token expiry is off by one.' })
+  await deliver(handBack('auth-bug', 'Token expiry is off by one.'))
+  expect(seen.hidden).toEqual(['Thought updates:\nauth-bug (done): Token expiry is off by one.'])
+  expect(seen.prompts).toEqual([WAKE])
+
+  // With nothing waiting, a bare wake-up: nothing shows, nothing is dropped.
+  await deliver(handBack('auth-bug', 'Token expiry is off by one.'))
+  expect(seen.prompts.at(-1)).toBe(WAKE)
+
+  // Another session's hand-back is not a thought's.
+  await deliver(handBack('someone-else', 'Hello.'))
+  expect(seen.prompts.at(-1)).toBe(handBack('someone-else', 'Hello.'))
+
+  // The row is hidden on the desktop only while on and only for a thought's.
+  const hidden = async (from: string) => {
+    const row = await $.ui.mount({
+      plugin: 'multitask',
+      surface: 'desktop',
+      component: 'UserMessage',
+      props: { text: handBack(from, 'Done.'), origin: { kind: 'peer' } as never, isExpanded: false },
+    })
+    const drawn = (await row.drawn()) as { props?: { display?: string } }
+    await row.unmount()
+    return drawn.props?.display === 'none'
+  }
+  expect(await hidden('auth-bug')).toBe(true)
+  expect(await hidden('someone-else')).toBe(false)
+
+  await flip()
+  await deliver(handBack('auth-bug', 'Done.'))
+  expect(seen.prompts.at(-1)).toBe(handBack('auth-bug', 'Done.'))
+  expect(await hidden('auth-bug')).toBe(false)
+})
+
 test("the engine's notice that a thought's turn ended goes in as the relay while Multitask is on, and as it came otherwise", async ($, on) => {
   const seen = engine(on)
   const clock = mock.clock(on)
