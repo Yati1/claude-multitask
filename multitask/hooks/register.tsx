@@ -26,6 +26,7 @@ import {
   heardOf,
   isQuiet,
   isRelayText,
+  marksOf,
   newsOf,
   oneLine,
   relayNames,
@@ -253,7 +254,52 @@ async function toggle($: EngineInterface): Promise<boolean> {
     await offerVoiceTools($)
     void $.ui.open({ id: PANE, title: 'Thoughts' })
   }
+  await keepSwitch($)
   return now
+}
+
+// Where a session's switch is kept between runs of the app: whether it is on, when it
+// was kept, and, once it has been on, the marks of its newest messages.
+const switchKey = (sessionId: string) => `session:${sessionId}`
+type KeptSwitch = { isOn: boolean; at: number; marks: string[] }
+const MARKS_KEPT = 200
+
+// Keeps the switch for the session's next run. A session never on keeps no marks: one
+// rewound or forked from it starts off as it would anyway. Best effort: a store or
+// transcript that cannot be read or written keeps what it kept.
+async function keepSwitch($: EngineInterface) {
+  try {
+    const key = switchKey(await $.session.id())
+    const was = (await $.store.get(key)) as Partial<KeptSwitch> | undefined
+    const now = await read($, isOn)
+    const isMarked = now || (was?.marks?.length ?? 0) > 0
+    const marks = isMarked ? marksOf(await $.session.messages()).slice(-MARKS_KEPT) : []
+    await $.store.set(key, { isOn: now, at: await $.clock.now(), marks } satisfies KeptSwitch)
+  } catch {
+    // kept as it was
+  }
+}
+
+// The switch a session kept, or for one rewound or forked, which starts under a new id
+// with copies of the messages it kept, that of the session it came from: the kept one
+// that knows the most of its messages, else, of those near that, the one kept last (the
+// one it was just in). None when no session is known.
+async function keptSwitch($: EngineInterface): Promise<boolean | undefined> {
+  const own = (await $.store.get(switchKey(await $.session.id()))) as Partial<KeptSwitch> | undefined
+  if (own !== undefined) return own.isOn === true
+  const mine = new Set(marksOf(await $.session.messages()))
+  if (mine.size === 0) return undefined
+  const scored: { kept: Partial<KeptSwitch>; score: number }[] = []
+  for (const key of await $.store.keys()) {
+    if (!key.startsWith('session:')) continue
+    const kept = ((await $.store.get(key)) ?? {}) as Partial<KeptSwitch>
+    const score = new Set((kept.marks ?? []).filter(mark => mine.has(mark))).size
+    if (score > 0) scored.push({ kept, score })
+  }
+  const best = Math.max(0, ...scored.map(s => s.score))
+  if (best < 3) return undefined
+  const near = scored.filter(s => s.score * 2 > best).sort((a, b) => (b.kept.at ?? 0) - (a.kept.at ?? 0))
+  return near[0]?.kept.isOn === true
 }
 
 function scheduleFlush($: EngineInterface) {
@@ -598,8 +644,12 @@ export const register: Register = (on, options) => {
       prompt: THOUGHT,
       disallowedTools: Object.values(TOOL),
     })
-    // The switch and the thoughts outlive a reload of this code: the tools they had are
-    // offered again. Never switched on, the session gets none.
+    // A restarted or resumed session takes up the switch it kept; a rewound or forked
+    // one, that of the session it came from. One that holds it on (a reload) stays on.
+    if ((await keptSwitch($).catch(() => undefined)) === true) await update($, isOn, () => true)
+    await keepSwitch($)
+    // The switch and the thoughts outlive a reload of this code or a restart of the
+    // session: the tools they had are offered again. Never switched on, the session gets none.
     if ((await read($, isOn)) || (await read($, thoughts)).length > 0) await offerVoiceTools($)
     await $.command.register({ name: 'multitask', description: 'Turn Multitask on or off' })
     await $.command.register({ name: 'thoughts', description: 'Show the multitasking thoughts in a pane' })
@@ -769,6 +819,8 @@ export const register: Register = (on, options) => {
       return news === undefined ? next(e) : next({ ...e, context: [...(e.context ?? []), news] })
     }
     if (!PERSON.has(e.origin.kind)) return next(e)
+    // While on, the marks a session rewound or forked from this one is known by are kept fresh.
+    if (await read($, isOn)) await keepSwitch($)
     const notes = [await voiceNote($), (await read($, isOn)) ? await takeNews($) : undefined].filter(
       (note): note is string => note !== undefined,
     )
