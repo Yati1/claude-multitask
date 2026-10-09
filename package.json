@@ -2,7 +2,8 @@
   "name": "claude-multitask",
   "private": true,
   "scripts": {
-    "typecheck": "tsc --noEmit -p thread-chat && tsc --noEmit -p multitask"
+    "typecheck": "tsc --noEmit -p thread-chat && tsc --noEmit -p multitask",
+    "types:refresh": "node scripts/refresh-types.mjs"
   },
   "devDependencies": {
     "typescript": "^7.0.2"
