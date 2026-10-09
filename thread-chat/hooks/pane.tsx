@@ -8,8 +8,9 @@ import type { Section } from './parse'
 // messages and each turn's last reply a section at a time, with no tool rows, no
 // quiet replies or others' prompts, and no gaps where the chat hides a row. It looks
 // as the transcript does: the person's sections in bubbles under the pictures they
-// pasted, replies as text, and each thread's tags and borders drawn by the code that
-// draws the transcript's (register.tsx).
+// pasted (read from the files Claude Code saved them to), replies as text, and each
+// thread's tags and borders drawn by the code that draws the transcript's
+// (register.tsx).
 //
 // It draws from the rows it kept as the session stored them (`session.append`),
 // each with its id and text: the transcript as the person sees it. A compaction
@@ -139,13 +140,16 @@ const isMessageText = (role: 'user' | 'assistant', text: string) =>
 // The media types a picture's bytes are drawn for, and the most base64 characters of one
 // drawn: what fits in the desktop's largest Svg (131072 characters) around it.
 const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp'])
-const IMAGE_DATA_MAX = 130_000
+export const IMAGE_DATA_MAX = 130_000
 const BASE64 = /^[A-Za-z0-9+/]+={0,2}$/
+// The first base64 characters of a JPEG read for its size: 64 KiB, past the metadata
+// that may come before its start-of-frame segment.
+const JPEG_HEAD = 87_384
 
 // A picture's size in pixels, read from its header (PNG, GIF, JPEG); none where unread.
-function imageSizeOf(type: string, data: string): { width?: number; height?: number } {
+export function imageSizeOf(type: string, data: string): { width?: number; height?: number } {
   try {
-    const bytes = atob(type === 'image/jpeg' ? data : data.slice(0, 32))
+    const bytes = atob(type === 'image/jpeg' ? data.slice(0, JPEG_HEAD) : data.slice(0, 32))
     const at = (i: number) => bytes.charCodeAt(i)
     const word = (i: number) => (at(i) << 8) | at(i + 1)
     if (type === 'image/png') return { width: word(16) * 65536 + word(18), height: word(20) * 65536 + word(22) }
@@ -163,16 +167,80 @@ function imageSizeOf(type: string, data: string): { width?: number; height?: num
   return {}
 }
 
-// The pictures in a row's blocks, in order.
+// A picture's media type, known by its first bytes (PNG, JPEG, GIF, WebP); none for another.
+export function imageTypeOf(data: string): string | undefined {
+  if (data.startsWith('iVBORw0KGgo')) return 'image/png'
+  if (data.startsWith('/9j/')) return 'image/jpeg'
+  if (data.startsWith('R0lGOD')) return 'image/gif'
+  if (data.startsWith('UklGR') && data.slice(11, 16) === 'XRUJQ') return 'image/webp'
+  return undefined
+}
+
+// A picture's bytes as the view draws them: whole, of a type drawn, and few enough.
+export const isDrawable = (type: string, data: string) => IMAGE_TYPES.has(type) && data.length <= IMAGE_DATA_MAX && BASE64.test(data)
+
+// The pictures in a row's blocks, in order: each one's media type and size. Their bytes
+// stay in the transcript; the files they were saved to come in a row of their own
+// (imagePathsOf).
 function imagesOf(content: Blocks): ViewImage[] {
   return content.flatMap((block): ViewImage[] => {
     if (block.type !== 'image') return []
     const source = (block.source ?? {}) as { type?: unknown; media_type?: unknown; data?: unknown }
     const type = typeof source.media_type === 'string' ? source.media_type : 'image'
     const data = source.type === 'base64' && typeof source.data === 'string' ? source.data : undefined
-    if (data === undefined || !IMAGE_TYPES.has(type) || data.length > IMAGE_DATA_MAX || !BASE64.test(data)) return [{ type }]
-    return [{ type, ...imageSizeOf(type, data), data }]
+    return [data === undefined ? { type } : { type, ...imageSizeOf(type, data) }]
   })
+}
+
+// The line Claude Code stores for a picture the person pasted, naming the file it saved
+// it to: in a hidden row of its own after their message, a text block a picture.
+const IMAGE_SOURCE = /^\[Image: source: (.+)\]$/
+
+// The files a stored row names for the pictures pasted with the person's message before
+// it, in order; none for any other row.
+export function imagePathsOf(e: Args<'session.append'>): string[] | undefined {
+  if (e.agentId !== undefined || e.message.type !== 'user' || e.message.isMeta !== true) return undefined
+  const paths: string[] = []
+  for (const block of e.message.content) {
+    const path = block.type === 'text' && typeof block.text === 'string' ? IMAGE_SOURCE.exec(block.text.trim())?.[1]?.trim() : undefined
+    if (path === undefined || path === '') return undefined
+    paths.push(path)
+  }
+  return paths.length > 0 ? paths : undefined
+}
+
+// The rows known once row `id`'s pictures are known by their files, in order.
+export function withImagePaths(all: ViewRow[], id: string, paths: readonly string[]): ViewRow[] {
+  return all.map(row =>
+    row.id !== id || row.images === undefined
+      ? row
+      : { ...row, images: row.images.map((image, i) => (paths[i] === undefined ? image : { ...image, path: paths[i] })) },
+  )
+}
+
+// The rows known once the same rows as a session's files hold them (`kept`) lend them
+// the pictures' files they lack: a picture's file noted there since. `all` itself when
+// they lend none.
+export function withKeptPaths(all: ViewRow[], kept: readonly ViewRow[]): ViewRow[] {
+  const lent = new Map(kept.flatMap(row => (row.images?.some(image => image.path !== undefined) === true ? [[row.id, row.images]] : [])))
+  if (lent.size === 0) return all
+  let isChanged = false
+  const rows = all.map(row => {
+    const from = lent.get(row.id)
+    if (from === undefined || row.role !== 'user') return row
+    if (row.images === undefined || row.images.length === 0) {
+      isChanged = true
+      return { ...row, images: from }
+    }
+    const images = row.images.map((image, i) => {
+      const path = from[i]?.path
+      if (image.path !== undefined || path === undefined) return image
+      isChanged = true
+      return { ...image, path }
+    })
+    return { ...row, images }
+  })
+  return isChanged ? rows : all
 }
 
 // A stored row of the main conversation as the view knows it: a person's message
@@ -323,6 +391,11 @@ export function dataFolderOf(root: string, name: string, config: string | undefi
   const folder = `${name}-${installed?.[2] ?? 'inline'}`.replace(/[^A-Za-z0-9_-]/g, '-')
   return `${base.replace(/[\\/]+$/, '')}/plugins/data/${folder}`
 }
+
+// The name of a picture's smaller copy, kept under the plugin's data folder: one per
+// file, made again when the file changes.
+export const thumbNameOf = (path: string, size: number, mtimeMs: number) =>
+  `${hashOf(path)}-${size.toString(36)}-${Math.floor(mtimeMs).toString(36)}.jpg`
 
 // Each transcript message's stored row (its index in `known`), matched in order by
 // role and mark; none for a message stored before the view kept rows, or not the
@@ -528,7 +601,14 @@ export type ViewDrawing = {
   markdown: (text: string) => RenderElement
   tagRow: (thread: Thread) => RenderElement
   threadPart: (thread: Thread, body: RenderElement) => RenderElement
+  // a pasted picture's bytes to draw, read from its file (or a smaller copy of it):
+  // `loading` while they are read, none where they cannot be
+  picture: (image: ViewImage) => Picture | 'loading' | undefined
 }
+
+// A picture's bytes as drawn, base64, few enough for an Svg, with its media type and
+// its size in pixels where its header tells it.
+export type Picture = { type: string; data: string; width?: number; height?: number }
 
 // A text as a drawn string may hold it: no control characters but tab and newline.
 const drawableOf = (text: string) => text.replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, '')
@@ -612,33 +692,47 @@ const THUMB_MAX_HEIGHT = 300
 const THUMB_RADIUS = 8
 const THUMB_BORDER = '#8888884d'
 
-// A picture's thumbnail as SVG markup, with its size in pixels; none for one whose
-// bytes were not kept (too many to draw).
-function thumbOf(image: ViewImage): { source: string; width: number; height: number } | undefined {
-  const { type, data, width, height } = image
-  if (data === undefined || !IMAGE_TYPES.has(type) || data.length > IMAGE_DATA_MAX || !BASE64.test(data)) return undefined
+// A picture's thumbnail as SVG markup, with its size in pixels: its card, the bytes
+// drawn in it; an empty card while they are read. As tall as its shape gives, from its
+// own size or else the bytes'.
+function thumbOf(image: ViewImage, picture: Picture | 'loading'): { source: string; width: number; height: number } {
+  const known: { width?: number; height?: number } =
+    image.width !== undefined && image.height !== undefined ? image : picture === 'loading' ? {} : picture
+  const { width, height } = known
   const isSized = width !== undefined && height !== undefined && width > 0 && height > 0
   const w = isSized ? Math.max(THUMB_MIN, Math.min(THUMB_WIDTH, width)) : THUMB_WIDTH
   const h = isSized ? Math.max(THUMB_MIN, Math.min(THUMB_MAX_HEIGHT, Math.round((w * height) / width))) : THUMB_HEIGHT
   const source = [
     `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">`,
-    `<clipPath id="card"><rect width="${w}" height="${h}" rx="${THUMB_RADIUS}"/></clipPath>`,
-    `<image href="data:${type};base64,${data}" width="${w}" height="${h}" preserveAspectRatio="xMidYMid slice" clip-path="url(#card)"/>`,
+    picture !== 'loading' && `<clipPath id="card"><rect width="${w}" height="${h}" rx="${THUMB_RADIUS}"/></clipPath>`,
+    picture !== 'loading' &&
+      `<image href="data:${picture.type};base64,${picture.data}" width="${w}" height="${h}" preserveAspectRatio="xMidYMid slice" clip-path="url(#card)"/>`,
     `<rect x="0.5" y="0.5" width="${w - 1}" height="${h - 1}" rx="${THUMB_RADIUS - 0.5}" fill="none" stroke="${THUMB_BORDER}"/>`,
     '</svg>',
-  ].join('')
+  ]
+    .filter(part => part !== false)
+    .join('')
   return { source, width: w, height: h }
+}
+
+// A picture's bytes as the view draws them: those a row of an earlier version kept, or
+// those read from its file; none where neither is to be had.
+function pictureOf(draw: ViewDrawing, image: ViewImage): Picture | 'loading' | undefined {
+  const { type, data, width, height } = image
+  if (data !== undefined && isDrawable(type, data)) return { type, data, width, height }
+  return image.path === undefined ? undefined : draw.picture(image)
 }
 
 // The pictures pasted with a person's message, above their words as the chat draws
 // them: on a page, thumbnails side by side at the right; on the terminal, which draws
-// none in the pane, a dim mark for each, as for a picture whose bytes were not kept.
+// none in the pane, a dim mark for each, as for a picture whose file is gone.
 function drawImages(draw: ViewDrawing, isPage: boolean, images: readonly ViewImage[], gapBelow: number): RenderElement {
   const { Box, Text } = draw.ui
   const Svg = isPage ? (draw.ui as Partial<ElementTable<'desktop'>>).Svg : undefined
   const marks = images.map(image => {
-    const thumb = Svg === undefined ? undefined : thumbOf(image)
-    if (Svg === undefined || thumb === undefined) return <Text dimColor>[image]</Text>
+    const picture = Svg === undefined ? undefined : pictureOf(draw, image)
+    if (Svg === undefined || picture === undefined) return <Text dimColor>[image]</Text>
+    const thumb = thumbOf(image, picture)
     return <Svg source={thumb.source} alt="Pasted image" width={thumb.width} height={thumb.height} />
   })
   return (

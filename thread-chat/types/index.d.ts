@@ -28,11 +28,13 @@ export type ViewRow = {
 }
 
 // A picture the person pasted: its media type, its size where its header tells it, and
-// its bytes as base64 where they are few enough to draw (else a placeholder draws).
+// the file Claude Code saved it to, read as the view draws it. Rows kept by an earlier
+// version hold its bytes as base64 instead, where they were few enough to draw.
 export type ViewImage = {
   type: string
   width?: number
   height?: number
+  path?: string
   data?: string
 }
 
@@ -80,6 +82,9 @@ declare module 'claude-code' {
       // the person's messages and reply texts as stored, in order: what the thread
       // view draws, each by its transcript row's id
       viewRows: ViewRow[]
+      // how many of the thread view's pictures have been read from their files: each
+      // one read draws the view again
+      picturesRead: number
     }
   }
 }
