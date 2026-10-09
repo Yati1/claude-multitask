@@ -6,6 +6,10 @@ Two Claude Code mods, each a plugin in its own folder: `thread-chat` and `multit
 
 The mod folders in this checkout are loaded live, so in auto mode edits to them here are blocked. Make every change in a git worktree on its own branch, then merge it into main.
 
+## Cleaning up worktrees
+
+Once a worktree's branch is merged into main, remove the worktree and delete its branch in the same step. Leave nothing behind: no stray worktrees or branches, and no ignored copies (the copied types, `node_modules`). Delete an unmerged branch only when the user says so; otherwise list it for them.
+
 ## Quick fixes
 
 For a small, clear fix: no advisor, read only the code the fix touches, add no new tests, run `npm run typecheck` once, then commit. Edits to the mod folders still go through a worktree and a merge into main. For an urgent bug, fix it first and gather evidence afterwards.
