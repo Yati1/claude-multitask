@@ -25,19 +25,21 @@ Install either or both.
 
 ## Use
 
+The `mods` button at the right end of the band above the prompt opens a menu of switches for the chat, one for each installed mod. In the desktop app it opens as you point at or click it.
+
 ### Multitask
 
-- `/multitask` turns Multitask on in a chat (run it again to turn it off). The chat becomes the voice and hands all work to thoughts.
+- `/multitask`, or Multitask in the `mods` menu, turns Multitask on in a chat (run it again to turn it off). The chat becomes the voice and hands all work to thoughts.
 - `/thoughts`, or the `thoughts` button above the prompt, opens the Thoughts pane: what each thought is doing, its report, and `stop`.
 - The `voiceEffort` setting (Voice effort, in `/config`) sets how hard the voice thinks: `low` (default), `medium`, `high`, or `session` to match the session. Thoughts keep the session's setting.
 
 ### Threads
 
-- `/threads` turns threads on in a chat (run it again to turn them off).
+- `/threads`, or Threads in the `mods` menu, turns threads on in a chat (run it again to turn them off).
 - A `# name` heading in a message starts a thread, or replies to it if it exists. Close or abbreviated names find the existing thread. The agent replies under the same headings.
 - `#+name` starts a new thread even when an existing one is close.
 - To put a message in a thread, hover it for `+ thread` (desktop app); to move it to another, press `▾` beside its thread tag.
 - Pills above the prompt filter the chat to the threads you pick. With one picked, messages without a heading go to it.
 - `view` above the prompt, or `/thread-view`, opens the thread view: the picked threads' messages on their own, in a pane (all threads when none is picked).
 - `/merge-threads <thread> into <thread>` merges two threads.
-- The switch after the pills lets the agent start threads itself.
+- Agent may start threads, in the `mods` menu, lets the agent start threads itself.

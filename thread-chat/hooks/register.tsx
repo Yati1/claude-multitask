@@ -36,6 +36,8 @@ import {
   withViewRow,
 } from './pane'
 import type { ViewDeps, ViewInputs } from './pane'
+import { drawBand } from './menu'
+import type { MenuSwitch } from './menu'
 
 const isOn = atom({ plugin: 'thread-chat', key: 'isOn' } as const, false)
 const threads = atom({ plugin: 'thread-chat', key: 'threads' } as const, [])
@@ -51,9 +53,12 @@ const naming = atom({ plugin: 'thread-chat', key: 'naming' } as const, false)
 const untold = atom({ plugin: 'thread-chat', key: 'untold' } as const, [])
 const briefed = atom({ plugin: 'thread-chat', key: 'briefed' } as const, null)
 const viewRows = atom({ plugin: 'thread-chat', key: 'viewRows' } as const, [])
+const menuOpen = atom({ plugin: 'thread-chat', key: 'menuOpen' } as const, false)
 
 const CREATE_TOOL = 'mcp__thread-chat__create_thread'
-const AGENT_SWITCH = 'agent-switch'
+// The switches in the band's `mods` menu: threads on or off, and whether the agent may start them.
+const THREADS_SWITCH = 'mods-menu:threads'
+const AGENT_SWITCH = 'mods-menu:agent-threads'
 // The thread view's pane id, which is also its command's name and its band button's key.
 const VIEW = 'thread-view'
 const VIEW_TITLE = 'Thread view'
@@ -505,13 +510,6 @@ async function offNote($: EngineInterface): Promise<string | undefined> {
   await update($, briefed, () => null)
   await save($)
   return 'The user turned conversation threads off. Reply without thread headings; a level-1 heading in their messages is plain text now.'
-}
-
-// The SVG of a slide switch: a rounded track with the knob to the right when on.
-function switchPicture(isOn: boolean): string {
-  const track = isOn ? '#3b82f6' : '#8c8c8c'
-  const knob = isOn ? 23 : 11
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="34" height="20" viewBox="0 0 34 20"><rect x="1" y="2" width="32" height="16" rx="8" fill="${track}"/><circle cx="${knob}" cy="10" r="6" fill="#ffffff"/></svg>`
 }
 
 const CHIP_HEIGHT = 20
@@ -1108,6 +1106,84 @@ async function keepViewRows($: EngineInterface, id: string, rows: ViewRow[]) {
   }
 }
 
+// Threads' controls in the band: a pill per thread, then `view`. They take the room the
+// band has left and give way first; nothing the pointer shows takes room.
+async function drawThreadControls(
+  $: EngineInterface,
+  e: Parameters<EngineInterface['ui']['resolve']>[0],
+): Promise<RenderElement> {
+  const list = await read($, threads)
+  const isFiltering = list.some(t => t.isSelected)
+  // With one thread alone picked, messages with no heading go to it.
+  const picked = list.filter(t => t.isSelected)
+  const sendTarget = picked.length === 1 ? picked[0] : undefined
+  // After the threads, a short button that opens the thread view: a Button, not a
+  // Client, on every surface.
+  const { Button } = $.ui.resolve(e)
+  const viewButton =
+    list.length === 0 ? undefined : <Button key={VIEW} label="view" variant="secondary" dimColor onPress={() => openView($)} />
+
+  if (e.surface === 'desktop') {
+    // A pill per thread, lit under the pointer. Pills past the room clip at its end (their
+    // hit areas with them); the thread view holds every thread. The tip is a card the
+    // desktop lifts over the band.
+    const desktop = $.ui.resolve(e)
+    const { Box, Text } = desktop
+    return (
+      <Box flexDirection="row" columnGap={1} alignItems="center" flexGrow={1} flexShrink={1} minWidth={0}>
+        <Box flexDirection="row" columnGap={1} alignItems="center" flexShrink={1} minWidth={0} overflow="hidden">
+          {list.length === 0 && (
+            <Text dimColor wrap="truncate-end">
+              start a thread with # name
+            </Text>
+          )}
+          {list.map(t => {
+            const isSelected = t.isSelected === true
+            const isSendTarget = isSelected && sendTarget === t
+            return drawPillSwitch(
+              desktop,
+              `chip:${keyOf(t.name)}`,
+              `thread:${keyOf(t.name)}`,
+              isSelected,
+              isSendTarget ? `${t.name}: messages with no heading go here` : t.name,
+              isHot => chipPicture(t.name, t.color, isSelected, isFiltering && !isSelected, isSendTarget, undefined, isHot),
+              { flexShrink: 0 },
+            )
+          })}
+        </Box>
+        {viewButton && (
+          <Box key="thread-view-tip" flexShrink={0}>
+            {viewButton}
+            {drawTip($, e, 'Thread view: the picked threads alone, in a pane')}
+          </Box>
+        )}
+      </Box>
+    )
+  }
+  // The terminal wraps the pills in their part of the row rather than lose any.
+  const { Box, Text } = $.ui.resolve(e)
+  return (
+    <Box flexDirection="row" columnGap={1} alignItems="center" flexGrow={1} flexShrink={1} minWidth={0}>
+      <Box flexDirection="row" flexWrap="wrap" columnGap={1} alignItems="center" flexShrink={1} minWidth={0}>
+        {list.length === 0 && <Text dimColor>start a thread with # name</Text>}
+        {list.map(t => (
+          <Box flexDirection="row" flexShrink={0}>
+            <Text color={t.color}>●</Text>
+            <Button
+              key={`thread:${keyOf(t.name)}`}
+              label={sendTarget === t ? `${t.name} ➤` : t.name}
+              variant={t.isSelected ? 'primary' : 'secondary'}
+              dimColor={isFiltering && !t.isSelected}
+              onPress={() => toggleThread($, keyOf(t.name))}
+            />
+          </Box>
+        ))}
+      </Box>
+      {viewButton && <Box flexShrink={0}>{viewButton}</Box>}
+    </Box>
+  )
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'threads', description: 'Turn conversation threads on or off in this chat' })
@@ -1365,12 +1441,11 @@ export const register: Register = on => {
     return result
   })
 
-  // The band's chips and switch, and the one open move picker's pills, post here when clicked:
-  // the only Clients, so their count stays near the number of threads.
+  // The band's chips and the one open move picker's pills post here when clicked: the
+  // only Clients, so their count stays near the number of threads.
   on('ui.message', async ($, e, next) => {
     if ((e.data as { flip?: unknown } | null)?.flip === true && (await read($, isOn))) {
-      if (e.element === AGENT_SWITCH) await flipAgentSwitch($)
-      else if (e.element.startsWith('thread:')) await toggleThread($, e.element.slice('thread:'.length))
+      if (e.element.startsWith('thread:')) await toggleThread($, e.element.slice('thread:'.length))
       else if (e.element.startsWith('pick:')) await moveTo($, e.element.slice('pick:'.length))
       else if (e.element === NEW_THREAD_PILL) await setNaming($, true)
     }
@@ -1584,121 +1659,32 @@ export const register: Register = on => {
     return <Box display="none" />
   })
 
+  // The band above the prompt, shared with the other mods of this repository through
+  // ./menu.tsx: while threads are on, their pills and `view`; always, the switches in its
+  // `mods` menu that turn threads on and off and, while on, let the agent start them.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const below = await next(e)
-    // Off, there is no band: other mods' controls have the row.
-    if (e.props.hasSurvey || !(await read($, isOn))) return below
+    if (e.props.hasSurvey) return below
 
-    const list = await read($, threads)
-    const mayCreate = await read($, agentMayCreate)
-    const isFiltering = list.some(t => t.isSelected)
-    // With one thread alone picked, messages with no heading go to it.
-    const picked = list.filter(t => t.isSelected)
-    const sendTarget = picked.length === 1 ? picked[0] : undefined
-    const tip = `Agent may start threads: ${mayCreate ? 'on' : 'off'}`
-    // After the threads, a short button that opens the thread view: a Button, not a
-    // Client, on every surface.
-    const { Button } = $.ui.resolve(e)
-    const viewButton =
-      list.length === 0 ? undefined : (
-        <Button key={VIEW} label="view" variant="secondary" dimColor onPress={() => openView($)} />
-      )
-    let band: RenderElement
-
-    // The band is one row: the threads take the room left and give way first, the
-    // controls after them keep their width. Nothing the pointer shows takes room.
-    if (e.surface === 'desktop') {
-      // A pill per thread, and a real switch: its picture with a hit area laid over it,
-      // lit under the pointer. Pills past the room clip at its end (their hit areas with
-      // them); the thread view holds every thread. Tips are cards the desktop lifts over
-      // the band.
-      const desktop = $.ui.resolve(e)
-      const { Box, Text, Svg, Client } = desktop
-      band = (
-        <Box flexDirection="row" columnGap={1} alignItems="center" flexGrow={1} flexShrink={1} minWidth={0}>
-          <Box flexDirection="row" columnGap={1} alignItems="center" flexShrink={1} minWidth={0} overflow="hidden">
-            {list.length === 0 && (
-              <Text dimColor wrap="truncate-end">
-                start a thread with # name
-              </Text>
-            )}
-            {list.map(t => {
-              const isSelected = t.isSelected === true
-              const isSendTarget = isSelected && sendTarget === t
-              return drawPillSwitch(
-                desktop,
-                `chip:${keyOf(t.name)}`,
-                `thread:${keyOf(t.name)}`,
-                isSelected,
-                isSendTarget ? `${t.name}: messages with no heading go here` : t.name,
-                isHot =>
-                  chipPicture(t.name, t.color, isSelected, isFiltering && !isSelected, isSendTarget, undefined, isHot),
-                { flexShrink: 0 },
-              )
-            })}
-          </Box>
-          {viewButton && (
-            <Box key="thread-view-tip" flexShrink={0}>
-              {viewButton}
-              {drawTip($, e, 'Thread view: the picked threads alone, in a pane')}
-            </Box>
-          )}
-          <Box key="agent-switch-tip" flexShrink={0}>
-            <Box>
-              <Svg source={switchPicture(mayCreate)} alt={tip} width={34} height={20} />
-              <Box position="absolute" top={0} left={0} width="100%" height="100%">
-                <Client key={AGENT_SWITCH} module="./switch.tsx" props={{ isOn: mayCreate }} width="100%" height="100%" />
-              </Box>
-            </Box>
-            {drawTip($, e, tip)}
-          </Box>
-        </Box>
-      )
-    } else {
-      // The terminal wraps the pills in their part of the row rather than lose any,
-      // and names the agent switch beside it.
-      const { Box, Text, Button } = $.ui.resolve(e)
-      band = (
-        <Box flexDirection="row" columnGap={1} alignItems="center" flexGrow={1} flexShrink={1} minWidth={0}>
-          <Box flexDirection="row" flexWrap="wrap" columnGap={1} alignItems="center" flexShrink={1} minWidth={0}>
-            {list.length === 0 && <Text dimColor>start a thread with # name</Text>}
-            {list.map(t => (
-              <Box flexDirection="row" flexShrink={0}>
-                <Text color={t.color}>●</Text>
-                <Button
-                  key={`thread:${keyOf(t.name)}`}
-                  label={sendTarget === t ? `${t.name} ➤` : t.name}
-                  variant={t.isSelected ? 'primary' : 'secondary'}
-                  dimColor={isFiltering && !t.isSelected}
-                  onPress={() => toggleThread($, keyOf(t.name))}
-                />
-              </Box>
-            ))}
-          </Box>
-          {viewButton && <Box flexShrink={0}>{viewButton}</Box>}
-          <Box flexDirection="row" columnGap={1} flexShrink={0}>
-            <Text dimColor>agent threads</Text>
-            <Button
-              key="agent-may-create"
-              label={mayCreate ? '( ●)' : '(● )'}
-              variant={mayCreate ? 'primary' : 'secondary'}
-              dimColor={!mayCreate}
-              onPress={() => flipAgentSwitch($)}
-            />
-          </Box>
-        </Box>
-      )
+    const on_ = await read($, isOn)
+    const switches: MenuSwitch[] = [{ rank: 10, key: THREADS_SWITCH, label: 'Threads', isOn: on_, onPress: () => flipThreads($) }]
+    if (on_) {
+      const mayCreate = await read($, agentMayCreate)
+      switches.push({
+        rank: 11,
+        key: AGENT_SWITCH,
+        label: 'Agent may start threads',
+        isOn: mayCreate,
+        onPress: () => flipAgentSwitch($),
+      })
     }
-
-    // Other mods' controls share the one row, to the right of the threads: they keep
-    // their width, and the threads give way.
-    if (below.type === 'engine') return band
-    const { Box } = $.ui.resolve(e)
-    return (
-      <Box flexDirection="row" justifyContent="space-between" alignItems="center" columnGap={2}>
-        {band}
-        <Box flexShrink={0}>{below}</Box>
-      </Box>
-    )
+    return drawBand(below, {
+      ui: $.ui.resolve(e),
+      surface: e.surface,
+      controls: on_ ? { rank: 10, name: 'thread-chat', element: await drawThreadControls($, e), grows: true } : undefined,
+      switches,
+      isOpen: () => read($, menuOpen),
+      onToggle: () => update($, menuOpen, open => !open),
+    })
   })
 }
