@@ -57,12 +57,14 @@ const viewRows = atom({ plugin: 'thread-chat', key: 'viewRows' } as const, [])
 
 const CREATE_TOOL = 'mcp__thread-chat__create_thread'
 // Thread-chat's dropdown in the band. Its face reads "Threads", its first option kept
-// selected; below it a row per switch, saying whether it is on, which a pick flips:
-// threads on or off, and, while on, whether the agent may start them.
+// selected (the desktop app checks that one itself); below it a row per switch, which a
+// pick flips: threads on in this chat, and, while on, whether the agent may start them.
+// A switch that is on ends in our own check: a space and the light ✓, as the desktop's.
 const DROPDOWN = 'threads'
 const FACE = 'face'
 const THREADS_OPTION = 'threads'
 const AGENT_OPTION = 'agent-threads'
+const CHECK = ' ✓'
 // The thread view's pane id, which is also its command's name and its band button's key.
 const VIEW = 'thread-view'
 const VIEW_TITLE = 'Thread view'
@@ -1749,11 +1751,11 @@ export const register: Register = on => {
     let dropdown: RenderElement | undefined
     if (e.surface !== 'mobile') {
       const { Select } = $.ui.resolve(e)
-      const said = (isSet: boolean) => (isSet ? 'on' : 'off')
+      const checked = (label: string, isSet: boolean) => (isSet ? label + CHECK : label)
       const options = [
         { value: FACE, label: 'Threads' },
-        { value: THREADS_OPTION, label: `Threads: ${said(on_)}` },
-        ...(on_ ? [{ value: AGENT_OPTION, label: `Agent may start threads: ${said(await read($, agentMayCreate))}` }] : []),
+        { value: THREADS_OPTION, label: checked('On in this chat', on_) },
+        ...(on_ ? [{ value: AGENT_OPTION, label: checked('Agent may start threads', await read($, agentMayCreate)) }] : []),
       ]
       dropdown = <Select key={DROPDOWN} options={options} value={FACE} onSelect={value => pickSwitch($, value)} />
     }

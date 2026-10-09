@@ -36,11 +36,11 @@ Multitask and thread-chat each have a dropdown in the band above the prompt with
 
 ### Threads
 
-- `/threads`, or `Threads: off` in the `Threads` dropdown, turns threads on in a chat (run it again to turn them off).
+- `/threads`, or `On in this chat` in the `Threads` dropdown, turns threads on in a chat (again to turn them off). The dropdown checks each switch that is on.
 - A `# name` heading in a message starts a thread, or replies to it if it exists. Close or abbreviated names find the existing thread. The agent replies under the same headings.
 - `#+name` starts a new thread even when an existing one is close.
 - To put a message in a thread, hover it for `+ thread` (desktop app); to move it to another, press `▾` beside its thread tag.
 - Pills above the prompt filter the chat to the threads you pick. With one picked, messages without a heading go to it.
 - `view` above the prompt, or `/thread-view`, opens the thread view: the picked threads' messages on their own, in a pane (all threads when none is picked).
 - `/merge-threads <thread> into <thread>` merges two threads.
-- `Agent may start threads`, in the `Threads` dropdown, lets the agent start threads itself.
+- `Agent may start threads`, in the `Threads` dropdown while threads are on, lets the agent start threads itself.

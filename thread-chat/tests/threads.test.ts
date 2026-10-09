@@ -67,11 +67,12 @@ type Band = {
   select: (target: { key: string; value: string }) => Promise<unknown>
 }
 
-// A switch in the band's dropdown as its row says it is: `on`, `off`, or undefined where
-// the dropdown has no row for it.
+// A switch in the band's dropdown as its row says it is: `on` where it ends in a check,
+// `off` where not, or undefined where the dropdown has no row for it.
 async function switchOf(band: Band, value: string) {
   const options = (await band.find({ key: DROPDOWN }))?.props.options as { value: string; label?: string }[] | undefined
-  return options?.find(o => o.value === value)?.label?.split(': ').at(-1)
+  const label = options?.find(o => o.value === value)?.label
+  return label === undefined ? undefined : label.endsWith(' ✓') ? 'on' : 'off'
 }
 
 // The switch's row in the band's dropdown, picked: it flips the switch.
