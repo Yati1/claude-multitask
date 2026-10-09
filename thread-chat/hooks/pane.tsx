@@ -74,9 +74,34 @@ const MESSAGE_GAP = 4
 // messages come.
 const NEAR_END_ROWS = 3
 
+type WindowMove = { offset: number; bodyRows: number; contentRows: number }
+
 // Whether a move left the view's window at or near the end of what it shows.
-export const isNearEnd = (move: { offset: number; bodyRows: number; contentRows: number }) =>
-  move.contentRows - move.bodyRows - move.offset <= NEAR_END_ROWS
+export const isNearEnd = (move: WindowMove) => move.contentRows - move.bodyRows - move.offset <= NEAR_END_ROWS
+
+// Where the person left the view's window: at its end (or near it), or this many rows
+// from its top.
+export type ViewPlace = 'end' | number
+
+export const viewPlaceOf = (move: WindowMove): ViewPlace => (isNearEnd(move) ? 'end' : move.offset)
+
+// How the view's window is put back where the person left it, as a surface draws the
+// view with its window `offset` rows down; `back` a row it is still to go back to. A
+// surface that draws the view afresh (on opening it, on coming back to its tab) starts
+// at the top, and the engine does not move it back:
+// - at the top though the person left it elsewhere: to the end, and on to their row
+//   (`back`) where they left it short of it, once the surface has measured its rows;
+// - away from the top with a row to go back to: to that row;
+// - else nothing.
+export function viewMoveOf(
+  place: ViewPlace,
+  back: number | undefined,
+  offset: number,
+): { to: 'end'; back?: number } | { to: number } | undefined {
+  if (back !== undefined && offset > 0) return { to: back }
+  if (offset !== 0 || place === 0) return undefined
+  return place === 'end' ? { to: 'end' } : { to: 'end', back: place }
+}
 
 // Where the store notes how a session's view rows are kept between runs of the app
 // (KeptView); an earlier version kept the rows themselves there.

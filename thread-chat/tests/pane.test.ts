@@ -14,6 +14,8 @@ import {
   marksOf,
   rowsOfChunks,
   rowsUpTo,
+  viewMoveOf,
+  viewPlaceOf,
   withViewRow,
 } from '../hooks/pane'
 
@@ -795,6 +797,76 @@ test('the thread view keeps to its end as messages come only while the person ha
   expect([at(40), at(37), at(36), at(10), at(0)]).toEqual([true, true, false, false, false])
   // a tree that fits shows its end wherever the window stands
   expect(isNearEnd({ offset: 0, bodyRows: 20, contentRows: 12 })).toBe(true)
+  // where the person leaves it: its end, or their row
+  expect([viewPlaceOf({ offset: 38, bodyRows: 20, contentRows: 60 }), viewPlaceOf({ offset: 10, bodyRows: 20, contentRows: 60 })]).toEqual(['end', 10])
+})
+
+test('a surface that draws the view afresh at its top is taken back where the person left it', () => {
+  // opened, or back on its tab, at the end: to the end
+  expect(viewMoveOf('end', undefined, 0)).toEqual({ to: 'end' })
+  // left at row 10: to the end first, where the surface measures its rows, then back to row 10
+  expect(viewMoveOf(10, undefined, 0)).toEqual({ to: 'end', back: 10 })
+  expect(viewMoveOf(10, 10, 40)).toEqual({ to: 10 })
+  // nothing where it stands away from the top, or at the top the person left it at
+  expect(viewMoveOf('end', undefined, 40)).toBeUndefined()
+  expect(viewMoveOf(10, undefined, 10)).toBeUndefined()
+  expect(viewMoveOf(0, undefined, 0)).toBeUndefined()
+})
+
+// The runtime's own timer, which the kit's typings leave out.
+const { setTimeout: later } = globalThis as unknown as { setTimeout: (run: () => void, ms: number) => void }
+
+// (The kit answers none of the plugin's own scrolls; the view's moves back show as the
+// waits it asks the clock for, each a move once it is due. The test holds each wait
+// itself, as the kit's clock would, so a move of the person's can come before it ends.)
+test('the view is taken back where the person left it on opening and on coming back to its tab', async ($, on) => {
+  engine(on)
+  let moves = 0
+  let due: (() => void)[] = []
+  on('clock.after', () => {
+    moves += 1
+    return new Promise(resolve => due.push(() => resolve({ value: undefined })))
+  })
+  // ends the waits so far, and lets the moves they were for run
+  const advance = async () => {
+    const now = due
+    due = []
+    for (const end of now) end()
+    await new Promise<void>(resolve => later(resolve, 10))
+  }
+  await flipThreads($)
+  const personTo = (offset: number) =>
+    $.ui.scroll({ component: 'Pane', requestId: 'thread-view', offset, by: offset - 40, bodyRows: 20, contentRows: 60, origin: { kind: 'person' } })
+
+  // opened, the desktop draws it at its top: it goes to its end
+  const pane = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...PANE })
+  const drawAt = (offset: number) => pane.redraw({ ...PANE.props, scroll: { offset, bodyRows: 20 } })
+  await advance()
+  await drawAt(40)
+  expect(moves).toBe(1)
+
+  // left at row 10, back on its tab at the top: to its end, then from there back to row 10
+  await personTo(10)
+  await drawAt(10)
+  await drawAt(0)
+  await advance()
+  await drawAt(40)
+  await advance()
+  await drawAt(10)
+  expect(moves).toBe(3)
+
+  // the person's move while a move back waits stands, and no move back follows it
+  await drawAt(0)
+  await personTo(5)
+  await advance()
+  await drawAt(40)
+  expect(moves).toBe(4)
+
+  // left at the top, it stays there
+  await personTo(0)
+  await drawAt(0)
+  await advance()
+  expect(moves).toBe(4)
 })
 
 // A PNG's first bytes, base64: its signature and the header naming its size.

@@ -16,7 +16,7 @@ Notable changes to the thread-chat, multitask and react mods. The format is base
 - Changed multitask's switch to a dropdown above the prompt that reads `Multitask` or `Focus`.
 - Changed thread-chat's thread view to match the chat, with its bubbles, images, thread tags and borders.
 - Changed thread-chat's thread view to show only your messages and each turn's final reply.
-- Changed thread-chat's thread view to stay at the bottom as messages arrive, unless scrolled up.
+- Changed thread-chat's thread view to open at the bottom and keep your place across tabs and new messages.
 
 ### Fixed
 

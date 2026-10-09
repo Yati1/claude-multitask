@@ -24,7 +24,6 @@ import {
   fingerprintOf,
   hasToolCall,
   isKeptView,
-  isNearEnd,
   markHashOf,
   markOf,
   marksOf,
@@ -34,11 +33,13 @@ import {
   rowsOfChunks,
   rowsUpTo,
   viewKey,
+  viewMoveOf,
+  viewPlaceOf,
   viewRowOf,
   withInterim,
   withViewRow,
 } from './pane'
-import type { ViewDeps, ViewInputs } from './pane'
+import type { ViewDeps, ViewInputs, ViewPlace } from './pane'
 
 const isOn = atom({ plugin: 'thread-chat', key: 'isOn' } as const, false)
 const threads = atom({ plugin: 'thread-chat', key: 'threads' } as const, [])
@@ -1068,9 +1069,20 @@ function bubbleText(shown: Section[], resolve: (name: string) => Thread | undefi
 // The thread view (pane.tsx) places a section by the rules the chat draws it by.
 const viewDeps: ViewDeps = { threadOf, personThreadOf, personSectionsOf, placeSection, stemOf }
 
-// Whether the thread view's window stood at or near its end when it last moved: then a
-// new message keeps it at the end; scrolled up, it stays where the person put it.
-let isViewAtEnd = true
+// Where the thread view's window stood when it last moved: at or near its end, a new
+// message keeps it at the end; scrolled up, it stays where the person put it.
+let viewPlace: ViewPlace = 'end'
+// A row the window is still to go back to, once the surface drawing it afresh has
+// measured its rows (viewMoveOf).
+let viewReturn: number | undefined
+// The row this plugin's own move to the window's top is carried on to (returnView).
+let viewReturning: number | undefined
+// The person's moves of the window so far: one made while a move back waits stands.
+let personMoves = 0
+
+// How long a move back waits after a surface draws the view afresh: for it to measure
+// its rows, and for a move of the person's it drew for to be seen first.
+const VIEW_SETTLE_MS = 100
 
 // Keeps the thread view's window on its newest rows as they come, until the person scrolls.
 async function pinViewToEnd($: EngineInterface) {
@@ -1081,8 +1093,47 @@ async function pinViewToEnd($: EngineInterface) {
   }
 }
 
-// Opens the thread view (or shows it, already open) at its newest rows.
+// Takes the thread view's window to a row: a move to its top that its scroll hook
+// carries on to the row (a plugin names no row to scroll to).
+async function returnView($: EngineInterface, row: number) {
+  viewReturning = row
+  try {
+    await $.ui.scroll({ in: VIEW, to: 'start' })
+  } catch {
+    return
+  } finally {
+    viewReturning = undefined
+  }
+}
+
+// Puts the thread view's window back where the person left it when a surface draws the
+// view afresh, at its top: the desktop does on opening it and on coming back to its tab.
+function settleView($: EngineInterface, offset: number) {
+  const move = viewMoveOf(viewPlace, viewReturn, offset)
+  if (move === undefined) return
+  if (move.to !== 'end') viewReturn = undefined
+  const moves = personMoves
+  $.clock.after(VIEW_SETTLE_MS, () => {
+    if (personMoves !== moves) return
+    if (move.to !== 'end') {
+      void returnView($, move.to)
+      return
+    }
+    viewReturn = move.back
+    void pinViewToEnd($)
+  })
+}
+
+// The person's place in the thread view from now on: its newest rows.
+function placeViewAtEnd() {
+  viewPlace = 'end'
+  viewReturn = undefined
+}
+
+// Opens the thread view (or shows it, already open) at its newest rows; a surface that
+// draws it only later is taken there as it does (settleView).
 async function openView($: EngineInterface) {
+  placeViewAtEnd()
   const opened = await $.ui.open({ id: VIEW, title: VIEW_TITLE })
   if (opened.isPlaced) await pinViewToEnd($)
   return opened
@@ -1397,7 +1448,7 @@ export const register: Register = on => {
       if (row !== undefined) {
         await update($, viewRows, all => withViewRow(all, row))
         // A new message keeps the thread view at its end, unless the person scrolled up.
-        if (isViewAtEnd) void pinViewToEnd($)
+        if (viewPlace === 'end') void pinViewToEnd($)
       }
       // The view shows a turn's last reply: those a tool call follows in its turn are interim.
       if (e.agentId === undefined && stored?.deny === undefined) {
@@ -1432,10 +1483,17 @@ export const register: Register = on => {
   })
 
   // Where the thread view's window was last moved to, by the person or by this plugin:
-  // at or near its end, new messages keep it there.
+  // at or near its end, new messages keep it there. This plugin's move back to a row
+  // goes to that row; a move of the person's drops any still to come.
   on('ui.scroll', { component: 'Pane', requestId: VIEW }, async ($, e, next) => {
-    const result = await next(e)
-    if (result.deny === undefined) isViewAtEnd = isNearEnd(e)
+    const isMine = e.origin.kind === 'plugin' && e.origin.name === $.plugin.name
+    const move = isMine && viewReturning !== undefined && e.offset === 0 ? { ...e, offset: viewReturning } : e
+    if (e.origin.kind === 'person') {
+      personMoves += 1
+      viewReturn = undefined
+    }
+    const result = await next(move)
+    if (result.deny === undefined) viewPlace = viewPlaceOf(move)
     return result
   })
 
@@ -1443,7 +1501,10 @@ export const register: Register = on => {
   on('state.set', { plugin: 'thread-chat', key: 'threads' }, async ($, e, next) => {
     const result = await next(e)
     try {
-      if (pickedOf(e.previous) !== pickedOf(e.value) && (await $.ui.panes()).some(p => p.id === VIEW)) await pinViewToEnd($)
+      if (pickedOf(e.previous) !== pickedOf(e.value) && (await $.ui.panes()).some(p => p.id === VIEW)) {
+        placeViewAtEnd()
+        await pinViewToEnd($)
+      }
     } catch {
       // the pick stands whether or not the view moves
     }
@@ -1453,8 +1514,9 @@ export const register: Register = on => {
   // The thread view: the picked threads' sections, their tags and a reply's
   // borders drawn by the code that draws the chat's. No Client: a pane of many
   // rows must not add to the Clients every overlay on the desktop shares.
-  on('ui.render', { component: 'Pane', requestId: VIEW }, async ($, e) =>
-    drawView(
+  on('ui.render', { component: 'Pane', requestId: VIEW }, async ($, e) => {
+    settleView($, e.props.scroll.offset)
+    return drawView(
       {
         surface: e.surface,
         ui: $.ui.resolve(e),
@@ -1466,8 +1528,8 @@ export const register: Register = on => {
       },
       await viewInputs($),
       viewDeps,
-    ),
-  )
+    )
+  })
 
   on('command.run', { command: 'merge-threads' }, async ($, e) => {
     if (!(await read($, isOn))) return { text: OFF_TEXT }
