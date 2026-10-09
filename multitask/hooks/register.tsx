@@ -252,7 +252,6 @@ async function toggle($: EngineInterface): Promise<boolean> {
   await update($, isOn, was => (now = !was))
   if (now) {
     await offerVoiceTools($)
-    void $.ui.open({ id: PANE, title: 'Thoughts' })
   }
   await keepSwitch($)
   return now
