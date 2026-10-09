@@ -1,0 +1,10 @@
+{
+  "name": "claude-multitask",
+  "private": true,
+  "scripts": {
+    "typecheck": "tsc --noEmit -p thread-chat && tsc --noEmit -p multitask"
+  },
+  "devDependencies": {
+    "typescript": "^7.0.2"
+  }
+}

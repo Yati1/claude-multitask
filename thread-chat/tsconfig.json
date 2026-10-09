@@ -1,3 +1,9 @@
 {
-  "extends": "./.claude-plugin/types/tsconfig.json"
+  "extends": "./.claude-plugin/types/tsconfig.json",
+  // Leave out the engine's claude-code-mcp entry: it lists whatever MCP servers the
+  // session that last loaded the mod had connected, often not this mod's own tools.
+  // Without it every mcp__* tool is loosely typed, the same in every session.
+  "compilerOptions": {
+    "types": ["claude-code", "claude-code-tools"]
+  }
 }

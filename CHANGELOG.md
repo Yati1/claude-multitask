@@ -11,6 +11,7 @@ Notable changes to the thread-chat and multitask mods. The format is based on [K
 ### Fixed
 
 - Fixed issue where a finished multitask thought could still show a "Message from subagent" row.
+- Fixed issue where multitask's voice could post a message to a thought it meant to queue or interrupt.
 
 ## 0.1.0 - 2026-10-09
 

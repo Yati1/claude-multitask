@@ -100,6 +100,9 @@ const settling = new Map<string, { name: string; done: Promise<void> }>()
 // agent id, the hand-back its sender (by id or, once named, by name).
 const isAbout = (text: string, id: string, name: string) => text.includes(id) || text.includes(`from="${name}"`)
 
+// How tell delivers a message, given as `how` (or `mode`).
+const TELL_HOWS = ['post', 'queue', 'interrupt']
+
 const TOOL_SPECS = [
   {
     name: 'think',
@@ -121,13 +124,13 @@ const TOOL_SPECS = [
   {
     name: 'tell',
     description:
-      'Give a thought a message. post: it reads it at its next step. queue: held until it finishes its current turn (can be unqueued until then). interrupt: cut what it is doing and hand it this now.',
+      'Give the thought `name` the text `message`, delivered as `how`. post (default): it reads it at its next step. queue: held until it finishes its current turn (can be unqueued until then). interrupt: cut what it is doing and hand it this now.',
     inputSchema: {
       type: 'object',
       properties: {
         name: { type: 'string', description: 'The thought\'s name' },
         message: { type: 'string' },
-        how: { type: 'string', enum: ['post', 'queue', 'interrupt'], description: 'Default post' },
+        how: { type: 'string', enum: TELL_HOWS, description: 'post, queue or interrupt; default post' },
       },
       required: ['name', 'message'],
     },
@@ -186,6 +189,7 @@ function findThought(list: Thought[], ref: string): Thought | undefined {
 
 function unknownThought(list: Thought[], ref: string) {
   const names = list.map(t => t.name).join(', ') || 'none'
+  if (ref === '') return { deny: `Give the thought's name as \`name\`. Thoughts: ${names}.` }
   return { deny: `No thought called "${ref}". Thoughts: ${names}.` }
 }
 
@@ -748,7 +752,10 @@ export const register: Register = (on, options) => {
     if (t === undefined) return unknownThought(list, refOf(e))
     const message = str(e, 'message')
     if (message === '') return { deny: 'Give a message.' }
-    const how = str(e, 'how') || 'post'
+    const how = (str(e, 'how') || str(e, 'mode') || 'post').toLowerCase()
+    if (!TELL_HOWS.includes(how)) {
+      return { deny: `Unknown how "${how}": give \`how\` as post, queue or interrupt. Nothing was sent.` }
+    }
     let isRunning = t.status === 'running'
 
     if (how === 'queue' && isRunning) {
