@@ -6,7 +6,9 @@ import type { Section } from './parse'
 
 // The thread view: a pane of the picked thread's conversation alone (every thread's
 // while none is picked), the person's messages and Claude's replies a section at a
-// time, with no tool rows.
+// time, with no tool rows. It looks as the transcript does: the person's sections in
+// bubbles, replies as text, and each thread's tags and borders drawn by the code that
+// draws the transcript's (register.tsx).
 //
 // It draws from the rows it kept as the session stored them (`session.append`),
 // each with its id and text: the transcript as the person sees it. A compaction
@@ -49,8 +51,25 @@ const PIECE_CHARS = 100_000
 // Sections drawn at once; the newest are drawn.
 const SECTIONS_DRAWN = 200
 const MARK_LENGTH = 80
-// The marker beside the person's sections of no thread.
-const NO_THREAD_COLOR = '#8c8c8c'
+
+// The person's sections are bubbles, as the chat draws their messages. On a page
+// the fill is grey a tenth opaque: a shade lighter than a dark page (#151515 to
+// about #212121, the desktop's own bubble), a shade darker than a light one. The
+// theme's key for the bubble (`userMessageBackground`) is the page's own colour
+// there; the terminal fills it with that key.
+const BUBBLE_FILL = '#8888881a'
+const TERMINAL_BUBBLE_FILL = 'userMessageBackground'
+// A round border is what rounds a Box's corners on a page; drawn clear, the fill
+// alone shows.
+const CLEAR = '#00000000'
+// What a bubble leaves free at its left: the desktop's stop at about 85% of the
+// transcript's width.
+const BUBBLE_ROOM = '15%'
+// Rows between sections, half a line each on a page (about 10px): a message's or
+// reply's own sections as close as the chat's parts of a reply, separate ones as
+// far apart as the chat's messages (about 40px). The terminal leaves a line.
+const PART_GAP = 1
+const MESSAGE_GAP = 4
 
 // Where the store notes how a session's view rows are kept between runs of the app
 // (KeptView); an earlier version kept the rows themselves there.
@@ -354,42 +373,107 @@ export function viewEntries(inputs: ViewInputs, deps: ViewDeps) {
   return { entries, picked }
 }
 
-// How the pane draws: the surface's elements, a thread's tag in its colour, and
-// text as markdown (kept to what a Markdown element takes), as the chat draws them.
+// How the pane draws, as the chat draws the same: the surface's elements; a reply's
+// text as markdown (kept to what a Markdown element takes); the row holding a
+// thread's tag above a person's message, at the side their messages sit; and a
+// reply's part of a thread, in a border of its colour under its tag.
 export type ViewDrawing = {
   ui: ElementTable
-  tag: (thread: Thread) => RenderElement
   markdown: (text: string) => RenderElement
+  tagRow: (thread: Thread) => RenderElement
+  threadPart: (thread: Thread, body: RenderElement) => RenderElement
 }
 
-// One section: who wrote it, its thread's tag, and its text as markdown. The
-// person's sections carry a marker down their left side in their thread's colour;
-// Claude's name is dim, its text unmarked.
-function drawEntry(draw: ViewDrawing, entry: Entry): RenderElement {
+// A text as a drawn string may hold it: no control characters but tab and newline.
+const drawableOf = (text: string) => text.replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, '')
+
+// The desktop's reply to a selected part of a message, as parse.ts's replyQuotesOf
+// reads it: a marker line, then the selection quoted line by line (`> `).
+const REPLY_MARKER = /^<!-- reply(?: [1-9][0-9]?)? -->$/
+const QUOTED = /^>(?: |$)/
+
+// A person's text as their bubble shows it: each selection they replied to, on one
+// line, and their own words, without the markers.
+function bubbleOf(text: string): { quotes: string[]; words: string } {
+  const lines = drawableOf(text).split('\n')
+  const quotes: string[] = []
+  const words: string[] = []
+  for (let at = 0; at < lines.length; at++) {
+    const line = lines[at] ?? ''
+    if (!REPLY_MARKER.test(line)) {
+      words.push(line)
+      continue
+    }
+    const quoted: string[] = []
+    while (QUOTED.test(lines[at + 1] ?? '')) quoted.push((lines[++at] ?? '').replace(/^> ?/, ''))
+    const quote = quoted.join(' ').replace(/\s+/g, ' ').trim()
+    if (quote !== '') quotes.push(quote)
+  }
+  return { quotes, words: words.join('\n').trim() }
+}
+
+// A person's section as the chat's bubble: their words as typed (the chat draws no
+// markdown in them), under a dim line for each selection they replied to. On a
+// page it sits at the right, rounded and a shade off the page; on the terminal it
+// spans the pane in the theme's fill.
+function drawBubble(draw: ViewDrawing, isPage: boolean, text: string): RenderElement {
   const { Box, Text } = draw.ui
-  const isPerson = entry.role === 'user'
-  const head = (
-    <Box flexDirection="row" columnGap={1} alignItems="center">
-      {isPerson ? <Text bold>you</Text> : <Text bold dimColor>Claude</Text>}
-      {entry.thread !== undefined && draw.tag(entry.thread)}
-    </Box>
-  )
-  const body = draw.markdown(entry.text)
-  if (!isPerson) {
+  const { quotes, words } = bubbleOf(text)
+  const body = [
+    ...quotes.map(quote => (
+      <Box flexDirection="row" columnGap={1}>
+        <Text dimColor>│</Text>
+        <Text dimColor wrap="truncate-end">
+          {quote}
+        </Text>
+      </Box>
+    )),
+    words !== '' && <Text>{words}</Text>,
+  ]
+  if (!isPage) {
     return (
-      <Box flexDirection="column">
-        {head}
+      <Box flexDirection="column" backgroundColor={TERMINAL_BUBBLE_FILL} paddingX={1}>
         {body}
       </Box>
     )
   }
   return (
-    <Box flexDirection="row" columnGap={1}>
-      <Box width={1} flexShrink={0} backgroundColor={entry.thread?.color ?? NO_THREAD_COLOR} />
-      <Box flexDirection="column" flexGrow={1} flexShrink={1}>
-        {head}
+    <Box flexDirection="row" justifyContent="flex-end">
+      <Box minWidth={BUBBLE_ROOM} flexShrink={0} />
+      <Box
+        flexDirection="column"
+        flexShrink={1}
+        minWidth={0}
+        borderStyle="round"
+        borderColor={CLEAR}
+        backgroundColor={BUBBLE_FILL}
+        paddingX={2}
+        paddingY={1}
+      >
         {body}
       </Box>
+    </Box>
+  )
+}
+
+// One section, `gap` rows below the one before, its thread marked as the chat marks
+// it. Claude's is its text as markdown, as the chat draws a reply's, in its thread's
+// border under its tag; the person's a bubble under its thread's tag.
+function drawEntry(draw: ViewDrawing, isPage: boolean, entry: Entry, gap: number): RenderElement {
+  const { Box } = draw.ui
+  const { thread } = entry
+  if (entry.role === 'assistant') {
+    const body = draw.markdown(entry.text)
+    return (
+      <Box flexDirection="column" marginTop={gap}>
+        {thread === undefined ? body : draw.threadPart(thread, body)}
+      </Box>
+    )
+  }
+  return (
+    <Box flexDirection="column" marginTop={gap}>
+      {thread !== undefined && draw.tagRow(thread)}
+      {drawBubble(draw, isPage, entry.text)}
     </Box>
   )
 }
@@ -401,13 +485,22 @@ export function drawView(draw: ViewDrawing, inputs: ViewInputs, deps: ViewDeps):
   const shown = entries.slice(-SECTIONS_DRAWN)
   const hidden = entries.length - shown.length
   const names = picked.map(t => t.name).join(', ')
+  // An app that draws Svg lays the view out as a page (the desktop, the phone, an
+  // editor), a row there half a line; the terminal lays it out in cells.
+  const isPage = 'Svg' in draw.ui
+  const gapBefore = (entry: Entry, i: number) => {
+    const before = shown[i - 1]
+    if (before === undefined) return 0
+    if (!isPage) return 1
+    return entry.id !== undefined && entry.id === before.id ? PART_GAP : MESSAGE_GAP
+  }
 
   return (
     <Box flexDirection="column" rowGap={1}>
       {picked.length === 0 && <Text dimColor>All threads. Pick a thread above the prompt to read it alone.</Text>}
       {hidden > 0 && <Text dimColor>{`${hidden} earlier sections not shown`}</Text>}
       {shown.length === 0 && <Text dimColor>{picked.length === 0 ? 'Nothing here yet.' : `Nothing in ${names} yet.`}</Text>}
-      {shown.map(entry => drawEntry(draw, entry))}
+      {shown.length > 0 && <Box flexDirection="column">{shown.map((entry, i) => drawEntry(draw, isPage, entry, gapBefore(entry, i)))}</Box>}
     </Box>
   )
 }

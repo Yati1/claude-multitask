@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { BoxProps, Elements, EngineInterface, Register, RenderElement } from 'claude-code'
+import type { BoxProps, Elements, EngineInterface, Register, RenderElement, RenderSurface } from 'claude-code'
 
 import type { Brief, Thread, ViewRow } from '../types'
 import {
@@ -746,6 +746,51 @@ function drawTag(
   const { Svg } = $.ui.resolve(e)
   const tag = tagPicture(thread.name, thread.color, align, inset)
   return <Svg source={tag.source} alt={thread.name} width={tag.width} height={tag.height} />
+}
+
+// Whether the surface puts the person's messages, and so their tags, on the right.
+const isOnRightOf = (surface: RenderSurface) => surface === 'desktop' || surface === 'mobile'
+
+// The row of thread tags above a person's message, at the side the surface puts the
+// message; `side` ("+ thread", or an open move picker) on the side away from the
+// edge the tags keep to, so showing it moves none. The thread view draws a person's
+// section's tag so too.
+function drawTagRow(
+  $: EngineInterface,
+  e: Parameters<EngineInterface['ui']['resolve']>[0],
+  tags: RenderElement[],
+  side?: RenderElement,
+  fit: BoxProps = {},
+): RenderElement {
+  const { Box } = $.ui.resolve(e)
+  const isOnRight = isOnRightOf(e.surface)
+  return (
+    <Box flexDirection="row" columnGap={2} justifyContent={isOnRight ? 'flex-end' : 'flex-start'} {...fit}>
+      {isOnRight && side}
+      {tags}
+      {!isOnRight && side}
+    </Box>
+  )
+}
+
+// A reply's part of a thread: in a round border of the thread's colour, the same
+// cells off it on every side (REPLY_BORDER_PADDING), `head` (its tag) at the top.
+// The thread view draws a reply's section so too.
+function drawThreadPart(
+  $: EngineInterface,
+  e: Parameters<EngineInterface['ui']['resolve']>[0],
+  thread: { color: string },
+  head: RenderElement,
+  body: RenderElement | undefined,
+): RenderElement {
+  const { Box } = $.ui.resolve(e)
+  const padding = e.surface === 'desktop' ? { padding: REPLY_BORDER_PADDING } : { paddingX: REPLY_BORDER_PADDING }
+  return (
+    <Box flexDirection="column" borderStyle="round" borderColor={thread.color} {...padding}>
+      {head}
+      {body}
+    </Box>
+  )
 }
 
 // A Markdown element takes at most this many characters.
@@ -1654,15 +1699,18 @@ export const register: Register = on => {
     return result
   })
 
-  // The thread view: the picked thread's sections, each tagged in its thread's
-  // colour and drawn as markdown, as the chat draws them. No Client: a pane of
-  // many rows must not add to the Clients every overlay on the desktop shares.
+  // The thread view: the picked thread's sections, their tags and a reply's
+  // borders drawn by the code that draws the chat's. No Client: a pane of many
+  // rows must not add to the Clients every overlay on the desktop shares.
   on('ui.render', { component: 'Pane', requestId: VIEW }, async ($, e) =>
     drawView(
       {
         ui: $.ui.resolve(e),
-        tag: thread => drawTag($, e, thread, 'start'),
         markdown: text => drawMarkdown($, e, text),
+        // the chat's tags without its move button: the picker it opens is the chat's row's
+        tagRow: thread => drawTagRow($, e, [drawTag($, e, thread, isOnRightOf(e.surface) ? 'end' : 'start')]),
+        // its text is markdown, so its tag is not inset, as on the chat's markdown parts
+        threadPart: (thread, body) => drawThreadPart($, e, thread, drawTag($, e, thread, 'start'), body),
       },
       await viewInputs($),
       viewDeps,
@@ -1781,8 +1829,7 @@ export const register: Register = on => {
     for (const t of tags) glimpses.set(`${e.requestId}|${keyOf(t.name)}`, `their message "${glimpseOf(text)}"`)
     if (hasPlain) glimpses.set(`${e.requestId}|`, `their message "${glimpseOf(text)}"`)
     // Where the surface puts the person's messages on the right, the tags go there too.
-    const isOnRight = e.surface === 'desktop' || e.surface === 'mobile'
-    const align = isOnRight ? 'end' : 'start'
+    const align = isOnRightOf(e.surface) ? 'end' : 'start'
     // "+ thread" shows in the tags' row, in the flow: placed over the message instead,
     // it lands on the bubble wherever no tag holds a row above it.
     const add = hasPlain && canAdd ? drawAddThread($, e, align) : undefined
@@ -1794,14 +1841,8 @@ export const register: Register = on => {
 
     return (
       <Box key="message" flexDirection="column">
-        {(tags.length > 0 || side !== undefined) && (
-          <Box flexDirection="row" columnGap={2} justifyContent={isOnRight ? 'flex-end' : 'flex-start'} {...rowFit}>
-            {/* on the side away from the edge the tags keep to, so showing it moves none */}
-            {isOnRight && side}
-            {tags.map(t => drawMovableTag($, e, t, align))}
-            {!isOnRight && side}
-          </Box>
-        )}
+        {(tags.length > 0 || side !== undefined) &&
+          drawTagRow($, e, tags.map(t => drawMovableTag($, e, t, align)), side, rowFit)}
         {message}
       </Box>
     )
@@ -1839,9 +1880,6 @@ export const register: Register = on => {
       const isUntouched = gone.length === 0 || text.trim() === e.props.text.trim() || text === ''
       return next(isUntouched ? e : { ...e, props: { ...e.props, text } })
     }
-    // A thread's border keeps its part the same cells off on every side (REPLY_BORDER_PADDING).
-    const borderPadding =
-      e.surface === 'desktop' ? { padding: REPLY_BORDER_PADDING } : { paddingX: REPLY_BORDER_PADDING }
 
     const { Box } = $.ui.resolve(e)
     const shown = sections
@@ -1892,20 +1930,16 @@ export const register: Register = on => {
       // On the desktop the tag moves in to meet the engine's prose; Markdown parts have no inset.
       const tagInset = e.surface === 'desktop' && isDrawnByEngine ? REPLY_TAG_INSET : 0
       const tag = isFirstOfPlace ? drawMovableTag($, e, thread, 'start', tagInset) : drawTag($, e, thread, 'start', tagInset)
-      parts.push(
-        <Box flexDirection="column" borderStyle="round" borderColor={thread.color} {...borderPadding}>
-          {/* an open picker sits beside the tag it opened from */}
-          {isPicking ? (
-            <Box flexDirection="row" flexWrap="wrap" columnGap={2} alignItems="center">
-              {tag}
-              {drawPicker($, e, list, place, 'start', isNaming)}
-            </Box>
-          ) : (
-            tag
-          )}
-          {body}
-        </Box>,
+      // an open picker sits beside the tag it opened from
+      const head = isPicking ? (
+        <Box flexDirection="row" flexWrap="wrap" columnGap={2} alignItems="center">
+          {tag}
+          {drawPicker($, e, list, place, 'start', isNaming)}
+        </Box>
+      ) : (
+        tag
       )
+      parts.push(drawThreadPart($, e, thread, head, body))
     }
     if (parts.length === 0) return <Box display="none" />
     return <Box flexDirection="column" rowGap={1}>{parts}</Box>

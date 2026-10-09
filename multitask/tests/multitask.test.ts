@@ -865,6 +865,17 @@ test("the voice's thoughts start without a second permission ask; other agents a
   expect(other.decision).toBe('ask')
 })
 
+test("the model's own message to a thought is still asked; only the mod's own sends to its thoughts skip the ask", async ($, on) => {
+  engine(on)
+  await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
+  await $.command.run({ command: 'multitask', args: '', origin: { kind: 'composer' }, presentation: {} as never })
+  await $.tool.call({ tool: 'mcp__multitask__think', tool_use_id: 't1', name: 'auth bug', task: 'Find why login fails' })
+  // The engine's `$` checks as the model's own call does; by the thought's id or name, it is asked as before.
+  for (const to of ['agent-1', 'auth-bug']) {
+    expect((await $.tool.check({ tool: 'SendMessage', input: { to, message: 'hi' } })).decision).toBe('ask')
+  }
+})
+
 test('the voice names each thought by its task: kebab-case, made unique, from the task when it gives none', async ($, on) => {
   const names = ['fix-login-expiry', 'fix-login-expiry-2', 'find-why-login', 'cafe-creme']
   const seen = engine(

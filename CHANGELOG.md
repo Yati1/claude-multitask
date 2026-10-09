@@ -14,13 +14,14 @@ Notable changes to the thread-chat, multitask and react mods. The format is base
 
 - Changed thread-chat's agent to pick the right threads for its reply, even for unheaded messages.
 - Changed thread-chat's agent-threads switch and multitask's switch to sit in the `mods` menu.
-- Changed thread-chat's thread view to show the picked thread alone, or every thread with none picked.
+- Changed thread-chat's thread view to look like the chat and show the picked thread, or every thread.
 
 ### Fixed
 
 - Fixed issue where a finished multitask thought could still show a "Message from subagent" row.
 - Fixed issue where multitask's voice could post a message to a thought it meant to queue or interrupt.
 - Fixed issue where multitask's `tell` showed as a success when its message did not reach the thought.
+- Fixed issue where multitask's messages to thoughts were never delivered in auto mode.
 
 ### Removed
 
