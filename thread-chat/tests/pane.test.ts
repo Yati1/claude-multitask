@@ -39,6 +39,8 @@ function engine(on: On, store: Record<string, unknown> = {}, seed: Record<string
   const bytes: Record<string, string> = {}
   const writes: string[] = []
   const runs: { argv: readonly string[]; env: Record<string, string> }[] = []
+  // the moves the plugin's scroll hook passes on
+  const scrolls: { offset: number }[] = []
   mock.env(on, { CLAUDE_CONFIG_DIR: '/config' })
   // the engine hands a path on resolved (on Windows, `C:\config\...`)
   const pathOf = (path: string) => path.replace(/\\/g, '/').replace(/^[A-Za-z]:/, '')
@@ -97,7 +99,10 @@ function engine(on: On, store: Record<string, unknown> = {}, seed: Record<string
     opened.push(e.id)
     return { value: { isPlaced: true as const } }
   })
-  on('ui.scroll', () => ({}))
+  on('ui.scroll', ($, e) => {
+    scrolls.push(e)
+    return {}
+  })
   on('turn.complete', () => ({ text: '' }))
   on('session.messages', () => ({ value: [...transcript] }))
   // A row is kept in the transcript; the kit has no store beneath to keep it in, so
@@ -114,7 +119,7 @@ function engine(on: On, store: Record<string, unknown> = {}, seed: Record<string
     }
     return next(e)
   })
-  return { opened, transcript, kept, files, bytes, writes, runs }
+  return { opened, transcript, kept, files, bytes, writes, runs, scrolls }
 }
 
 // The rows a session's files hold, as the store notes them.
@@ -890,6 +895,46 @@ test('the view is taken back where the person left it on opening and on coming b
   await drawAt(0)
   await advance()
   expect(moves).toBe(4)
+})
+
+// (The desktop reports the move it makes as it draws a shorter view as the person's;
+// the engine, keeping to the end, hands it on from the new end. The test holds each wait
+// the plugin asks the clock for until it advances. The kit answers none of the plugin's
+// own scrolls, so its moves to the end go unseen here.)
+test('the view at its end stays there as the desktop draws it shorter', async ($, on) => {
+  const { scrolls } = engine(on)
+  let due: (() => void)[] = []
+  on('clock.after', () => new Promise(resolve => due.push(() => resolve({ value: undefined }))))
+  const advance = async () => {
+    const now = due
+    due = []
+    for (const end of now) end()
+    await new Promise<void>(resolve => later(resolve, 10))
+  }
+  await flipThreads($)
+  const { person, reply, call } = storer($)
+  // a window of 20 rows over 60, its end at row 40, moved by the desktop or the person:
+  // where the plugin passes the move on to
+  const moveBy = async (by: number) => {
+    await $.ui.scroll({ component: 'Pane', requestId: 'thread-view', offset: 40 + by, by, bodyRows: 20, contentRows: 60, origin: { kind: 'person' } })
+    return scrolls.at(-1)?.offset
+  }
+
+  // a reply a tool call follows is hidden: the desktop's window, pulled up, stays at the end
+  await person('p1', 'hello')
+  await reply('a1', 'Looking into it:')
+  await call('a2')
+  expect(await moveBy(-6)).toBe(40)
+  // the person's move after it is theirs
+  expect(await moveBy(-10)).toBe(30)
+  // scrolled up, the view stays where the person put it as it changes
+  await reply('a3', 'Found it.')
+  expect(await moveBy(-6)).toBe(34)
+  // back at the end, once a change is drawn, a move up is the person's
+  await moveBy(0)
+  await reply('a4', 'Fixed.')
+  await advance()
+  expect(await moveBy(-6)).toBe(34)
 })
 
 // A PNG's first bytes, base64: its signature and the header naming its size.

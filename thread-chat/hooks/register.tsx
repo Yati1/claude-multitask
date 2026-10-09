@@ -1095,6 +1095,16 @@ let personMoves = 0
 // its rows, and for a move of the person's it drew for to be seen first.
 const VIEW_SETTLE_MS = 100
 
+// How long a surface may take to draw a change to what the thread view shows, and to
+// lay out its markdown and pictures: a move it reports meanwhile may be its own.
+const VIEW_REDRAW_MS = 500
+// The plugin's keys the thread view is drawn from (viewInputs, and the pictures read).
+const VIEW_KEYS: ReadonlySet<string> = new Set(['viewRows', 'picturesRead', 'threads', 'aliases', 'snaps', 'sentTo', 'moved'])
+// Changes to what the thread view shows so far; the one the surface may yet report a
+// move of its own for as it draws it, until the person's next move or VIEW_REDRAW_MS.
+let viewChanges = 0
+let viewChangeUndrawn: number | undefined
+
 // Keeps the thread view's window on its newest rows as they come, until the person scrolls.
 async function pinViewToEnd($: EngineInterface) {
   try {
@@ -1103,6 +1113,27 @@ async function pinViewToEnd($: EngineInterface) {
     return
   }
 }
+
+// A change to what the thread view shows. At its end, a shorter tree (a reply hidden
+// once a tool call follows it, a picture's card made smaller) pulls the desktop's window
+// up with it, which it reports as the person's move: the view's scroll hook keeps it
+// at its end (isRedrawMove). Once drawn, a view at its end is taken there again: a
+// surface that stopped keeping to its end, or went there before its rows were laid out,
+// leaves it short.
+function noteViewChange($: EngineInterface) {
+  const change = ++viewChanges
+  viewChangeUndrawn = change
+  $.clock.after(VIEW_REDRAW_MS, () => {
+    if (viewChangeUndrawn === change) viewChangeUndrawn = undefined
+    if (viewChanges === change && viewPlace === 'end') void pinViewToEnd($)
+  })
+}
+
+// Whether a move reported as the person's is the surface's own as it draws a change at
+// the view's end: up, the first since the change, while it is drawn, and by no wheel
+// (whose pointer a terminal reports).
+const isRedrawMove = (e: { origin: { kind: string }; by: number; pointer?: unknown }) =>
+  e.origin.kind === 'person' && e.pointer === undefined && viewChangeUndrawn !== undefined && viewPlace === 'end' && e.by < 0
 
 // Takes the thread view's window to a row: a move to its top that its scroll hook
 // carries on to the row (a plugin names no row to scroll to).
@@ -1748,16 +1779,31 @@ export const register: Register = on => {
 
   // Where the thread view's window was last moved to, by the person or by this plugin:
   // at or near its end, new messages keep it there. This plugin's move back to a row
-  // goes to that row; a move of the person's drops any still to come.
+  // goes to that row; a move of the person's drops any still to come. The surface's own
+  // move as it draws a shorter view at its end goes to the end: the engine, keeping to
+  // the end, would take it on from the new end, as far again above it, and stop there.
   on('ui.scroll', { component: 'Pane', requestId: VIEW }, async ($, e, next) => {
     const isMine = e.origin.kind === 'plugin' && e.origin.name === $.plugin.name
-    const move = isMine && viewReturning !== undefined && e.offset === 0 ? { ...e, offset: viewReturning } : e
-    if (e.origin.kind === 'person') {
+    const isRedraw = isRedrawMove(e)
+    const move = isRedraw
+      ? { ...e, offset: Math.max(0, e.contentRows - e.bodyRows) }
+      : isMine && viewReturning !== undefined && e.offset === 0
+        ? { ...e, offset: viewReturning }
+        : e
+    if (e.origin.kind === 'person') viewChangeUndrawn = undefined
+    if (e.origin.kind === 'person' && !isRedraw) {
       personMoves += 1
       viewReturn = undefined
     }
     const result = await next(move)
     if (result.deny === undefined) viewPlace = viewPlaceOf(move)
+    return result
+  })
+
+  // What the thread view shows changed: kept at its end as a surface draws it.
+  on('state.set', { plugin: 'thread-chat' }, async ($, e, next) => {
+    const result = await next(e)
+    if (VIEW_KEYS.has(e.key)) noteViewChange($)
     return result
   })
 
