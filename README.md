@@ -25,21 +25,22 @@ Install either or both.
 
 ## Use
 
-A button named for the installed mods (`Threads, tasks & emoji` with all three) opens a menu of switches for the chat, one for each mod. In the desktop app the button sits below the prompt, beside the mode and model, and the menu opens just above the prompt; click the button again, or pick a switch, to close it. In the terminal the button is at the right end of the band above the prompt.
+Multitask and thread-chat each have a dropdown in the band above the prompt with their switches for the chat. The mobile app shows no dropdowns: use the commands there.
 
 ### Multitask
 
-- `/multitask`, or Multitask in the menu, turns Multitask on in a chat (run it again to turn it off). The chat becomes the voice and hands all work to thoughts.
+- `/multitask` turns Multitask on in a chat (run it again to turn it off). The chat becomes the voice and hands all work to thoughts.
+- Multitask's dropdown reads `Multitask` while it is on and `Focus` while it is off; pick the other to switch.
 - `/thoughts`, or the `thoughts` button above the prompt, opens the Thoughts pane: what each thought is doing, its report, and `stop`.
 - The `voiceEffort` setting (Voice effort, in `/config`) sets how hard the voice thinks: `low` (default), `medium`, `high`, or `session` to match the session. Thoughts keep the session's setting.
 
 ### Threads
 
-- `/threads`, or Threads in the menu, turns threads on in a chat (run it again to turn them off).
+- `/threads`, or `Threads: off` in the `Threads` dropdown, turns threads on in a chat (run it again to turn them off).
 - A `# name` heading in a message starts a thread, or replies to it if it exists. Close or abbreviated names find the existing thread. The agent replies under the same headings.
 - `#+name` starts a new thread even when an existing one is close.
 - To put a message in a thread, hover it for `+ thread` (desktop app); to move it to another, press `▾` beside its thread tag.
 - Pills above the prompt filter the chat to the threads you pick. With one picked, messages without a heading go to it.
 - `view` above the prompt, or `/thread-view`, opens the thread view: the picked threads' messages on their own, in a pane (all threads when none is picked).
 - `/merge-threads <thread> into <thread>` merges two threads.
-- Agent may start threads, in the menu, lets the agent start threads itself.
+- `Agent may start threads`, in the `Threads` dropdown, lets the agent start threads itself.

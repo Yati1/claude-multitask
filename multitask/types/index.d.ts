@@ -47,9 +47,6 @@ declare module 'claude-code' {
       // thoughts whose last report the person opened in the Thoughts pane to read whole,
       // instead of its first line; a thought leaves it when it starts new work
       openReports: string[]
-      // whether the band's `mods` menu is open off the desktop, where `mods` opens and closes
-      // it; read only while this mod lays the band out
-      menuOpen: boolean
     }
   }
 }

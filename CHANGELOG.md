@@ -7,12 +7,13 @@ Notable changes to the thread-chat, multitask and react mods. The format is base
 ### Added
 
 - Added a react mod (`/react`) so the agent can acknowledge a message with an emoji reaction, not a reply.
-- Added a menu of chat switches to thread-chat, multitask and react, opened by a button named for them.
+- Added a `Threads` dropdown above the prompt to thread-chat that turns threads on or off.
 
 ### Changed
 
 - Changed thread-chat's agent to pick the right threads for its reply, even for unheaded messages.
-- Changed thread-chat's agent-threads switch and multitask's switch to sit in the menu of chat switches.
+- Changed thread-chat's agent-threads switch to sit in its `Threads` dropdown.
+- Changed multitask's switch to a dropdown above the prompt that reads `Multitask` or `Focus`.
 - Changed thread-chat's thread view to match the chat, with its bubbles, images, thread tags and borders.
 - Changed thread-chat's thread view to show only your messages and each turn's final reply.
 - Changed thread-chat's thread view to stay at the bottom as messages arrive, unless scrolled up.

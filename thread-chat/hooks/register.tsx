@@ -39,8 +39,6 @@ import {
   withViewRow,
 } from './pane'
 import type { ViewDeps, ViewInputs } from './pane'
-import { MENU_BUTTON, MENU_SWITCH, drawBand, drawMenuButton } from './menu'
-import type { MenuSwitch, ModName } from './menu'
 
 const isOn = atom({ plugin: 'thread-chat', key: 'isOn' } as const, false)
 const threads = atom({ plugin: 'thread-chat', key: 'threads' } as const, [])
@@ -56,14 +54,15 @@ const naming = atom({ plugin: 'thread-chat', key: 'naming' } as const, false)
 const untold = atom({ plugin: 'thread-chat', key: 'untold' } as const, [])
 const briefed = atom({ plugin: 'thread-chat', key: 'briefed' } as const, null)
 const viewRows = atom({ plugin: 'thread-chat', key: 'viewRows' } as const, [])
-const menuOpen = atom({ plugin: 'thread-chat', key: 'menuOpen' } as const, false)
 
 const CREATE_TOOL = 'mcp__thread-chat__create_thread'
-// The switches in the band's `mods` menu: threads on or off, and whether the agent may start them.
-const THREADS_SWITCH = 'mods-menu:threads'
-const AGENT_SWITCH = 'mods-menu:agent-threads'
-// Thread-chat's word in the label of the menu's button.
-const MENU_NAME: ModName = { rank: 10, word: 'threads' }
+// Thread-chat's dropdown in the band. Its face reads "Threads", its first option kept
+// selected; below it a row per switch, saying whether it is on, which a pick flips:
+// threads on or off, and, while on, whether the agent may start them.
+const DROPDOWN = 'threads'
+const FACE = 'face'
+const THREADS_OPTION = 'threads'
+const AGENT_OPTION = 'agent-threads'
 // The thread view's pane id, which is also its command's name and its band button's key.
 const VIEW = 'thread-view'
 const VIEW_TITLE = 'Thread view'
@@ -139,6 +138,13 @@ async function flipThreads($: EngineInterface): Promise<boolean> {
   if (now && (await read($, agentMayCreate))) await offerCreateTool($)
   await save($)
   return now
+}
+
+// Flips the switch picked in the band's dropdown. The face, or the agent's switch while
+// threads are off, leaves things be.
+async function pickSwitch($: EngineInterface, value: string) {
+  if (value === THREADS_OPTION) await flipThreads($)
+  else if (value === AGENT_OPTION && (await read($, isOn))) await flipAgentSwitch($)
 }
 
 // What a heading means, by one rule for sending and drawing alike: `+name` a new
@@ -1730,50 +1736,43 @@ export const register: Register = on => {
     return <Box display="none" />
   })
 
-  // The band above the prompt, shared with the other mods of this repository through
-  // ./menu.tsx: while threads are on, their pills and `view`; always, the switches in its
-  // `mods` menu that turn threads on and off and, while on, let the agent start them.
+  // The band above the prompt: thread-chat's dropdown, then, while threads are on, their
+  // pills and `view`, taking the room left and giving way first. They sit before what
+  // other mods draw there, which keeps its width. The mobile app draws no dropdown:
+  // /threads is there.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const below = await next(e)
     if (e.props.hasSurvey) return below
 
     const on_ = await read($, isOn)
-    const switches: MenuSwitch[] = [{ rank: 10, key: THREADS_SWITCH, label: 'Threads', isOn: on_, onPress: () => flipThreads($) }]
-    if (on_) {
-      const mayCreate = await read($, agentMayCreate)
-      switches.push({
-        rank: 11,
-        key: AGENT_SWITCH,
-        label: 'Agent may start threads',
-        isOn: mayCreate,
-        onPress: () => flipAgentSwitch($),
-      })
+    const { Box } = $.ui.resolve(e)
+    let dropdown: RenderElement | undefined
+    if (e.surface !== 'mobile') {
+      const { Select } = $.ui.resolve(e)
+      const said = (isSet: boolean) => (isSet ? 'on' : 'off')
+      const options = [
+        { value: FACE, label: 'Threads' },
+        { value: THREADS_OPTION, label: `Threads: ${said(on_)}` },
+        ...(on_ ? [{ value: AGENT_OPTION, label: `Agent may start threads: ${said(await read($, agentMayCreate))}` }] : []),
+      ]
+      dropdown = <Select key={DROPDOWN} options={options} value={FACE} onSelect={value => pickSwitch($, value)} />
     }
-    return drawBand(below, {
-      ui: $.ui.resolve(e),
-      surface: e.surface,
-      controls: on_ ? { rank: 10, name: 'thread-chat', element: await drawThreadControls($, e), grows: true } : undefined,
-      switches,
-      name: MENU_NAME,
-      isOpen: () => read($, menuOpen),
-    })
-  })
+    if (dropdown === undefined && !on_) return below
 
-  // The menu's button, below the input on the desktop, shared as the band is. Every mod
-  // hears its press, whichever drew it, so the one laying out the band agrees with it; on
-  // the desktop a switch picked closes the menu, as a model picked closes the model picker.
-  on('ui.render', { component: 'SessionMode' }, async ($, e, next) => {
-    const below = await next(e)
-    if (e.surface !== 'desktop') return below
-    return drawMenuButton(below, $.ui.resolve(e), MENU_NAME, await read($, menuOpen))
-  })
-  on('ui.press', { element: MENU_BUTTON }, async ($, e, next) => {
-    await update($, menuOpen, open => !open)
-    return next(e)
-  })
-  on('ui.press', { element: MENU_SWITCH, surface: 'desktop' }, async ($, e, next) => {
-    const result = await next(e)
-    await update($, menuOpen, () => false)
-    return result
+    const mine = (
+      <Box flexDirection="row" alignItems="center" columnGap={1} flexGrow={1} flexShrink={1} minWidth={0}>
+        {dropdown !== undefined && <Box flexShrink={0}>{dropdown}</Box>}
+        {on_ && (await drawThreadControls($, e))}
+      </Box>
+    )
+    if (below.type === 'engine') return mine
+    return (
+      <Box flexDirection="row" alignItems="center" columnGap={2}>
+        {mine}
+        <Box flexDirection="row" alignItems="center" flexShrink={0}>
+          {below}
+        </Box>
+      </Box>
+    )
   })
 }
