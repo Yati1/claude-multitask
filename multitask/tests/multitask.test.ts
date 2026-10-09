@@ -13,7 +13,7 @@ import {
   marksOf,
   relayNames,
 } from '../hooks/prompts'
-import { MENU, MENU_BUTTON, drawBand } from '../hooks/menu'
+import { MENU, MENU_BUTTON, drawBand, drawMenuButton } from '../hooks/menu'
 
 type Seen = {
   prompts: string[]
@@ -111,6 +111,14 @@ const SWITCH = 'mods-menu:multitask'
 const switchOf = async (band: { find: (query: { key: string }) => Promise<{ props: Record<string, unknown> } | undefined> }) =>
   (await band.find({ key: SWITCH }))?.props.label
 
+// The menu's button below the input on the desktop, pressed: it opens the menu, which the
+// desktop draws only while open and closes as a switch is picked, or closes it.
+async function pressMenuButton($: Engine) {
+  const mode = await $.ui.mount({ plugin: 'multitask', surface: 'desktop', component: 'SessionMode', props: { modes: [] } })
+  await mode.press({ key: MENU_BUTTON })
+  await mode.unmount()
+}
+
 const BAND = {
   component: 'AbovePrompt',
   props: {
@@ -180,6 +188,7 @@ test('a session that never switches Multitask on is left as it is: no band, no t
   expect(registered).toEqual([])
   await $.prompt.submit({ text: 'hello', origin: { kind: 'composer' }, wait: false })
   expect(seen.prompts).toEqual(['hello'])
+  await pressMenuButton($)
   const band = await $.ui.mount({ plugin: 'multitask', surface: 'desktop', ...BAND })
   expect(await band.find({ key: 'open-thoughts' })).toBeUndefined()
   expect(await switchOf(band)).toBe('off')
@@ -352,10 +361,12 @@ test('the voice is refused work, and its thoughts relay, queue and unqueue', asy
   expect(off.deny).toBeDefined()
 
   // Off with no thoughts the band has no `thoughts`, only the menu's switch: it turns Multitask on.
+  await pressMenuButton($)
   const band = await $.ui.mount({ plugin: 'multitask', surface: 'desktop', ...BAND })
   expect(await band.find({ key: 'open-thoughts' })).toBeUndefined()
   expect(await switchOf(band)).toBe('off')
   await band.press({ key: SWITCH })
+  await pressMenuButton($)
   await band.redraw()
   expect(await band.find({ key: 'open-thoughts' })).toBeDefined()
   expect(await switchOf(band)).toBe('on')
@@ -427,6 +438,7 @@ test('the voice is refused work, and its thoughts relay, queue and unqueue', asy
 
   // The menu's switch turns Multitask off; `thoughts` stays while the thought lives.
   await band.press({ key: SWITCH })
+  await pressMenuButton($)
   await band.redraw()
   expect(await switchOf(band)).toBe('off')
   expect(await band.find({ key: 'open-thoughts' })).toBeDefined()
@@ -513,6 +525,7 @@ test('a restarted session takes up the switch it kept, with the voice\'s tools a
   const seen = engine(on, undefined, { 'session:session-1': kept(true, 1, []) })
   expect(await isOnAtStart($, seen)).toBe(true)
   expect(registered).toEqual(['think', 'tell', 'unqueue', 'stop', 'thoughts'])
+  await pressMenuButton($)
   const band = await $.ui.mount({ plugin: 'multitask', surface: 'desktop', ...BAND })
   expect(await switchOf(band)).toBe('on')
 })
@@ -1131,35 +1144,49 @@ test('the band shares one row with another mod: its controls keep their width, n
   }
 })
 
-// The other two mods, thread-chat and react, drawn beneath through the same band as they
-// draw it: each its switch, thread-chat its pills too.
+// The other two mods, thread-chat and react, drawn beneath through the same band and
+// button as they draw them: each its switch and its name, thread-chat its pills too,
+// their menu open.
 function otherMods(on: On) {
   on('ui.render', { component: 'AbovePrompt' }, async ($, e) => {
     const ui = $.ui.resolve(e)
-    const parts = (name: string, rank: number, label: string, control?: RenderElement) => ({
+    const parts = (name: string, rank: number, word: string, label: string, control?: RenderElement) => ({
       ui,
       surface: e.surface,
+      name: { rank, word },
       controls: control === undefined ? undefined : { rank, name, element: control, grows: true },
       switches: [{ rank, key: `mods-menu:${name}`, label, isOn: false, onPress: () => undefined }],
-      isOpen: async () => false,
-      onToggle: () => undefined,
+      isOpen: async () => true,
     })
-    const react = await drawBand({ type: 'engine', ref: 0 }, parts('react', 30, 'Reactions'))
-    return drawBand(react, parts('threads', 10, 'Threads', ui.Text({ children: ['pills'] })))
+    const react = await drawBand({ type: 'engine', ref: 0 }, parts('react', 30, 'emoji', 'Reactions'))
+    return drawBand(react, parts('threads', 10, 'threads', 'Threads', ui.Text({ children: ['pills'] })))
+  })
+  on('ui.render', { component: 'SessionMode' }, async ($, e, next) => {
+    if (e.surface !== 'desktop') return next(e)
+    const ui = $.ui.resolve(e)
+    const react = drawMenuButton({ type: 'engine', ref: 0 }, ui, { rank: 30, word: 'emoji' }, true)
+    return drawMenuButton(react, ui, { rank: 10, word: 'threads' }, true)
   })
 }
 
-test('with the other mods drawn beneath, or alone, the band holds one mods menu, every mod its switch in it', async ($, on) => {
+test('with the other mods drawn beneath, or alone, one button names every mod, and the menu holds every switch', async ($, on) => {
   otherMods(on)
   engine(on)
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
   await $.command.run({ command: 'multitask', args: '', origin: { kind: 'composer' }, presentation: {} as never })
 
+  // on the desktop the button is below the input, multitask's name in its place
+  const mode = await $.ui.mount({ plugin: 'multitask', surface: 'desktop', component: 'SessionMode', props: { modes: [] } })
+  const buttons = await mode.findAll({ key: MENU_BUTTON })
+  expect(buttons).toHaveLength(1)
+  expect(buttons[0]?.props.label).toBe('Threads, tasks & emoji')
+  await mode.unmount()
+
   for (const surface of ['desktop', 'terminal'] as const) {
     const band = await $.ui.mount({ plugin: 'multitask', surface, ...BAND })
     const tree = await band.drawn()
     expect(await band.findAll({ key: MENU })).toHaveLength(1)
-    expect(await band.findAll({ key: MENU_BUTTON })).toHaveLength(1)
+    expect(await band.findAll({ key: MENU_BUTTON })).toHaveLength(surface === 'desktop' ? 0 : 1)
     const switches = (await band.findAll({ type: 'Button' })).map(b => b.key ?? '').filter(key => key.startsWith('mods-menu:'))
     expect(switches).toEqual(['mods-menu:threads', SWITCH, 'mods-menu:react'])
     // the pills first and giving way, then `thoughts` keeping its width, then the menu
@@ -1173,11 +1200,12 @@ test('with the other mods drawn beneath, or alone, the band holds one mods menu,
   }
 })
 
-test('off the desktop, mods opens and closes the menu in the band', async ($, on) => {
+test('off the desktop, the button opens and closes the menu in the band', async ($, on) => {
   engine(on)
   await $.session.start({ cwd: '.', surface: 'terminal', isInteractive: true })
   const band = await $.ui.mount({ plugin: 'multitask', surface: 'terminal', ...BAND })
   expect(await band.findAll({ key: MENU })).toHaveLength(1)
+  expect((await band.find({ key: MENU_BUTTON }))?.props.label).toBe('Tasks')
   const shown = async () => (await band.find({ key: 'claude-multitask-mods-switches' }))?.props.display
   expect(await shown()).toBe('none')
   await band.press({ key: MENU_BUTTON })

@@ -2,7 +2,7 @@ import type { On } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 
-import { MENU_BUTTON, drawBand } from '../hooks/menu'
+import { MENU, MENU_BUTTON, drawBand } from '../hooks/menu'
 import { markOf } from '../hooks/pane'
 import { PALETTE, closestThread, headingsIn, rewriteHeadings, splitSections } from '../hooks/parse'
 
@@ -64,6 +64,14 @@ const AGENT_SWITCH = 'mods-menu:agent-threads'
 // A switch in the band's `mods` menu as drawn: `on`, `off`, or undefined where it is not.
 const switchOf = async (band: { find: (query: { key: string }) => Promise<{ props: Record<string, unknown> } | undefined> }, key: string) =>
   (await band.find({ key }))?.props.label
+
+// The menu's button below the input on the desktop, pressed: it opens the menu, which the
+// desktop draws only while open and closes as a switch is picked, or closes it.
+async function pressMenuButton($: Engine) {
+  const mode = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', component: 'SessionMode', props: { modes: [] } })
+  await mode.press({ key: MENU_BUTTON })
+  await mode.unmount()
+}
 
 // The person's /threads, which turns threads on in the chat, or off again.
 const flipThreads = ($: Engine) =>
@@ -250,6 +258,7 @@ test('with no threads the band says how to start one; the agent switch in the mo
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
   const tool = 'mcp__thread-chat__create_thread'
 
+  await pressMenuButton($)
   const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...BAND })
   expect(await band.find({ text: /start a thread with # name/ })).toBeDefined()
   expect(await band.find({ text: /^Agent may start threads$/ })).toBeDefined()
@@ -261,6 +270,7 @@ test('with no threads the band says how to start one; the agent switch in the mo
   await band.press({ key: AGENT_SWITCH })
   const made = await $.tool.call({ tool, tool_use_id: 't2', name: 'ideas' })
   expect(made.deny).toBeUndefined()
+  await pressMenuButton($)
   await band.redraw()
   expect(await switchOf(band, AGENT_SWITCH)).toBe('on')
   expect(await band.find({ key: 'thread:ideas' })).toBeDefined()
@@ -291,11 +301,12 @@ test('until /threads turns threads on, a session is left as it is: its rows, its
   // its prompts go on as typed, with nothing beside them: a heading is plain text
   await $.prompt.submit(say('# design\na'))
   expect(prompts.at(-1)).toBe('# design\na')
-  // its band holds only the mods menu, threads off in it, and the model starts no thread
+  // its band holds only the menu, open, threads off in it, and the model starts no thread
+  await pressMenuButton($)
   const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...BAND })
   expect(await band.find({ type: 'Svg' })).toBeUndefined()
   expect(await band.find({ text: /start a thread/ })).toBeUndefined()
-  expect(await band.find({ key: MENU_BUTTON })).toBeDefined()
+  expect(await band.find({ key: MENU })).toBeDefined()
   expect(await switchOf(band, THREADS_SWITCH)).toBe('off')
   expect(await switchOf(band, AGENT_SWITCH)).toBeUndefined()
   expect((await $.tool.call({ tool: 'mcp__thread-chat__create_thread', tool_use_id: 't1', name: 'ideas' })).deny).toContain('off')
@@ -358,6 +369,7 @@ test("another agent's loop (an engine fork, a subagent) cannot start a thread, t
   await flipThreads($)
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
   const tool = 'mcp__thread-chat__create_thread'
+  await pressMenuButton($)
   const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...BAND })
 
   expect((await $.tool.call({ tool, tool_use_id: 'f1', name: 'stray', agentId: 'fork-1' })).deny).toContain('another agent')
@@ -842,6 +854,7 @@ test('the move picker starts a new thread from a typed name, even with no thread
 
   // with no threads, once the agent may start them, a message and a reply of no
   // thread offer "+ thread"
+  await pressMenuButton($)
   const switchBand = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...BAND })
   await switchBand.press({ key: AGENT_SWITCH })
   await switchBand.unmount()
@@ -1340,8 +1353,8 @@ test('the band keeps one row with 12 threads beside another mod, and nothing the
         surface: e.surface,
         controls: { rank: 20, name: 'multitask', element: ui.Text({ children: ['other mod'] }) },
         switches: [{ rank: 20, key: 'mods-menu:multitask', label: 'Multitask', isOn: false, onPress: () => undefined }],
+        name: { rank: 20, word: 'tasks' },
         isOpen: async () => false,
-        onToggle: () => undefined,
       },
     )
   })
@@ -1358,7 +1371,9 @@ test('the band keeps one row with 12 threads beside another mod, and nothing the
     expect(all.filter(isPill)).toHaveLength(12)
     const pill = pathTo(tree, isPill)
     const other = pathTo(tree, isOther)
-    const controls = ['thread-view', MENU_BUTTON].map(key => pathTo(tree, n => n.props?.key === key))
+    // the menu's button is below the input on the desktop
+    const keys = surface === 'desktop' ? ['thread-view'] : ['thread-view', MENU_BUTTON]
+    const controls = keys.map(key => pathTo(tree, n => n.props?.key === key))
 
     // the other mod shares the row and keeps its width; the threads give way
     expect(shareOf(pill, other)).toMatchObject({ a: { flexShrink: 1, minWidth: 0 }, b: { flexShrink: 0 } })
@@ -1379,8 +1394,8 @@ test('the band keeps one row with 12 threads beside another mod, and nothing the
     }
 
     // every Box the pointer reveals is out of the flow, or in a Box that is, so showing
-    // it moves nothing: on the desktop the view's tip and the mods menu, cards the desktop
-    // lifts, and each pill's lit picture, revealed in place over it and never lifted as a card
+    // it moves nothing: on the desktop the view's tip, a card the desktop lifts, and each
+    // pill's lit picture, revealed in place over it and never lifted as a card
     const reveals = all.filter(n => n.hover?.display === 'flex')
     const isPlaced = (n: Drawn) => n.props?.position === 'absolute'
     expect(reveals.filter(n => !pathTo(tree, m => m === n)?.some(isPlaced))).toEqual([])
@@ -1388,7 +1403,7 @@ test('the band keeps one row with 12 threads beside another mod, and nothing the
       const picturesShown = (n: Drawn) => (n.children ?? []).flatMap(restingPictures).length
       const tips = reveals.filter(n => picturesShown(n) === 0)
       const lit = reveals.filter(n => picturesShown(n) === 1)
-      expect(tips).toHaveLength(2)
+      expect(tips).toHaveLength(1)
       expect(tips.every(isPlaced)).toBe(true)
       expect(lit).toHaveLength(12)
       expect(lit.filter(isPlaced)).toEqual([])
