@@ -14,7 +14,7 @@ Because your message isn't queued behind work in progress, the agent can ask cla
 
 A real working session wanders: a bug, a question about something else, an idea for later. In one chat these get mixed up, and an hour later it is hard to find what was said about any one of them.
 
-Threads keep mixed topics apart in one conversation. Start a message with a heading such as `# Deployment` and it goes to that topic's thread. Each thread is colour-coded, you can filter the chat to just one, and you can move a message to another thread if it landed in the wrong place. The agent still sees the whole conversation and answers under the same headings.
+Threads keep mixed topics apart in one conversation. Start a message with a heading such as `# Deployment` and it goes to that topic's thread. Each thread is colour-coded, you can read one on its own in the thread view, and you can move a message to another thread if it landed in the wrong place. The agent still sees the whole conversation and answers under the same headings.
 
 ## Examples
 
@@ -28,7 +28,7 @@ Threads keep mixed topics apart in one conversation. Start a message with a head
 ### Threads
 
 - **One message, two topics.** You write `# Bug` with a bug report, then `# Release` with a question about timing, in the same message. Each gets its own answer in its own section.
-- **Find it later.** After an hour across several topics, filter to `# Deployment` to see only what was said about deployment.
+- **Find it later.** After an hour across several topics, pick `# Deployment` and open the thread view to see only what was said about deployment.
 - **Tidy up.** A question about testing went into the wrong thread. You move it to `# Testing`, where it belongs.
 
 ### Both together
