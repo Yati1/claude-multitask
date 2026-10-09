@@ -20,12 +20,14 @@ import {
   VOICE,
   VOICE_OFF,
   VOICE_REMINDER,
+  WAKE,
   describeThoughts,
   formatNews,
   formatUpdates,
   heardOf,
   isQuiet,
   isRelayText,
+  isWakeText,
   marksOf,
   newsOf,
   oneLine,
@@ -306,11 +308,24 @@ function scheduleFlush($: EngineInterface) {
   flushTimer = $.clock.after(FLUSH_MS, () => void flushInbox($))
 }
 
-// Hands what the thoughts said to the voice as one message, once it is idle.
+// Hands what the thoughts said to the voice, once it is idle: as a row the person never
+// sees, then the wake-up that draws as nothing; failing that, as one plugin message.
 async function flushInbox($: EngineInterface) {
   if (!(await read($, isOn)) || (await read($, isMainBusy))) return
   const text = await takeRelay($)
-  if (text !== undefined) void $.prompt.submit({ text })
+  if (text === undefined) return
+  if (await appendHidden($, text)) void $.prompt.submit({ text: WAKE, asUser: true })
+  else void $.prompt.submit({ text })
+}
+
+// Puts text in the conversation as a user row the person does not see; whether it went in.
+async function appendHidden($: EngineInterface, text: string): Promise<boolean> {
+  try {
+    const appended = await $.session.append({ message: { type: 'user', content: [{ type: 'text', text }] } })
+    return appended.deny === undefined
+  } catch {
+    return false
+  }
 }
 
 async function relay($: EngineInterface, fn: (list: Update[]) => Update[]) {
@@ -798,8 +813,8 @@ export const register: Register = (on, options) => {
   })
 
   // The engine's own notice that a thought's turn ended would tell the voice what the
-  // relay tells it: while Multitask is on, the notice goes in as the relay, so one row
-  // wakes the voice; with nothing waiting, as it came, with what is new beside it.
+  // relay tells it: while Multitask is on, the relay goes in as a hidden row and the notice
+  // as the wake-up after it; with nothing waiting, as it came, with what is new beside it.
   // Beside the person's own message the voice is told when Multitask came on or went
   // off, and what is new from its thoughts: that is the one way it is told. A system
   // prompt section would not follow the switch, as the engine sends the prompt it
@@ -813,7 +828,7 @@ export const register: Register = (on, options) => {
       const t = (await read($, thoughts)).find(one => e.text.includes(one.id))
       if (t === undefined || !(await read($, isOn))) return next(e)
       const relayed = await takeRelay($)
-      if (relayed !== undefined) return next({ ...e, text: relayed })
+      if (relayed !== undefined) return next({ ...e, text: (await appendHidden($, relayed)) ? WAKE : relayed })
       const news = await takeNews($)
       return news === undefined ? next(e) : next({ ...e, context: [...(e.context ?? []), news] })
     }
@@ -907,6 +922,11 @@ export const register: Register = (on, options) => {
   // is on; off, it is the engine's drawing alone.
   on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
     const origin = e.props.origin
+    // The wake-up after a hidden relay says nothing to the person anywhere.
+    if (isWakeText(e.props.text)) {
+      const { Box } = $.ui.resolve(e)
+      return <Box display="none" />
+    }
     const isRelay = (origin.kind === 'plugin' && origin.name === 'multitask') || isRelayText(e.props.text)
     const taskId = e.props.task?.id
     const isThoughtNotice =

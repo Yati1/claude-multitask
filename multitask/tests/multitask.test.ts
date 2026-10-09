@@ -2,7 +2,17 @@ import type { AgentInfo, On, TurnStepChunk } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 
-import { NO_RESPONSE, RELAY_NOTES, VOICE, VOICE_REMINDER, formatUpdates, isQuiet, marksOf, relayNames } from '../hooks/prompts'
+import {
+  NO_RESPONSE,
+  RELAY_NOTES,
+  VOICE,
+  VOICE_REMINDER,
+  WAKE,
+  formatUpdates,
+  isQuiet,
+  marksOf,
+  relayNames,
+} from '../hooks/prompts'
 
 type Seen = {
   prompts: string[]
@@ -21,6 +31,8 @@ type Seen = {
   isAbortRefused?: boolean
   // set to leave an agent's run counted as running after its turn ends, as while it winds down
   isWindingDown?: boolean
+  // set to keep the user rows the mod appends, as a transcript would; else appends are refused
+  hidden?: string[]
 }
 
 // The test stands in for the engine beneath the plugin, and records what reached it:
@@ -60,6 +72,11 @@ function engine(
   on('prompt.submit', ($, e) => {
     seen.prompts.push([e.text, ...(e.context ?? [])].join('\n--\n'))
     return { text: e.text }
+  })
+  on('session.append', ($, e) => {
+    if (seen.hidden === undefined || e.message.type !== 'user') throw new Error('no transcript to store the row in')
+    seen.hidden.push(e.message.content.map(block => (block.type === 'text' ? block.text : '')).join(''))
+    return { message: e.message, uuid: `row-${seen.hidden.length}` } as never
   })
   on('turn.complete', ($, e) => {
     const agent = agents.find(a => a.id === e.agentId)
@@ -554,6 +571,42 @@ test("what is new from the thoughts goes beside the person's messages and after 
     `anything else?\n--\n${VOICE_REMINDER}\n--\nWhat's new from your thoughts:\nauth-bug was stopped`,
   )
   expect(await say('ok')).toBe(`ok\n--\n${VOICE_REMINDER}`)
+})
+
+test('updates go in as a hidden row, and the voice is woken by a wake-up that draws as nothing', async ($, on) => {
+  const seen = engine(on, [{ id: 'agent-1', description: 'auth-bug', type: 'multitask:thought', status: 'completed' }])
+  seen.hidden = []
+  const clock = mock.clock(on)
+  await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
+  await $.command.run({ command: 'multitask', args: '', origin: { kind: 'composer' }, presentation: {} as never })
+  await $.tool.call({ tool: 'mcp__multitask__think', tool_use_id: 'c1', name: 'auth bug', task: 'Find why login fails' })
+
+  // Idle: the relay is a hidden row, then the wake-up.
+  await $.turn.complete({ ...finished('agent-1'), answer: 'Token expiry is off by one.' })
+  await clock.advance(2500)
+  expect(seen.hidden).toEqual(['Thought updates:\nauth-bug (done): Token expiry is off by one.'])
+  expect(seen.prompts).toEqual([WAKE])
+
+  // The engine's notice of a turn's end becomes the wake-up after the hidden relay.
+  const notice = `<task-notification>\n<task-id>agent-1</task-id>\n<status>completed</status>\n<result>Done.</result>\n</task-notification>`
+  await $.tool.call({ tool: 'mcp__multitask__tell', tool_use_id: 'c2', thought: 'auth-bug', message: 'and logout?' })
+  await $.turn.complete({ ...finished('agent-1'), answer: 'Logout is fine.' })
+  await $.prompt.submit({ text: notice, origin: { kind: 'task-notification' }, wait: false })
+  expect(seen.hidden.at(-1)).toBe('Thought updates:\nauth-bug (done): Logout is fine.')
+  expect(seen.prompts.at(-1)).toBe(WAKE)
+
+  // The wake-up draws as nothing, on the desktop and in the terminal.
+  for (const surface of ['desktop', 'terminal'] as const) {
+    const row = await $.ui.mount({
+      plugin: 'multitask',
+      surface,
+      component: 'UserMessage',
+      props: { text: WAKE, origin: { kind: 'plugin', name: 'multitask', asUser: true } as never, isExpanded: false },
+    })
+    const drawn = (await row.drawn()) as { type: string; props?: { display?: string } }
+    await row.unmount()
+    expect(drawn.props?.display).toBe('none')
+  }
 })
 
 test("the engine's notice that a thought's turn ended goes in as the relay while Multitask is on, and as it came otherwise", async ($, on) => {

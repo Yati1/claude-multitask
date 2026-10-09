@@ -21,6 +21,7 @@ Notable changes to the thread-chat and multitask mods. The format is based on [K
 - Changed multitask's band to show counts of running thoughts and queued messages.
 - Changed multitask's band to show only while Multitask is on or has thoughts left.
 - Changed multitask to give the voice thoughts' latest progress with your messages, not note by note.
+- Changed multitask to hand thought updates to the voice without leaving rows in the desktop chat.
 - Changed multitask's Thoughts pane to list running thoughts first and fold the rest and reports.
 - Changed multitask's Thoughts pane to open only from `/thoughts` or the band's `thoughts` button.
 - Changed the voice in multitask to speak as one mind and keep acknowledgements to a few words.
