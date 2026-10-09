@@ -506,6 +506,23 @@ test('/thread-view and the band button open the view, once threads are on', asyn
   expect(opened).toEqual(['thread-view', 'thread-view', 'thread-view'])
 })
 
+// A drawing that throws leaves the engine to draw its own pane, which for the thread
+// view is an empty one: the view went blank, saying nothing. It says why instead.
+test('a thread view that fails to draw says why rather than going blank', async ($, on) => {
+  engine(on)
+  await flipThreads($)
+  await $.prompt.submit(say('# design\nhello'))
+  for (const surface of ['terminal', 'desktop'] as const) {
+    // a pane drawn with no window over its body: reading where it stands throws
+    const { scroll: _, ...props } = PANE.props
+    const pane = await $.ui.mount({ plugin: 'thread-chat', surface, ...PANE, props: props as never })
+    const drawn = (await pane.drawn()) as { type?: string }
+    expect(drawn.type).toBe('Box')
+    expect((await pane.find({ type: 'Text', text: /^The thread view could not be drawn: TypeError: / }))?.text).toContain('scroll')
+    await pane.unmount()
+  }
+})
+
 // A compaction's summary, as the engine stores it and the conversation then reads it.
 const SUMMARY = 'This session is being continued from a previous conversation. Summary: hello, and fast?'
 

@@ -794,6 +794,21 @@ export function drawView(draw: ViewDrawing, inputs: ViewInputs, deps: ViewDeps):
   )
 }
 
+// What the pane says when drawing it failed: the failure, so the view never goes blank
+// without saying why (the engine would draw its own, an empty pane, in its place).
+const FAILURE_CHARS = 500
+
+export function drawViewFailure(ui: ElementTable, error: unknown): RenderElement {
+  const { Box, Text } = ui
+  const said = error instanceof Error ? `${error.name}: ${error.message}` : String(error)
+  const reason = drawableOf(said).replace(/[\u0080-\u009f\ud800-\udfff]/g, '').slice(0, FAILURE_CHARS)
+  return (
+    <Box flexDirection="column" rowGap={1}>
+      <Text dimColor>{`The thread view could not be drawn: ${reason}`}</Text>
+    </Box>
+  )
+}
+
 // The picked threads of a `threads` value, as one key: another pick differs.
 export const pickedOf = (value: unknown) =>
   Array.isArray(value)
