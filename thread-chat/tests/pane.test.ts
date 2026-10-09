@@ -221,8 +221,8 @@ test('the thread view shows the picked threads alone, earlier replies too, and n
     expect(await sectionsOf(pane)).toEqual(['you: hello', 'Claude: use a queue', 'Claude: next step'])
     expect(await pane.find({ type: 'Text', text: /All threads/ })).toBeUndefined()
 
-    // each section's tag; the person's section a bubble in the surface's fill, and the
-    // thread's colour in the tags alone, nothing filled or outlined in it
+    // each section's tag; the person's section a bubble in the surface's fill, and each
+    // reply part in its thread's border, as the chat draws them; nothing filled in it
     const tags =
       surface === 'terminal'
         ? (await pane.findAll({ type: 'Text', text: 'DESIGN' })).length
@@ -230,9 +230,11 @@ test('the thread view shows the picked threads alone, earlier replies too, and n
     expect(tags).toBe(3)
     const filled = (await pane.findAll({ type: 'Box' })).filter(b => b.props.backgroundColor !== undefined)
     expect(filled.map(b => b.props.backgroundColor)).toEqual([surface === 'terminal' ? 'userMessageBackground' : '#8888881a'])
-    const elements = [...(await pane.findAll({ type: 'Box' })), ...(await pane.findAll({ type: 'Text' }))]
-    const painted = elements.filter(el => PALETTE.some(color => el.props.backgroundColor === color || el.props.borderColor === color))
-    expect(painted).toEqual([])
+    const bordered = (await pane.findAll({ type: 'Box' })).filter(b => PALETTE.some(color => b.props.borderColor === color))
+    expect(bordered.map(b => [b.props.borderStyle, b.props.borderColor])).toEqual([
+      ['round', '#4fa3e0'],
+      ['round', '#4fa3e0'],
+    ])
     // no Client: every overlay on the desktop shares their one frame
     expect(await pane.findAll({ type: 'Client' })).toEqual([])
 
@@ -367,6 +369,85 @@ test("the person's messages draw as the chat's bubbles: their words as typed, a 
       expect((await pane.findAll({ type: 'Box' })).some(b => b.props.justifyContent === 'flex-end')).toBe(true)
     }
     await pane.unmount()
+  }
+})
+
+// How a drawing marks each of a thread's tags, in order: the tag, the row it sits in
+// above a person's message, and the border round it in a reply's part.
+function tagLooksIn(tree: unknown, name: string) {
+  const looks: { tag: Drawn; row: Drawn['props']; frame: Drawn['props'] }[] = []
+  const walk = (node: unknown, above: Drawn[]) => {
+    if (typeof node !== 'object' || node === null) return
+    const el = node as Drawn
+    if ((el.type === 'Text' && shownIn(el) === name.toUpperCase()) || (el.type === 'Svg' && el.props?.alt === name)) {
+      const nearest = (has: (props: Record<string, unknown>) => boolean) =>
+        above.findLast(box => box.type === 'Box' && has(box.props ?? {}))?.props
+      looks.push({
+        tag: { type: el.type, props: el.props },
+        row: nearest(props => props.justifyContent !== undefined),
+        frame: nearest(props => props.borderColor !== undefined),
+      })
+      return
+    }
+    for (const child of el.children ?? []) walk(child, [...above, el])
+  }
+  walk(tree, [])
+  return looks
+}
+
+test("the view draws a thread's tags and borders as the chat does", async ($, on) => {
+  engine(on)
+  await flipThreads($)
+  const typed = '# design\nhello'
+  // the reply's thread part is drawn as markdown in the chat too, as every part is in the view
+  const replied = 'the plan\n# design\nuse a queue'
+  await $.prompt.submit(say(typed))
+  const store = (uuid: string, door: 'prompt' | 'response', text: string) =>
+    $.session
+      .append({
+        message:
+          door === 'response'
+            ? { type: 'assistant', role: 'assistant', content: [{ type: 'text', text }] }
+            : { type: 'user', role: 'user', content: [{ type: 'text', text }] },
+        door,
+        origin: door === 'prompt' ? { kind: 'composer' } : model,
+        uuid,
+      })
+      .catch(() => undefined)
+  await store('p1', 'prompt', typed)
+  await store('a1', 'response', replied)
+
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const view = await $.ui.mount({ plugin: 'thread-chat', surface, ...PANE })
+    const message = await $.ui.mount({
+      plugin: 'thread-chat',
+      surface,
+      component: 'UserMessage',
+      requestId: 'p1',
+      props: { text: typed, origin: { kind: 'composer' }, isExpanded: false },
+    })
+    const reply = await $.ui.mount({
+      plugin: 'thread-chat',
+      surface,
+      component: 'AssistantMessage',
+      requestId: 'a1',
+      props: { text: replied, isFirstOfReply: true },
+    })
+
+    const [mine, part, ...more] = tagLooksIn(await view.drawn(), 'design')
+    expect(more).toEqual([])
+    // the person's tag: the same picture in the same row above their message, at its side
+    expect(mine).toEqual(tagLooksIn(await message.drawn(), 'design')[0])
+    expect(mine?.row?.justifyContent).toBe(surface === 'terminal' ? 'flex-start' : 'flex-end')
+    expect(mine?.frame).toBeUndefined()
+    // the reply part's: the same picture in the same border of the thread's colour
+    expect(part).toEqual(tagLooksIn(await reply.drawn(), 'design')[0])
+    expect(part?.frame?.borderColor).toBe('#4fa3e0')
+    if (surface === 'desktop') {
+      expect(String(mine?.tag.props?.source)).toContain('text-anchor="end"')
+      expect(String(part?.tag.props?.source)).toContain('text-anchor="start"')
+    }
+    for (const drawing of [view, message, reply]) await drawing.unmount()
   }
 })
 

@@ -7,7 +7,8 @@ import type { Section } from './parse'
 // The thread view: a pane of the picked threads' conversation alone, the person's
 // messages and Claude's replies a section at a time, with no tool rows and no gaps
 // where the chat hides a row. It looks as the transcript does: the person's
-// sections in bubbles, replies as text, each thread's colour only in its tag.
+// sections in bubbles, replies as text, and each thread's tags and borders drawn
+// by the code that draws the transcript's (register.tsx).
 //
 // It draws from the rows it kept as the session stored them (`session.append`),
 // each with its id and text: the transcript as the person sees it. A compaction
@@ -365,13 +366,15 @@ export function viewEntries(inputs: ViewInputs, deps: ViewDeps) {
   return { entries, picked }
 }
 
-// How the pane draws: the surface's elements, a thread's tag in its colour, and a
-// reply's text as markdown (kept to what a Markdown element takes), as the chat
-// draws them.
+// How the pane draws, as the chat draws the same: the surface's elements; a reply's
+// text as markdown (kept to what a Markdown element takes); the row holding a
+// thread's tag above a person's message, at the side their messages sit; and a
+// reply's part of a thread, in a border of its colour under its tag.
 export type ViewDrawing = {
   ui: ElementTable
-  tag: (thread: Thread) => RenderElement
   markdown: (text: string) => RenderElement
+  tagRow: (thread: Thread) => RenderElement
+  threadPart: (thread: Thread, body: RenderElement) => RenderElement
 }
 
 // A text as a drawn string may hold it: no control characters but tab and newline.
@@ -446,27 +449,23 @@ function drawBubble(draw: ViewDrawing, isPage: boolean, text: string): RenderEle
   )
 }
 
-// One section, `gap` rows below the one before. Claude's is its text as markdown,
-// as the chat draws a reply's; the person's a bubble. Its thread's tag is above
-// it, at the side it sits, the one mark of its thread.
+// One section, `gap` rows below the one before, its thread marked as the chat marks
+// it. Claude's is its text as markdown, as the chat draws a reply's, in its thread's
+// border under its tag; the person's a bubble under its thread's tag.
 function drawEntry(draw: ViewDrawing, isPage: boolean, entry: Entry, gap: number): RenderElement {
   const { Box } = draw.ui
-  const tag = entry.thread === undefined ? undefined : draw.tag(entry.thread)
+  const { thread } = entry
   if (entry.role === 'assistant') {
+    const body = draw.markdown(entry.text)
     return (
       <Box flexDirection="column" marginTop={gap}>
-        {tag}
-        {draw.markdown(entry.text)}
+        {thread === undefined ? body : draw.threadPart(thread, body)}
       </Box>
     )
   }
   return (
-    <Box flexDirection="column" marginTop={gap} rowGap={isPage ? 1 : 0}>
-      {tag !== undefined && (
-        <Box flexDirection="row" justifyContent={isPage ? 'flex-end' : 'flex-start'}>
-          {tag}
-        </Box>
-      )}
+    <Box flexDirection="column" marginTop={gap}>
+      {thread !== undefined && draw.tagRow(thread)}
       {drawBubble(draw, isPage, entry.text)}
     </Box>
   )
