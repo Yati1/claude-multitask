@@ -20,6 +20,9 @@ export type ViewRow = {
   // the length of the text as typed, where notes for the model follow it in the row
   // (rows of an earlier version, which kept no text)
   typed?: number
+  // a reply a tool call followed in its turn: words on the way, not the turn's last
+  // reply, so the view leaves it out
+  interim?: true
 }
 
 // Where the threads stood when the model was last told, beside the person's message:

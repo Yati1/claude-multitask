@@ -1,14 +1,15 @@
 import type { Args, ElementTable, RenderElement, RenderSurface, SessionMessage } from 'claude-code'
 
 import type { Thread, ViewRow } from '../types'
-import { isPluginFramed, keyOf, splitSections } from './parse'
+import { isOthersPrompt, isPluginFramed, keyOf, splitSections } from './parse'
 import type { Section } from './parse'
 
 // The thread view: a pane of the picked threads' conversation alone, the person's
-// messages and Claude's replies a section at a time, with no tool rows and no gaps
-// where the chat hides a row. It looks as the transcript does: the person's
-// sections in bubbles, replies as text, and each thread's tags and borders drawn
-// by the code that draws the transcript's (register.tsx).
+// messages and each turn's last reply a section at a time, with no tool rows, no
+// quiet replies or others' prompts, and no gaps where the chat hides a row. It looks
+// as the transcript does: the person's sections in bubbles, replies as text, and each
+// thread's tags and borders drawn by the code that draws the transcript's
+// (register.tsx).
 //
 // It draws from the rows it kept as the session stored them (`session.append`),
 // each with its id and text: the transcript as the person sees it. A compaction
@@ -85,9 +86,30 @@ export const viewKey = (sessionId: string) => `view:${sessionId}`
 // were joined.
 export const markOf = (text: string) => text.replace(/\s+/g, '').slice(0, MARK_LENGTH)
 
-function textBlocks(content: readonly { type: string; [field: string]: unknown }[]): string[] {
+type Blocks = readonly { type: string; [field: string]: unknown }[]
+
+function textBlocks(content: Blocks): string[] {
   return content.flatMap(block => (block.type === 'text' && typeof block.text === 'string' ? [block.text] : []))
 }
+
+// Whether a row of Claude's holds a tool call.
+export const hasToolCall = (content: Blocks) => content.some(block => block.type === 'tool_use')
+
+// What the multitask plugin's voice replies when it has nothing to say, and what such a
+// reply is kept as (the react plugin keeps a reply it made a reaction as that too).
+const QUIET = /^(?:\(quiet\)|No response requested\.)$/
+// The engine's own rows in the person's place, known by the tag their text opens with:
+// a command's echo or output (the multitask plugin's wake-up is one), a background
+// task's notice, a reminder.
+const ENGINE_TAGGED =
+  /^\s*<(?:command-(?:name|message|args)|local-command-(?:stdout|stderr|caveat)|task-notification|system-reminder|bash-(?:input|stdout|stderr))>/
+// Another Claude session's message, a thought's hand-back among them.
+const PEER_FRAME = /^\s*Another Claude session sent a message/
+
+// Whether a row's text is a message the view shows: Claude's words to the person, or
+// the person's own; not a quiet reply, nor another party's prompt in their place.
+const isMessageText = (role: 'user' | 'assistant', text: string) =>
+  role === 'assistant' ? !QUIET.test(text.trim()) : !isOthersPrompt(text) && !ENGINE_TAGGED.test(text) && !PEER_FRAME.test(text)
 
 // A stored row of the main conversation as the view knows it: a person's message
 // or a reply's text, with the text the transcript shows; none else. A compaction's
@@ -97,7 +119,10 @@ export function viewRowOf(e: Args<'session.append'>, person: ReadonlySet<string>
   const blocks = textBlocks(e.message.content)
   const text = blocks.join('\n')
   if (text.trim() === '') return undefined
-  if (e.message.type === 'assistant') return { id: e.uuid, role: 'assistant', mark: markOf(text), text }
+  if (e.message.type === 'assistant') {
+    const row: ViewRow = { id: e.uuid, role: 'assistant', mark: markOf(text), text }
+    return hasToolCall(e.message.content) ? { ...row, interim: true } : row
+  }
   const isPerson =
     e.message.type === 'user' &&
     e.message.isMeta !== true &&
@@ -113,10 +138,17 @@ export function viewRowOf(e: Args<'session.append'>, person: ReadonlySet<string>
 }
 
 // The rows known once `row` is: every one, one per id (a row stored again replaces
-// itself).
+// itself, still interim if it was).
 export function withViewRow(all: ViewRow[], row: ViewRow): ViewRow[] {
   const at = all.findIndex(known => known.id === row.id)
-  return at < 0 ? [...all, row] : all.map((known, i) => (i === at ? row : known))
+  if (at < 0) return [...all, row]
+  return all.map((known, i) => (i !== at ? known : known.interim === true ? { ...row, interim: true } : row))
+}
+
+// The rows known once those of `ids` are known as interim: replies a tool call
+// followed in their turn, which the view leaves out (it shows a turn's last reply).
+export function withInterim(all: ViewRow[], ids: ReadonlySet<string>): ViewRow[] {
+  return all.map(row => (ids.has(row.id) && row.interim !== true ? { ...row, interim: true } : row))
 }
 
 // How the store notes a session's kept rows: a fingerprint of each of its files'
@@ -302,14 +334,36 @@ export const needsMessages = (known: readonly ViewRow[]) => known.length === 0 |
 // text the transcript shows.
 type Source = { row: ViewRow | undefined; role: 'user' | 'assistant'; text: string }
 
+// The conversation's replies a tool call followed in their turn (by index): a turn's
+// words before its last reply. A message of the person's, or another's prompt, starts
+// a turn; a tool's result does not.
+function interimIn(messages: readonly SessionMessage[]): Set<number> {
+  const interim = new Set<number>()
+  let said: number[] = []
+  for (const [i, m] of messages.entries()) {
+    if (m.role === 'user') {
+      if ((m.toolResults?.length ?? 0) === 0) said = []
+      continue
+    }
+    if (m.text.trim() !== '') said.push(i)
+    if (m.toolUses.length > 0) {
+      for (const at of said) interim.add(at)
+      said = []
+    }
+  }
+  return interim
+}
+
 // The messages the view draws, oldest first: the rows kept as the session stored
 // them, each with its text. A row an earlier version kept without its text draws
 // while the conversation still holds it, as that version drew it. For a session
-// with no rows kept, the conversation as it reads now.
+// with no rows kept, the conversation as it reads now. Only messages: the person's
+// own and each turn's last reply, never a quiet one.
 function sourcesOf(known: readonly ViewRow[], messages: readonly SessionMessage[]): Source[] {
   if (known.length === 0) {
+    const interim = interimIn(messages)
     return messages
-      .filter(m => m.text.trim() !== '' && (m.role === 'assistant' || looksTyped(m)))
+      .filter((m, i) => m.text.trim() !== '' && !interim.has(i) && (m.role === 'assistant' || looksTyped(m)) && isMessageText(m.role, m.text))
       .map(m => ({ row: undefined, role: m.role, text: m.text }))
   }
   const held = new Map<number, SessionMessage>()
@@ -321,9 +375,10 @@ function sourcesOf(known: readonly ViewRow[], messages: readonly SessionMessage[
   }
   const sources: Source[] = []
   for (const [i, row] of known.entries()) {
+    if (row.interim === true) continue
     const m = held.get(i)
     const text = row.text ?? (m === undefined ? undefined : row.typed === undefined ? m.text : m.text.slice(0, row.typed))
-    if (text !== undefined && text.trim() !== '') sources.push({ row, role: row.role, text })
+    if (text !== undefined && text.trim() !== '' && isMessageText(row.role, text)) sources.push({ row, role: row.role, text })
   }
   return sources
 }

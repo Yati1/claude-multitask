@@ -22,6 +22,7 @@ import {
   dataFolderOf,
   drawView,
   fingerprintOf,
+  hasToolCall,
   isKeptView,
   isNearEnd,
   markHashOf,
@@ -34,6 +35,7 @@ import {
   rowsUpTo,
   viewKey,
   viewRowOf,
+  withInterim,
   withViewRow,
 } from './pane'
 import type { ViewDeps, ViewInputs } from './pane'
@@ -360,6 +362,10 @@ async function isFilteredOut($: EngineInterface, ids: string[]): Promise<boolean
 // Messages sent with no heading to one thread (the one picked, or the one a reply's
 // quotes came from), until their rows are stored.
 const unsent: { text: string; key: string }[] = []
+
+// The ids of the main conversation's replies with text in the turn so far, since its
+// last tool call: interim if another tool call follows them in the turn.
+let turnReplies = new Set<string>()
 
 // The text blocks of a stored row, as one text.
 function textOf(content: readonly { type: string; [field: string]: unknown }[]): string {
@@ -1385,6 +1391,16 @@ export const register: Register = on => {
         // A new message keeps the thread view at its end, unless the person scrolled up.
         if (isViewAtEnd) void pinViewToEnd($)
       }
+      // The view shows a turn's last reply: those a tool call follows in its turn are interim.
+      if (e.agentId === undefined && stored?.deny === undefined) {
+        if (e.message.type === 'user' && e.door === 'prompt') turnReplies = new Set()
+        if (row?.role === 'assistant' && row.interim !== true) turnReplies.add(row.id)
+        if (e.message.type === 'assistant' && hasToolCall(e.message.content)) {
+          const ids = turnReplies
+          turnReplies = new Set()
+          if (ids.size > 0) await update($, viewRows, all => withInterim(all, ids))
+        }
+      }
     }
   })
 
@@ -1392,6 +1408,7 @@ export const register: Register = on => {
   // are on: all of them then, those from before they came on too.
   on('turn.complete', async ($, e, next) => {
     const result = await next(e)
+    if (e.agentId === undefined) turnReplies = new Set()
     if (e.agentId === undefined && (await read($, isOn))) {
       if ((await read($, threads)).length > 0) await save($)
       const rows = await read($, viewRows)
