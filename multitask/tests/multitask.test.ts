@@ -35,12 +35,20 @@ type Seen = {
   hidden?: string[]
 }
 
+// An agent whose run has ended, which a message resumes from its transcript.
+const ENDED: ReadonlySet<AgentInfo['status']> = new Set(['completed', 'failed', 'killed'])
+// The engine's refusal to resume an agent whose type is not offered.
+const notOffered = (type: string) => `Agent type '${type}' is not offered in this session`
+
 // The test stands in for the engine beneath the plugin, and records what reached it:
 // each prompt with the notes beside it, the effort each model request asked for, each
 // turn it was asked to cut, and how many agents it was asked to start. Its agents' runs
-// end with their turns, and a message that reaches one starts it again. `store` seeds the
-// mod store; `null` leaves the store to the test.
+// end with their turns, and a message that reaches one starts it again; one whose run has
+// ended is resumed only if its type is offered, as the engine does. `$` is the test's own,
+// to ask that as the engine does. `store` seeds the mod store; `null` leaves the store to
+// the test.
 function engine(
+  $: Engine,
   on: On,
   agents: AgentInfo[] = [{ id: 'agent-1', description: 'auth-bug', type: 'multitask:thought', status: 'running' }],
   store: Record<string, unknown> | null = {},
@@ -62,10 +70,15 @@ function engine(
     return { model: 'test' }
   })
   on('agent.list', () => ({ value: agents }))
-  on('session.send', ($, e) => {
+  on('agent.offer', () => ({ isOffered: true }))
+  on('session.send', async (_, e) => {
     seen.sends.push({ to: e.to, text: e.text })
     if (seen.refuse !== undefined) return { isDelivered: false, reason: seen.refuse }
     const agent = agents.find(a => a.id === e.to || a.description === e.to)
+    if (agent !== undefined && ENDED.has(agent.status)) {
+      const offer = { agent: agent.type, description: '', source: 'plugin', provider: { plugin: 'multitask', tier: 'user' as const } }
+      if (!(await $.agent.offer(offer)).isOffered) return { isDelivered: false, reason: notOffered(agent.type) }
+    }
     if (agent !== undefined) agent.status = 'running'
     return { isDelivered: true }
   })
@@ -145,7 +158,7 @@ test('quiet is exact and updates are one line each under a short header', async 
 })
 
 test('a quiet reply draws as nothing on every surface while Multitask is on, and as the engine draws it while off', async ($, on) => {
-  engine(on)
+  engine($, on)
   const drawn = async (surface: 'terminal' | 'desktop', text: string) => {
     const row = await $.ui.mount({
       plugin: 'multitask',
@@ -174,7 +187,7 @@ test('a session that never switches Multitask on is left as it is: no `thoughts`
     registered.push(e.name)
     return { value: { tool: `mcp__multitask__${e.name}` } }
   })
-  const seen = engine(on)
+  const seen = engine($, on)
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
   expect(registered).toEqual([])
   await $.prompt.submit({ text: 'hello', origin: { kind: 'composer' }, wait: false })
@@ -217,7 +230,7 @@ test('a session that never switches Multitask on is left as it is: no `thoughts`
 })
 
 test('the voice\'s quiet reply goes on as "No response requested.", held back only while it could still be quiet', async ($, on) => {
-  const seen = engine(on)
+  const seen = engine($, on)
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
   const step = async (pieces: TurnStepChunk[], agentId?: string) => {
     seen.reply = pieces
@@ -247,7 +260,7 @@ test('the voice\'s quiet reply goes on as "No response requested.", held back on
 })
 
 test('updates handed to the voice draw as nothing on the desktop and one dim line in the terminal', async ($, on) => {
-  engine(on)
+  engine($, on)
   const relay = formatUpdates([
     { thought: 'voice-tone', text: 'Checking the prompt' },
     { thought: 'voice-tone', text: 'found it', isDone: true },
@@ -284,7 +297,7 @@ test('updates handed to the voice draw as nothing on the desktop and one dim lin
 })
 
 test('a turn ending reaches the voice once: bare when it has nothing more to say, and a failure says so', async ($, on) => {
-  const seen = engine(on, [{ id: 'agent-1', description: 'auth-bug', type: 'multitask:thought', status: 'completed' }])
+  const seen = engine($, on, [{ id: 'agent-1', description: 'auth-bug', type: 'multitask:thought', status: 'completed' }])
   const clock = mock.clock(on)
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
   await $.command.run({ command: 'multitask', args: '', origin: { kind: 'composer' }, presentation: {} as never })
@@ -342,7 +355,7 @@ test('a turn ending reaches the voice once: bare when it has nothing more to say
 })
 
 test('the voice is refused work, and its thoughts relay, queue and unqueue', async ($, on) => {
-  const seen = engine(on)
+  const seen = engine($, on)
   const clock = mock.clock(on)
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
 
@@ -432,7 +445,7 @@ test('the voice is refused work, and its thoughts relay, queue and unqueue', asy
 })
 
 test('the voice is told as Multitask comes on and goes off, and thinks less hard while on', async ($, on) => {
-  const seen = engine(on)
+  const seen = engine($, on)
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
   const say = (text: string) => $.prompt.submit({ text, origin: { kind: 'composer' }, wait: false })
   const flip = () => $.command.run({ command: 'multitask', args: '', origin: { kind: 'composer' }, presentation: {} as never })
@@ -484,7 +497,7 @@ test('a session keeps its switch for its next run, with its messages\' marks onc
   })
   on('store.keys', () => ({ value: Object.keys(store) }))
   mock.clock(on, { now: 1000 })
-  engine(on, undefined, null)
+  engine($, on, undefined, null)
   on('session.messages', () => ({ value: listed(SAID) }))
   const flip = () => $.command.run({ command: 'multitask', args: '', origin: { kind: 'composer' }, presentation: {} as never })
 
@@ -509,7 +522,7 @@ test('a restarted session takes up the switch it kept, with the voice\'s tools a
     registered.push(e.name)
     return { value: { tool: `mcp__multitask__${e.name}` } }
   })
-  const seen = engine(on, undefined, { 'session:session-1': kept(true, 1, []) })
+  const seen = engine($, on, undefined, { 'session:session-1': kept(true, 1, []) })
   expect(await isOnAtStart($, seen)).toBe(true)
   expect(registered).toEqual(['think', 'tell', 'unqueue', 'stop', 'thoughts'])
   const band = await $.ui.mount({ plugin: 'multitask', surface: 'desktop', ...BAND })
@@ -517,7 +530,7 @@ test('a restarted session takes up the switch it kept, with the voice\'s tools a
 })
 
 test('a rewound or forked session, under a new id, takes up the switch of the session it came from', async ($, on) => {
-  const seen = engine(on, undefined, {
+  const seen = engine($, on, undefined, {
     'session:old': kept(true, 1, [...SAID, 'and a later message the rewind left behind']),
     'session:unrelated': kept(false, 2, ['a different conversation altogether', 'with nothing in common at all']),
   })
@@ -527,13 +540,13 @@ test('a rewound or forked session, under a new id, takes up the switch of the se
 
 test('of sessions that know as much of a rewound one, it takes up the switch of the one kept last', async ($, on) => {
   // rewound from "old" into "later", switched off there, and rewound again
-  const seen = engine(on, undefined, { 'session:old': kept(true, 1, SAID), 'session:later': kept(false, 2, SAID) })
+  const seen = engine($, on, undefined, { 'session:old': kept(true, 1, SAID), 'session:later': kept(false, 2, SAID) })
   on('session.messages', () => ({ value: listed(SAID) }))
   expect(await isOnAtStart($, seen)).toBe(false)
 })
 
 test("what is new from the thoughts goes beside the person's messages and after a relay, each thing once", async ($, on) => {
-  const seen = engine(on, [
+  const seen = engine($, on, [
     { id: 'agent-1', description: 'auth-bug', type: 'multitask:thought', status: 'running' },
     { id: 'agent-2', description: 'docs', type: 'multitask:thought', status: 'running' },
   ])
@@ -581,7 +594,7 @@ test("what is new from the thoughts goes beside the person's messages and after 
 })
 
 test('updates go in as a hidden row, and the voice is woken by a wake-up that draws as nothing', async ($, on) => {
-  const seen = engine(on, [{ id: 'agent-1', description: 'auth-bug', type: 'multitask:thought', status: 'completed' }])
+  const seen = engine($, on, [{ id: 'agent-1', description: 'auth-bug', type: 'multitask:thought', status: 'completed' }])
   seen.hidden = []
   const clock = mock.clock(on)
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
@@ -617,7 +630,7 @@ test('updates go in as a hidden row, and the voice is woken by a wake-up that dr
 })
 
 test("the engine's hand-back of a thought's report goes in as the wake-up while Multitask is on, and as it came otherwise", async ($, on) => {
-  const seen = engine(on)
+  const seen = engine($, on)
   seen.hidden = []
   mock.clock(on)
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
@@ -679,7 +692,7 @@ test("the engine's hand-back of a thought's report goes in as the wake-up while 
 })
 
 test("the engine's notice that a thought's turn ended goes in as the relay while Multitask is on, and as it came otherwise", async ($, on) => {
-  const seen = engine(on)
+  const seen = engine($, on)
   const clock = mock.clock(on)
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
   const flip = () => $.command.run({ command: 'multitask', args: '', origin: { kind: 'composer' }, presentation: {} as never })
@@ -714,7 +727,7 @@ test("the engine's notice that a thought's turn ended goes in as the relay while
 })
 
 test('an interrupt cuts the running turn and hands the message over; a second one cuts the next turn', async ($, on) => {
-  const seen = engine(on)
+  const seen = engine($, on)
   const clock = mock.clock(on)
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
   await $.command.run({ command: 'multitask', args: '', origin: { kind: 'composer' }, presentation: {} as never })
@@ -756,7 +769,7 @@ test('an interrupt cuts the running turn and hands the message over; a second on
 
 test('an interrupt the engine cannot cut never stops the thought: the message waits for its turn, or goes now', async ($, on) => {
   const agents: AgentInfo[] = [{ id: 'agent-1', description: 'auth-bug', type: 'multitask:thought', status: 'running' }]
-  const seen = engine(on, agents)
+  const seen = engine($, on, agents)
   const clock = mock.clock(on)
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
   await $.command.run({ command: 'multitask', args: '', origin: { kind: 'composer' }, presentation: {} as never })
@@ -789,7 +802,7 @@ test('an interrupt the engine cannot cut never stops the thought: the message wa
 
 test("a thought's queue goes over once the engine has ended its run, not while the run winds down", async ($, on) => {
   const agents: AgentInfo[] = [{ id: 'agent-1', description: 'auth-bug', type: 'multitask:thought', status: 'running' }]
-  const seen = engine(on, agents)
+  const seen = engine($, on, agents)
   const clock = mock.clock(on)
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
   await $.command.run({ command: 'multitask', args: '', origin: { kind: 'composer' }, presentation: {} as never })
@@ -816,7 +829,7 @@ test("a thought's queue goes over once the engine has ended its run, not while t
 })
 
 test('a message that does not reach its thought says so: as an error from tell, or to the voice with the message still queued', async ($, on) => {
-  const seen = engine(on)
+  const seen = engine($, on)
   const clock = mock.clock(on)
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
   await $.command.run({ command: 'multitask', args: '', origin: { kind: 'composer' }, presentation: {} as never })
@@ -856,16 +869,59 @@ test('a message that does not reach its thought says so: as an error from tell, 
   expect(seen.sends.at(-1)?.text).toBe('check refresh too')
 })
 
-test("the voice's thoughts start without a second permission ask; other agents are asked as before", async ($, on) => {
-  engine(on)
-  const thought = await $.tool.check({ tool: 'Agent', input: { subagent_type: 'multitask:thought', prompt: 'x', description: 'y' } })
-  expect(thought.decision).toBe('allow')
-  const other = await $.tool.check({ tool: 'Agent', input: { subagent_type: 'general-purpose', prompt: 'x', description: 'y' } })
+test('a message to a thought whose run has ended resumes it while Multitask is on; while off, the engine refuses it', async ($, on) => {
+  const seen = engine($, on)
+  const clock = mock.clock(on)
+  const flip = () => $.command.run({ command: 'multitask', args: '', origin: { kind: 'composer' }, presentation: {} as never })
+  const provider = { plugin: 'multitask', tier: 'user' as const }
+  const offered = async () => (await $.agent.offer({ agent: 'multitask:thought', description: '', source: 'plugin', provider })).isOffered
+  const tell = (id: string, message: string, how?: string) =>
+    $.tool.call({ tool: 'mcp__multitask__tell', tool_use_id: id, name: 'auth-bug', message, ...(how === undefined ? {} : { how }) })
+  const listed = async (id: string) => String((await $.tool.call({ tool: 'mcp__multitask__thoughts', tool_use_id: id })).result)
+  await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
+  expect(await offered()).toBe(false)
+  await flip()
+  expect(await offered()).toBe(true)
+  await $.tool.call({ tool: 'mcp__multitask__think', tool_use_id: 'c1', name: 'auth bug', task: 'Find why login fails' })
+
+  // Its run ended, a message resumes it, by its id.
+  await $.turn.complete({ ...finished('agent-1'), answer: 'Found it.' })
+  await clock.settle()
+  const told = await tell('c2', 'check refresh too')
+  expect(told.deny).toBeUndefined()
+  expect(told.result).toBe('auth-bug was idle; it has the message now and resumes.')
+  expect(seen.sends).toEqual([{ to: 'agent-1', text: 'check refresh too' }])
+  expect(await listed('c3')).toContain('- auth-bug [running]')
+
+  // With Multitask switched off before its turn ends, what waited for it is refused, and stays queued.
+  expect((await tell('c4', 'and logout', 'queue')).result).toBe('Queued for auth-bug as #1; it reads it when its turn ends.')
+  await flip()
+  expect(await offered()).toBe(false)
+  await $.turn.complete({ ...finished('agent-1'), answer: 'Refresh is fine.' })
+  await clock.settle()
+  expect(seen.sends.slice(1)).toEqual([
+    { to: 'agent-1', text: 'and logout' },
+    { to: 'auth-bug', text: 'and logout' },
+  ])
+  expect(await listed('c5')).toContain('- auth-bug [idle]: Find why login fails\n  queued: 1. and logout')
+})
+
+test('the model cannot start a thought itself, in any loop; other agents are asked as before', async ($, on) => {
+  engine($, on)
+  // The engine's `$` checks as the model's own call does. The mod's own start of a thought,
+  // allowed by its origin, is not reachable here.
+  const input = { subagent_type: 'multitask:thought', prompt: 'x', description: 'y' }
+  for (const loop of [{}, { agentId: 'agent-1' }]) {
+    const thought = await $.tool.check({ tool: 'Agent', input, tool_use_id: 'a1', ...loop })
+    expect(thought.decision).toBe('deny')
+    expect(thought.reason).toContain('Only the multitask mod starts a thought')
+  }
+  const other = await $.tool.check({ tool: 'Agent', input: { ...input, subagent_type: 'general-purpose' } })
   expect(other.decision).toBe('ask')
 })
 
 test("the model's own message to a thought is still asked; only the mod's own sends to its thoughts skip the ask", async ($, on) => {
-  engine(on)
+  engine($, on)
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
   await $.command.run({ command: 'multitask', args: '', origin: { kind: 'composer' }, presentation: {} as never })
   await $.tool.call({ tool: 'mcp__multitask__think', tool_use_id: 't1', name: 'auth bug', task: 'Find why login fails' })
@@ -878,6 +934,7 @@ test("the model's own message to a thought is still asked; only the mod's own se
 test('the voice names each thought by its task: kebab-case, made unique, from the task when it gives none', async ($, on) => {
   const names = ['fix-login-expiry', 'fix-login-expiry-2', 'find-why-login', 'cafe-creme']
   const seen = engine(
+    $,
     on,
     names.map((name, i) => ({ id: `agent-${i + 1}`, description: name, type: 'multitask:thought', status: 'running' })),
   )
@@ -899,7 +956,7 @@ test('the voice names each thought by its task: kebab-case, made unique, from th
 })
 
 test("a call from another agent's loop (an engine fork, a subagent) never starts, steers or stops a thought", async ($, on) => {
-  const seen = engine(on)
+  const seen = engine($, on)
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
   const think = { tool: 'mcp__multitask__think', name: 'placeholder', task: 'Placeholder - not used' } as const
   const list = async (id: string) => String((await $.tool.call({ tool: 'mcp__multitask__thoughts', tool_use_id: id })).result)
@@ -938,6 +995,7 @@ test("the Thoughts pane draws running thoughts first with their task's first lin
   // Each thought's agent, named for it, in the status the engine reports for it.
   const statuses = { done: 'completed', busy: 'running', gone: 'killed', broke: 'failed' } as const
   engine(
+    $,
     on,
     Object.entries(statuses).map(([name, status]) => ({ id: name, description: name, type: 'multitask:thought', status })),
   )
@@ -1002,7 +1060,7 @@ test("the Thoughts pane draws running thoughts first with their task's first lin
 })
 
 test("a thought's card shows its report's first line until opened, and none while it works on or a note is newer", async ($, on) => {
-  engine(on)
+  engine($, on)
   const clock = mock.clock(on)
   await $.session.start({ cwd: '.', surface: 'terminal', isInteractive: true })
   await $.command.run({ command: 'multitask', args: '', origin: { kind: 'composer' }, presentation: {} as never })
@@ -1107,7 +1165,7 @@ test('the band shares one row with another mod: its controls keep their width, n
     const { Box, Text } = $.ui.resolve(e)
     return Box({ flexDirection: 'row', children: [Text({ children: ['other mod'] })] })
   })
-  engine(on)
+  engine($, on)
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
   await $.command.run({ command: 'multitask', args: '', origin: { kind: 'composer' }, presentation: {} as never })
 
@@ -1135,7 +1193,7 @@ test('the band shares one row with another mod: its controls keep their width, n
 })
 
 test('the dropdown shows the mode the chat is in, and picking the other mode switches to it', async ($, on) => {
-  const seen = engine(on)
+  const seen = engine($, on)
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
   const say = async (text: string) => {
     await $.prompt.submit({ text, origin: { kind: 'composer' }, wait: false })
@@ -1176,7 +1234,7 @@ test('the dropdown shows the mode the chat is in, and picking the other mode swi
 })
 
 test('no button of the mod is below the input, and the mobile app, which draws no dropdown, shows `thoughts` alone', async ($, on) => {
-  engine(on)
+  engine($, on)
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
   const mode = await $.ui.mount({ plugin: 'multitask', surface: 'desktop', component: 'SessionMode', props: { modes: [] } })
   expect(await mode.drawn()).toEqual({ type: 'engine', ref: 0 })
