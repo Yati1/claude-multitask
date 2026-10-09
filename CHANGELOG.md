@@ -4,6 +4,10 @@ Notable changes to the thread-chat and multitask mods. The format is based on [K
 
 ## Unreleased
 
+### Changed
+
+- Changed thread-chat's agent to pick the right threads for its reply, even for unheaded messages.
+
 ### Fixed
 
 - Fixed issue where a finished multitask thought could still show a "Message from subagent" row.
