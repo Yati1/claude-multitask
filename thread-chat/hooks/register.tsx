@@ -36,8 +36,8 @@ import {
   withViewRow,
 } from './pane'
 import type { ViewDeps, ViewInputs } from './pane'
-import { drawBand } from './menu'
-import type { MenuSwitch } from './menu'
+import { MENU_BUTTON, MENU_SWITCH, drawBand, drawMenuButton } from './menu'
+import type { MenuSwitch, ModName } from './menu'
 
 const isOn = atom({ plugin: 'thread-chat', key: 'isOn' } as const, false)
 const threads = atom({ plugin: 'thread-chat', key: 'threads' } as const, [])
@@ -59,6 +59,8 @@ const CREATE_TOOL = 'mcp__thread-chat__create_thread'
 // The switches in the band's `mods` menu: threads on or off, and whether the agent may start them.
 const THREADS_SWITCH = 'mods-menu:threads'
 const AGENT_SWITCH = 'mods-menu:agent-threads'
+// Thread-chat's word in the label of the menu's button.
+const MENU_NAME: ModName = { rank: 10, word: 'threads' }
 // The thread view's pane id, which is also its command's name and its band button's key.
 const VIEW = 'thread-view'
 const VIEW_TITLE = 'Thread view'
@@ -1683,8 +1685,26 @@ export const register: Register = on => {
       surface: e.surface,
       controls: on_ ? { rank: 10, name: 'thread-chat', element: await drawThreadControls($, e), grows: true } : undefined,
       switches,
+      name: MENU_NAME,
       isOpen: () => read($, menuOpen),
-      onToggle: () => update($, menuOpen, open => !open),
     })
+  })
+
+  // The menu's button, below the input on the desktop, shared as the band is. Every mod
+  // hears its press, whichever drew it, so the one laying out the band agrees with it; on
+  // the desktop a switch picked closes the menu, as a model picked closes the model picker.
+  on('ui.render', { component: 'SessionMode' }, async ($, e, next) => {
+    const below = await next(e)
+    if (e.surface !== 'desktop') return below
+    return drawMenuButton(below, $.ui.resolve(e), MENU_NAME, await read($, menuOpen))
+  })
+  on('ui.press', { element: MENU_BUTTON }, async ($, e, next) => {
+    await update($, menuOpen, open => !open)
+    return next(e)
+  })
+  on('ui.press', { element: MENU_SWITCH, surface: 'desktop' }, async ($, e, next) => {
+    const result = await next(e)
+    await update($, menuOpen, () => false)
+    return result
   })
 }

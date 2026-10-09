@@ -32,7 +32,8 @@ import {
   oneLine,
   relayNames,
 } from './prompts'
-import { drawBand } from './menu'
+import { MENU_BUTTON, MENU_SWITCH, drawBand, drawMenuButton } from './menu'
+import type { ModName } from './menu'
 
 const isOn = atom({ plugin: 'multitask', key: 'isOn' } as const, false)
 const thoughts = atom({ plugin: 'multitask', key: 'thoughts' } as const, [])
@@ -47,6 +48,8 @@ const menuOpen = atom({ plugin: 'multitask', key: 'menuOpen' } as const, false)
 const PANE = 'multitask-thoughts'
 // Multitask's switch in the band's `mods` menu.
 const SWITCH = 'mods-menu:multitask'
+// Multitask's word in the label of the menu's button.
+const MENU_NAME: ModName = { rank: 20, word: 'tasks' }
 const AGENT = 'multitask:thought'
 const TOOL = {
   think: 'mcp__multitask__think',
@@ -1022,9 +1025,27 @@ export const register: Register = (on, options) => {
       surface: e.surface,
       controls,
       switches: [{ rank: 20, key: SWITCH, label: 'Multitask', isOn: on_, onPress: () => toggle($) }],
+      name: MENU_NAME,
       isOpen: () => read($, menuOpen),
-      onToggle: () => update($, menuOpen, open => !open),
     })
+  })
+
+  // The menu's button, below the input on the desktop, shared as the band is. Every mod
+  // hears its press, whichever drew it, so the one laying out the band agrees with it; on
+  // the desktop a switch picked closes the menu, as a model picked closes the model picker.
+  on('ui.render', { component: 'SessionMode' }, async ($, e, next) => {
+    const below = await next(e)
+    if (e.surface !== 'desktop') return below
+    return drawMenuButton(below, $.ui.resolve(e), MENU_NAME, await read($, menuOpen))
+  })
+  on('ui.press', { element: MENU_BUTTON }, async ($, e, next) => {
+    await update($, menuOpen, open => !open)
+    return next(e)
+  })
+  on('ui.press', { element: MENU_SWITCH, surface: 'desktop' }, async ($, e, next) => {
+    const result = await next(e)
+    await update($, menuOpen, () => false)
+    return result
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
