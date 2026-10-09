@@ -8,7 +8,7 @@ The mod folders in this checkout are loaded live, so in auto mode edits to them 
 
 ## Cleaning up worktrees
 
-Once a worktree's branch is merged into main, remove the worktree and delete its branch in the same step. Leave nothing behind: no stray worktrees or branches, and no ignored copies (the copied types, `node_modules`). Delete an unmerged branch only when the user says so; otherwise list it for them.
+Once a worktree's branch is merged into main, remove the worktree and delete its branch in the same step. Leave nothing behind: no stray worktrees or branches, and no ignored copies such as `node_modules`. Delete an unmerged branch only when the user says so; otherwise list it for them.
 
 ## Quick fixes
 
@@ -16,7 +16,7 @@ For a small, clear fix: no advisor, read only the code the fix touches, add no n
 
 ## Type-check
 
-Run `npm install` once, then `npm run typecheck` checks both mods. Each mod's `tsconfig.json` extends the types Claude Code writes into `<mod>/.claude-plugin/types/` when it loads the mod; they are not committed, so in a new worktree copy both folders from the main checkout first. They come from whichever Claude Code version loaded the mod last (the first line of `claude-code/index.d.ts` names it): if the check fails on the engine's own types, load the mods from the current version and copy again. The tsconfigs leave out the generated MCP tool types, which list only the servers the last session had connected, so every `mcp__*` tool is loosely typed.
+Run `npm install` once, then `npm run typecheck` checks both mods against the engine's plugin API types committed in `engine-types/claude-code/index.d.ts`; its first line names the Claude Code version they came from. The types Claude Code writes into `<mod>/.claude-plugin/types/` when it loads a mod are not used: they come from whichever version loaded the mod last, and older sessions keep rewriting them. After upgrading Claude Code and reloading the mods, `npm run types:refresh` (from the main checkout or a worktree) copies the newest generated copy over the committed one, never an older one. The built-in and MCP tool types are not committed, as they vary by build and list the connected servers, so tool inputs and every `mcp__*` tool are loosely typed.
 
 ## Changelog
 
