@@ -797,6 +797,54 @@ test('the thread view keeps to its end as messages come only while the person ha
   expect(isNearEnd({ offset: 0, bodyRows: 20, contentRows: 12 })).toBe(true)
 })
 
+// A PNG's first bytes, base64: its signature and the header naming its size.
+function pngOf(width: number, height: number) {
+  const word = (n: number) => String.fromCharCode((n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255)
+  return btoa(`\x89PNG\r\n\x1a\n${word(13)}IHDR${word(width)}${word(height)}\x08\x06\x00\x00\x00`)
+}
+
+test('the pictures pasted with a message draw above it: thumbnails on a page, marks on the terminal', async ($, on) => {
+  const { kept, files } = engine(on)
+  await flipThreads($)
+  const shot = pngOf(400, 300)
+  // more than the desktop's largest picture takes
+  const huge = 'A'.repeat(140_000)
+  const image = (data: string): Block => ({ type: 'image', source: { type: 'base64', media_type: 'image/png', data } })
+  const paste = (uuid: string, content: Block[]) =>
+    $.session.append({ message: { type: 'user', role: 'user', content }, door: 'prompt', origin: { kind: 'composer' }, uuid }).catch(() => undefined)
+  await paste('p1', [image(shot), image(huge), { type: 'text', text: 'look at this' }])
+  await paste('p2', [image(shot)])
+
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const pane = await $.ui.mount({ plugin: 'thread-chat', surface, ...PANE })
+    // the words in a bubble; a message of pictures alone has none
+    expect(await sectionsOf(pane)).toEqual(['you: look at this'])
+    const thumbs = (await pane.findAll({ type: 'Svg' })).filter(svg => svg.props.alt === 'Pasted image')
+    const marks = (await pane.findAll({ type: 'Text' })).filter(t => t.text === '[image]')
+    if (surface === 'terminal') {
+      expect([thumbs.length, marks.length]).toEqual([0, 3])
+    } else {
+      // cards 200 pixels across, as tall as the picture's shape, at the right; a mark
+      // for the one too large to draw
+      expect(thumbs.map(svg => [svg.props.width, svg.props.height])).toEqual([
+        [200, 150],
+        [200, 150],
+      ])
+      expect(String(thumbs[0]?.props.source)).toContain(`href="data:image/png;base64,${shot}"`)
+      expect(marks.length).toBe(1)
+      expect((await pane.findAll({ type: 'Box' })).some(b => b.props.flexWrap === 'wrap' && b.props.justifyContent === 'flex-end')).toBe(true)
+    }
+    await pane.unmount()
+  }
+
+  // kept with their messages for the session's next run, the one too large without its bytes
+  await $.turn.complete({ answer: '', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })
+  expect(rowsIn(kept, files, 'session-1').map(row => row.images)).toEqual([
+    [{ type: 'image/png', width: 400, height: 300, data: shot }, { type: 'image/png' }],
+    [{ type: 'image/png', width: 400, height: 300, data: shot }],
+  ])
+})
+
 test('rows are kept one per id, every one, and read back from their files as written', async () => {
   const row = (id: string, text: string): ViewRow => ({ id, role: 'assistant', mark: markOf(text), text })
   const rows = [row('a', '12345'), { ...row('b', '67890'), role: 'user' as const, typed: 3 }, row('c', 'abcde')]
