@@ -1,31 +1,43 @@
 # claude-multitask
 
-Claude Code mods (hooks-module plugins), made primarily for the desktop app's Code tab.
+Talk to Claude while it works, and keep every topic in its own thread. Two Claude Code mods: **multitask** and **thread-chat**.
 
-- **thread-chat**: conversation threads. Turn them on in a chat with `/threads` (run it again to turn them off). Then start or reply to a thread with a `# name` heading in a message, or with `+ thread` on a message in the desktop app. The agent replies under the same headings, and each thread's sections are colour-coded. Pills above the prompt filter the chat by thread. A switch lets the agent start threads itself.
-- **multitask**: when switched on with `/multitask`, the main session becomes the "voice" that talks with you. It hands all work to background "thoughts", watches their updates and steers them.
+## Why
 
-Why use them, with examples: [docs/why.md](docs/why.md).
+- **Talk while it works.** With multitask you talk to one **voice**, and its **thoughts** (background agents) do the work. The voice is always free to talk.
+- **No waiting, nothing held back.** Ask something new, add a detail or change your mind whenever it occurs to you. The voice passes it to the right piece of work.
+- **Questions come straight away.** Your message isn't queued behind work in progress, so clarifying questions come at once and the right work starts sooner.
+- **Topics stay apart.** With thread-chat, a `# heading` puts a message in its topic's thread: colour-coded, filterable and easy to find later.
 
-Mods need a recent Claude Code build with hooks modules available.
+Examples: [docs/why.md](docs/why.md).
 
 ## Install
 
-This repo is a plugin marketplace:
+Requires Claude Code 2.1.290 or later. Made for the Code tab in the Claude desktop app.
 
 ```
 claude plugin marketplace add othrayte/claude-multitask
-claude plugin install thread-chat@claude-multitask
 claude plugin install multitask@claude-multitask
+claude plugin install thread-chat@claude-multitask
 ```
 
-To develop, clone `git@github.com:othrayte/claude-multitask.git` and add the clone's folder as the marketplace instead (`claude plugin marketplace add <clone folder>`). Plugins from a local folder are read in place: after editing, run `/reload-plugins`.
+Install either or both.
 
-## Develop
+## Use
 
-```
-claude plugin validate thread-chat
-claude plugin test thread-chat
-claude plugin validate multitask
-claude plugin test multitask
-```
+### Multitask
+
+- `/multitask` turns Multitask on in a chat (run it again to turn it off). The chat becomes the voice and hands all work to thoughts.
+- `/thoughts`, or the `thoughts` button above the prompt, opens the Thoughts pane: what each thought is doing, its report, and `stop`.
+- The `voiceEffort` setting (Voice effort, in `/config`) sets how hard the voice thinks: `low` (default), `medium`, `high`, or `session` to match the session. Thoughts keep the session's setting.
+
+### Threads
+
+- `/threads` turns threads on in a chat (run it again to turn them off).
+- A `# name` heading in a message starts a thread, or replies to it if it exists. Close or abbreviated names find the existing thread. The agent replies under the same headings.
+- `#+name` starts a new thread even when an existing one is close.
+- To put a message in a thread, hover it for `+ thread` (desktop app); to move it to another, press `▾` beside its thread tag.
+- Pills above the prompt filter the chat to the threads you pick. With one picked, messages without a heading go to it.
+- `view` above the prompt, or `/thread-view`, opens the thread view: the picked threads' messages on their own, in a pane (all threads when none is picked).
+- `/merge-threads <thread> into <thread>` merges two threads.
+- The switch after the pills lets the agent start threads itself.
