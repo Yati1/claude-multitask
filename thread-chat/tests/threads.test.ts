@@ -687,7 +687,7 @@ test('a reply to a selected part of a reply goes to the thread that part is in',
   }))
   await $.prompt.submit(say('# design\na\n# perf\nb'))
   const note = (name: string) =>
-    `This message belongs to the thread "${name}": the user replied to part of your message in that thread. Reply under that thread's heading.`
+    `This message belongs to the thread "${name}": the user replied to part of your message in that thread, so your reply most likely belongs under that thread's heading.`
 
   // the desktop's marker and quote, then the person's words
   const reply = '<!-- reply 1 -->\n> invisible on light\n\nThis is a test of replying'

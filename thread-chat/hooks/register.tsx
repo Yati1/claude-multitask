@@ -462,7 +462,7 @@ function protocol(list: Thread[], merged: Record<string, string>, mayCreate: boo
   return [
     '# Conversation threads',
     'This conversation can hold several threads at once. The user starts or replies to a thread with a level-1 heading in their message: `# name` or `#name` (with or without the space). Text before the first heading is the unthreaded conversation. A heading may be abbreviated or mistyped, or written `#+name` to start a new thread; a note beside the message then says which thread each heading means.',
-    'Reply the same way. Put what belongs to a thread under a level-1 heading carrying that thread\'s exact name, one section per thread the user wrote to; keep unthreaded material before any thread heading. Use `##` or deeper for structure inside a section: a level-1 heading that is not a thread name drops back into the unthreaded conversation.',
+    'Reply the same way, under whichever thread or threads your reply\'s content belongs to: each part under a level-1 heading carrying that thread\'s exact name, one section per thread. The thread the user wrote in, or was viewing, is usually the right one. A message with no heading may just be missing one: if it clearly continues an existing thread, reply under that thread\'s heading. Keep only material that fits no thread unthreaded, before any thread heading. Use `##` or deeper for structure inside a section: a level-1 heading that is not a thread name drops back into the unthreaded conversation.',
     'This holds for the rest of the conversation; a note beside a later message says when threads are merged or your leave to start them changes.',
     threadState(list, merged, mayCreate),
   ].join('\n\n')
@@ -1208,7 +1208,7 @@ export const register: Register = on => {
       if (quoted !== undefined) {
         unsent.push({ text: e.text.trim(), key: keyOf(quoted.name) })
         return send([
-          `This message belongs to the thread "${quoted.name}": the user replied to part of your message in that thread. Reply under that thread's heading.`,
+          `This message belongs to the thread "${quoted.name}": the user replied to part of your message in that thread, so your reply most likely belongs under that thread's heading.`,
         ])
       }
       // With one thread alone picked, a message with no heading goes to that thread.
@@ -1217,7 +1217,7 @@ export const register: Register = on => {
       if (only === undefined) return send([])
       unsent.push({ text: e.text.trim(), key: keyOf(only.name) })
       return send([
-        `This message belongs to the thread "${only.name}": the user wrote it while viewing that thread alone. Reply to it under that thread's heading.`,
+        `This message belongs to the thread "${only.name}": the user wrote it while viewing that thread alone, so your reply most likely belongs under that thread's heading.`,
       ])
     }
     await addThreads($, names, 'user')
