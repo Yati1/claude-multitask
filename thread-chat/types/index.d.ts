@@ -20,6 +20,20 @@ export type ViewRow = {
   // the length of the text as typed, where notes for the model follow it in the row
   // (rows of an earlier version, which kept no text)
   typed?: number
+  // a reply a tool call followed in its turn: words on the way, not the turn's last
+  // reply, so the view leaves it out
+  interim?: true
+  // the pictures the person pasted with their message, in order
+  images?: ViewImage[]
+}
+
+// A picture the person pasted: its media type, its size where its header tells it, and
+// its bytes as base64 where they are few enough to draw (else a placeholder draws).
+export type ViewImage = {
+  type: string
+  width?: number
+  height?: number
+  data?: string
 }
 
 // Where the threads stood when the model was last told, beside the person's message:

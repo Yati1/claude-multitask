@@ -1,14 +1,15 @@
-import type { Args, ElementTable, RenderElement, SessionMessage } from 'claude-code'
+import type { Args, ElementTable, RenderElement, RenderSurface, SessionMessage } from 'claude-code'
 
-import type { Thread, ViewRow } from '../types'
-import { isPluginFramed, keyOf, splitSections } from './parse'
+import type { Thread, ViewImage, ViewRow } from '../types'
+import { isOthersPrompt, isPluginFramed, keyOf, splitSections } from './parse'
 import type { Section } from './parse'
 
 // The thread view: a pane of the picked threads' conversation alone, the person's
-// messages and Claude's replies a section at a time, with no tool rows and no gaps
-// where the chat hides a row. It looks as the transcript does: the person's
-// sections in bubbles, replies as text, and each thread's tags and borders drawn
-// by the code that draws the transcript's (register.tsx).
+// messages and each turn's last reply a section at a time, with no tool rows, no
+// quiet replies or others' prompts, and no gaps where the chat hides a row. It looks
+// as the transcript does: the person's sections in bubbles under the pictures they
+// pasted, replies as text, and each thread's tags and borders drawn by the code that
+// draws the transcript's (register.tsx).
 //
 // It draws from the rows it kept as the session stored them (`session.append`),
 // each with its id and text: the transcript as the person sees it. A compaction
@@ -69,6 +70,14 @@ const BUBBLE_ROOM = '15%'
 const PART_GAP = 1
 const MESSAGE_GAP = 4
 
+// Rows short of its end the view's window may stand and still keep to its end as new
+// messages come.
+const NEAR_END_ROWS = 3
+
+// Whether a move left the view's window at or near the end of what it shows.
+export const isNearEnd = (move: { offset: number; bodyRows: number; contentRows: number }) =>
+  move.contentRows - move.bodyRows - move.offset <= NEAR_END_ROWS
+
 // Where the store notes how a session's view rows are kept between runs of the app
 // (KeptView); an earlier version kept the rows themselves there.
 export const viewKey = (sessionId: string) => `view:${sessionId}`
@@ -77,38 +86,113 @@ export const viewKey = (sessionId: string) => `view:${sessionId}`
 // were joined.
 export const markOf = (text: string) => text.replace(/\s+/g, '').slice(0, MARK_LENGTH)
 
-function textBlocks(content: readonly { type: string; [field: string]: unknown }[]): string[] {
+type Blocks = readonly { type: string; [field: string]: unknown }[]
+
+function textBlocks(content: Blocks): string[] {
   return content.flatMap(block => (block.type === 'text' && typeof block.text === 'string' ? [block.text] : []))
 }
 
+// Whether a row of Claude's holds a tool call.
+export const hasToolCall = (content: Blocks) => content.some(block => block.type === 'tool_use')
+
+// What the multitask plugin's voice replies when it has nothing to say, and what such a
+// reply is kept as (the react plugin keeps a reply it made a reaction as that too).
+const QUIET = /^(?:\(quiet\)|No response requested\.)$/
+// The engine's own rows in the person's place, known by the tag their text opens with:
+// a command's echo or output (the multitask plugin's wake-up is one), a background
+// task's notice, a reminder.
+const ENGINE_TAGGED =
+  /^\s*<(?:command-(?:name|message|args)|local-command-(?:stdout|stderr|caveat)|task-notification|system-reminder|bash-(?:input|stdout|stderr))>/
+// Another Claude session's message, a thought's hand-back among them.
+const PEER_FRAME = /^\s*Another Claude session sent a message/
+
+// Whether a row's text is a message the view shows: Claude's words to the person, or
+// the person's own; not a quiet reply, nor another party's prompt in their place.
+const isMessageText = (role: 'user' | 'assistant', text: string) =>
+  role === 'assistant' ? !QUIET.test(text.trim()) : !isOthersPrompt(text) && !ENGINE_TAGGED.test(text) && !PEER_FRAME.test(text)
+
+// The media types a picture's bytes are drawn for, and the most base64 characters of one
+// drawn: what fits in the desktop's largest Svg (131072 characters) around it.
+const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp'])
+const IMAGE_DATA_MAX = 130_000
+const BASE64 = /^[A-Za-z0-9+/]+={0,2}$/
+
+// A picture's size in pixels, read from its header (PNG, GIF, JPEG); none where unread.
+function imageSizeOf(type: string, data: string): { width?: number; height?: number } {
+  try {
+    const bytes = atob(type === 'image/jpeg' ? data : data.slice(0, 32))
+    const at = (i: number) => bytes.charCodeAt(i)
+    const word = (i: number) => (at(i) << 8) | at(i + 1)
+    if (type === 'image/png') return { width: word(16) * 65536 + word(18), height: word(20) * 65536 + word(22) }
+    if (type === 'image/gif') return { width: at(6) | (at(7) << 8), height: at(8) | (at(9) << 8) }
+    // a JPEG's size is in its first start-of-frame segment
+    for (let i = 2; type === 'image/jpeg' && i + 9 < bytes.length && at(i) === 0xff; i += 2 + word(i + 2)) {
+      const marker = at(i + 1)
+      if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) {
+        return { width: word(i + 7), height: word(i + 5) }
+      }
+    }
+  } catch {
+    // not base64 after all: no size
+  }
+  return {}
+}
+
+// The pictures in a row's blocks, in order.
+function imagesOf(content: Blocks): ViewImage[] {
+  return content.flatMap((block): ViewImage[] => {
+    if (block.type !== 'image') return []
+    const source = (block.source ?? {}) as { type?: unknown; media_type?: unknown; data?: unknown }
+    const type = typeof source.media_type === 'string' ? source.media_type : 'image'
+    const data = source.type === 'base64' && typeof source.data === 'string' ? source.data : undefined
+    if (data === undefined || !IMAGE_TYPES.has(type) || data.length > IMAGE_DATA_MAX || !BASE64.test(data)) return [{ type }]
+    return [{ type, ...imageSizeOf(type, data), data }]
+  })
+}
+
 // A stored row of the main conversation as the view knows it: a person's message
-// or a reply's text, with the text the transcript shows; none else. A compaction's
-// summary is the engine's (door `compaction`), not the person's.
+// (with the pictures they pasted) or a reply's text, with the text the transcript
+// shows; none else. A compaction's summary is the engine's (door `compaction`), not
+// the person's.
 export function viewRowOf(e: Args<'session.append'>, person: ReadonlySet<string>): ViewRow | undefined {
   if (e.agentId !== undefined) return undefined
   const blocks = textBlocks(e.message.content)
   const text = blocks.join('\n')
-  if (text.trim() === '') return undefined
-  if (e.message.type === 'assistant') return { id: e.uuid, role: 'assistant', mark: markOf(text), text }
+  if (e.message.type === 'assistant') {
+    if (text.trim() === '') return undefined
+    const row: ViewRow = { id: e.uuid, role: 'assistant', mark: markOf(text), text }
+    return hasToolCall(e.message.content) ? { ...row, interim: true } : row
+  }
   const isPerson =
     e.message.type === 'user' &&
     e.message.isMeta !== true &&
     person.has(e.origin.kind) &&
     (e.door === 'prompt' || e.door === 'delivery')
   if (!isPerson || isPluginFramed(text)) return undefined
+  const images = imagesOf(e.message.content)
+  if (text.trim() === '' && images.length === 0) return undefined
   // Notes for the model follow the prompt as typed, a block each; the transcript
   // shows the prompt alone.
   const typed = blocks[0] ?? ''
-  return blocks.length > 1
-    ? { id: e.uuid, role: 'user', mark: markOf(text), text: typed, typed: typed.length }
-    : { id: e.uuid, role: 'user', mark: markOf(text), text }
+  const row: ViewRow =
+    blocks.length > 1
+      ? { id: e.uuid, role: 'user', mark: markOf(text), text: typed, typed: typed.length }
+      : { id: e.uuid, role: 'user', mark: markOf(text), text }
+  return images.length > 0 ? { ...row, images } : row
 }
 
 // The rows known once `row` is: every one, one per id (a row stored again replaces
-// itself).
+// itself, still interim if it was).
 export function withViewRow(all: ViewRow[], row: ViewRow): ViewRow[] {
   const at = all.findIndex(known => known.id === row.id)
-  return at < 0 ? [...all, row] : all.map((known, i) => (i === at ? row : known))
+  if (at < 0) return [...all, row]
+  return all.map((known, i) => (i !== at ? known : known.interim === true ? { ...row, interim: true } : row))
+}
+
+// The rows known once those of `ids` are known as interim: replies a tool call
+// followed in their turn, which the view leaves out (it shows a turn's last reply).
+export function withInterim(all: ViewRow[], ids: ReadonlySet<string>): ViewRow[] {
+  return all.map(row => (ids.has(row.id) && row.interim !== true ? { ...row, interim: true } : row))
 }
 
 // How the store notes a session's kept rows: a fingerprint of each of its files'
@@ -135,9 +219,9 @@ function hashOf(text: string) {
 // A file's text as the store notes it: its length and hash.
 export const fingerprintOf = (text: string) => `${text.length.toString(36)}.${hashOf(text)}`
 
-// A session's rows as files: a JSON line a row, its text's first piece with it, and
-// a line `{ id, more }` for each further piece of a long text; as many lines a file
-// as fit in `size` characters.
+// A session's rows as files: a JSON line a row, its text's first piece with it, a
+// line `{ id, more }` for each further piece of a long text, and a line `{ id, image }`
+// for each picture; as many lines a file as fit in `size` characters.
 export function chunksOf(rows: readonly ViewRow[], size = CHUNK_CHARS, piece = PIECE_CHARS): string[] {
   const chunks: string[] = []
   let lines: string[] = []
@@ -151,14 +235,15 @@ export function chunksOf(rows: readonly ViewRow[], size = CHUNK_CHARS, piece = P
     lines.push(line)
     length += line.length + 1
   }
-  for (const row of rows) {
+  for (const { images, ...row } of rows) {
     const text = row.text
     if (text === undefined || text.length <= piece) {
       put(JSON.stringify(row))
-      continue
+    } else {
+      put(JSON.stringify({ ...row, text: text.slice(0, piece) }))
+      for (let at = piece; at < text.length; at += piece) put(JSON.stringify({ id: row.id, more: text.slice(at, at + piece) }))
     }
-    put(JSON.stringify({ ...row, text: text.slice(0, piece) }))
-    for (let at = piece; at < text.length; at += piece) put(JSON.stringify({ id: row.id, more: text.slice(at, at + piece) }))
+    for (const image of images ?? []) put(JSON.stringify({ id: row.id, image }))
   }
   if (lines.length > 0) chunks.push(`${lines.join('\n')}\n`)
   return chunks
@@ -171,9 +256,9 @@ export function rowsOfChunks(chunks: readonly string[]): ViewRow[] {
   for (const chunk of chunks) {
     for (const line of chunk.split('\n')) {
       if (line.trim() === '') continue
-      let value: Partial<ViewRow> & { more?: unknown }
+      let value: Partial<ViewRow> & { more?: unknown; image?: Partial<ViewImage> }
       try {
-        value = JSON.parse(line) as Partial<ViewRow> & { more?: unknown }
+        value = JSON.parse(line) as Partial<ViewRow> & { more?: unknown; image?: Partial<ViewImage> }
       } catch {
         continue
       }
@@ -181,6 +266,13 @@ export function rowsOfChunks(chunks: readonly string[]): ViewRow[] {
       const last = rows[rows.length - 1]
       if (typeof value.more === 'string') {
         if (last?.id === value.id) rows[rows.length - 1] = { ...last, text: (last.text ?? '') + value.more }
+        continue
+      }
+      if (typeof value.image === 'object' && value.image !== null) {
+        const image = value.image
+        if (last?.id === value.id && typeof image.type === 'string') {
+          rows[rows.length - 1] = { ...last, images: [...(last.images ?? []), image as ViewImage] }
+        }
         continue
       }
       if ((value.role === 'user' || value.role === 'assistant') && typeof value.mark === 'string') rows.push(value as ViewRow)
@@ -294,14 +386,36 @@ export const needsMessages = (known: readonly ViewRow[]) => known.length === 0 |
 // text the transcript shows.
 type Source = { row: ViewRow | undefined; role: 'user' | 'assistant'; text: string }
 
+// The conversation's replies a tool call followed in their turn (by index): a turn's
+// words before its last reply. A message of the person's, or another's prompt, starts
+// a turn; a tool's result does not.
+function interimIn(messages: readonly SessionMessage[]): Set<number> {
+  const interim = new Set<number>()
+  let said: number[] = []
+  for (const [i, m] of messages.entries()) {
+    if (m.role === 'user') {
+      if ((m.toolResults?.length ?? 0) === 0) said = []
+      continue
+    }
+    if (m.text.trim() !== '') said.push(i)
+    if (m.toolUses.length > 0) {
+      for (const at of said) interim.add(at)
+      said = []
+    }
+  }
+  return interim
+}
+
 // The messages the view draws, oldest first: the rows kept as the session stored
 // them, each with its text. A row an earlier version kept without its text draws
 // while the conversation still holds it, as that version drew it. For a session
-// with no rows kept, the conversation as it reads now.
+// with no rows kept, the conversation as it reads now. Only messages: the person's
+// own and each turn's last reply, never a quiet one.
 function sourcesOf(known: readonly ViewRow[], messages: readonly SessionMessage[]): Source[] {
   if (known.length === 0) {
+    const interim = interimIn(messages)
     return messages
-      .filter(m => m.text.trim() !== '' && (m.role === 'assistant' || looksTyped(m)))
+      .filter((m, i) => m.text.trim() !== '' && !interim.has(i) && (m.role === 'assistant' || looksTyped(m)) && isMessageText(m.role, m.text))
       .map(m => ({ row: undefined, role: m.role, text: m.text }))
   }
   const held = new Map<number, SessionMessage>()
@@ -313,15 +427,18 @@ function sourcesOf(known: readonly ViewRow[], messages: readonly SessionMessage[
   }
   const sources: Source[] = []
   for (const [i, row] of known.entries()) {
+    if (row.interim === true) continue
     const m = held.get(i)
     const text = row.text ?? (m === undefined ? undefined : row.typed === undefined ? m.text : m.text.slice(0, row.typed))
-    if (text !== undefined && text.trim() !== '') sources.push({ row, role: row.role, text })
+    const hasImages = (row.images?.length ?? 0) > 0
+    if (text !== undefined && (text.trim() !== '' || hasImages) && isMessageText(row.role, text)) sources.push({ row, role: row.role, text })
   }
   return sources
 }
 
-// One section the view draws; `id` its row's, where one was kept.
-type Entry = { id: string | undefined; role: 'user' | 'assistant'; thread: Thread | undefined; text: string }
+// One section the view draws; `id` its row's, where one was kept; `images` the
+// pictures pasted with its message, on the first of its sections drawn.
+type Entry = { id: string | undefined; role: 'user' | 'assistant'; thread: Thread | undefined; text: string; images?: ViewImage[] }
 
 // The conversation's sections, in order, where the person last placed them, kept
 // to the picked threads (all of them while none is picked).
@@ -332,12 +449,16 @@ export function viewEntries(inputs: ViewInputs, deps: ViewDeps) {
   const sources = sourcesOf(known, messages)
 
   const entries: Entry[] = []
-  const keep = (id: string | undefined, role: Entry['role'], s: Section, resolve: (name: string) => Thread | undefined) => {
+  // Whether the section is drawn: in a picked thread, or none picked, and with words
+  // or pictures to show.
+  const keep = (id: string | undefined, role: Entry['role'], s: Section, resolve: (name: string) => Thread | undefined, images?: ViewImage[]) => {
     const thread = s.thread === null ? undefined : resolve(s.thread)
-    if (selected.size > 0 && (thread === undefined || !selected.has(keyOf(thread.name)))) return
+    if (selected.size > 0 && (thread === undefined || !selected.has(keyOf(thread.name)))) return false
     // a heading that names no thread stays as typed
     const text = thread === undefined && s.thread !== null ? `# ${s.thread}\n${s.text}`.trim() : s.text
-    if (text !== '') entries.push({ id, role, thread, text })
+    if (text === '' && images === undefined) return false
+    entries.push(images === undefined ? { id, role, thread, text } : { id, role, thread, text, images })
+    return true
   }
 
   for (const { row, role, text } of sources) {
@@ -361,16 +482,23 @@ export function viewEntries(inputs: ViewInputs, deps: ViewDeps) {
     const sentThread = sentKey === undefined ? undefined : deps.threadOf(sentKey, list, merged)
     const sections = sentThread === undefined ? typed : [{ thread: sentThread.name, text }]
     const at = movedRowOf(moves, row?.id, new Set([markOf(text)]), deps.stemOf)
-    for (const s of sections) keep(row?.id, 'user', at === undefined ? s : deps.placeSection(s, at, moves, resolve, list, merged), resolve)
+    // The pictures pasted with it go with its first section drawn; a message of
+    // pictures alone is one section of no words.
+    let images = (row?.images?.length ?? 0) > 0 ? row?.images : undefined
+    for (const s of sections.length > 0 ? sections : [{ thread: null, text: '' }]) {
+      const placed = at === undefined ? s : deps.placeSection(s, at, moves, resolve, list, merged)
+      if (keep(row?.id, 'user', placed, resolve, images)) images = undefined
+    }
   }
   return { entries, picked }
 }
 
-// How the pane draws, as the chat draws the same: the surface's elements; a reply's
-// text as markdown (kept to what a Markdown element takes); the row holding a
+// How the pane draws, as the chat draws the same: the surface and its elements; a
+// reply's text as markdown (kept to what a Markdown element takes); the row holding a
 // thread's tag above a person's message, at the side their messages sit; and a
 // reply's part of a thread, in a border of its colour under its tag.
 export type ViewDrawing = {
+  surface: RenderSurface
   ui: ElementTable
   markdown: (text: string) => RenderElement
   tagRow: (thread: Thread) => RenderElement
@@ -449,9 +577,56 @@ function drawBubble(draw: ViewDrawing, isPage: boolean, text: string): RenderEle
   )
 }
 
+// A pasted picture as the chat's thumbnail on a page: a card of at most THUMB_WIDTH
+// pixels across with rounded corners and a thin border, as tall as the picture's shape
+// gives within its bounds (THUMB_HEIGHT where its shape is not known).
+const THUMB_WIDTH = 200
+const THUMB_HEIGHT = 150
+const THUMB_MIN = 40
+const THUMB_MAX_HEIGHT = 300
+const THUMB_RADIUS = 8
+const THUMB_BORDER = '#8888884d'
+
+// A picture's thumbnail as SVG markup, with its size in pixels; none for one whose
+// bytes were not kept (too many to draw).
+function thumbOf(image: ViewImage): { source: string; width: number; height: number } | undefined {
+  const { type, data, width, height } = image
+  if (data === undefined || !IMAGE_TYPES.has(type) || data.length > IMAGE_DATA_MAX || !BASE64.test(data)) return undefined
+  const isSized = width !== undefined && height !== undefined && width > 0 && height > 0
+  const w = isSized ? Math.max(THUMB_MIN, Math.min(THUMB_WIDTH, width)) : THUMB_WIDTH
+  const h = isSized ? Math.max(THUMB_MIN, Math.min(THUMB_MAX_HEIGHT, Math.round((w * height) / width))) : THUMB_HEIGHT
+  const source = [
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">`,
+    `<clipPath id="card"><rect width="${w}" height="${h}" rx="${THUMB_RADIUS}"/></clipPath>`,
+    `<image href="data:${type};base64,${data}" width="${w}" height="${h}" preserveAspectRatio="xMidYMid slice" clip-path="url(#card)"/>`,
+    `<rect x="0.5" y="0.5" width="${w - 1}" height="${h - 1}" rx="${THUMB_RADIUS - 0.5}" fill="none" stroke="${THUMB_BORDER}"/>`,
+    '</svg>',
+  ].join('')
+  return { source, width: w, height: h }
+}
+
+// The pictures pasted with a person's message, above their words as the chat draws
+// them: on a page, thumbnails side by side at the right; on the terminal, which draws
+// none in the pane, a dim mark for each, as for a picture whose bytes were not kept.
+function drawImages(draw: ViewDrawing, isPage: boolean, images: readonly ViewImage[], gapBelow: number): RenderElement {
+  const { Box, Text } = draw.ui
+  const Svg = isPage ? (draw.ui as Partial<ElementTable<'desktop'>>).Svg : undefined
+  const marks = images.map(image => {
+    const thumb = Svg === undefined ? undefined : thumbOf(image)
+    if (Svg === undefined || thumb === undefined) return <Text dimColor>[image]</Text>
+    return <Svg source={thumb.source} alt="Pasted image" width={thumb.width} height={thumb.height} />
+  })
+  return (
+    <Box flexDirection="row" flexWrap="wrap" justifyContent={isPage ? 'flex-end' : 'flex-start'} columnGap={1} rowGap={1} marginBottom={gapBelow}>
+      {marks}
+    </Box>
+  )
+}
+
 // One section, `gap` rows below the one before, its thread marked as the chat marks
 // it. Claude's is its text as markdown, as the chat draws a reply's, in its thread's
-// border under its tag; the person's a bubble under its thread's tag.
+// border under its tag; the person's a bubble under its thread's tag and the pictures
+// they pasted with it.
 function drawEntry(draw: ViewDrawing, isPage: boolean, entry: Entry, gap: number): RenderElement {
   const { Box } = draw.ui
   const { thread } = entry
@@ -463,10 +638,12 @@ function drawEntry(draw: ViewDrawing, isPage: boolean, entry: Entry, gap: number
       </Box>
     )
   }
+  const hasWords = entry.text.trim() !== ''
   return (
     <Box flexDirection="column" marginTop={gap}>
       {thread !== undefined && draw.tagRow(thread)}
-      {drawBubble(draw, isPage, entry.text)}
+      {entry.images !== undefined && drawImages(draw, isPage, entry.images, hasWords && isPage ? PART_GAP : 0)}
+      {hasWords && drawBubble(draw, isPage, entry.text)}
     </Box>
   )
 }
@@ -478,9 +655,9 @@ export function drawView(draw: ViewDrawing, inputs: ViewInputs, deps: ViewDeps):
   const shown = entries.slice(-SECTIONS_DRAWN)
   const hidden = entries.length - shown.length
   const names = picked.map(t => t.name).join(', ')
-  // An app that draws Svg lays the view out as a page (the desktop, the phone, an
-  // editor), a row there half a line; the terminal lays it out in cells.
-  const isPage = 'Svg' in draw.ui
+  // An app lays the view out as a page (the desktop, the phone, an editor), a row
+  // there half a line; the terminal lays it out in cells.
+  const isPage = draw.surface !== 'terminal'
   const gapBefore = (entry: Entry, i: number) => {
     const before = shown[i - 1]
     if (before === undefined) return 0

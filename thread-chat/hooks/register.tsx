@@ -22,7 +22,9 @@ import {
   dataFolderOf,
   drawView,
   fingerprintOf,
+  hasToolCall,
   isKeptView,
+  isNearEnd,
   markHashOf,
   markOf,
   marksOf,
@@ -33,6 +35,7 @@ import {
   rowsUpTo,
   viewKey,
   viewRowOf,
+  withInterim,
   withViewRow,
 } from './pane'
 import type { ViewDeps, ViewInputs } from './pane'
@@ -361,6 +364,10 @@ async function isFilteredOut($: EngineInterface, ids: string[]): Promise<boolean
 // Messages sent with no heading to one thread (the one picked, or the one a reply's
 // quotes came from), until their rows are stored.
 const unsent: { text: string; key: string }[] = []
+
+// The ids of the main conversation's replies with text in the turn so far, since its
+// last tool call: interim if another tool call follows them in the turn.
+let turnReplies = new Set<string>()
 
 // The text blocks of a stored row, as one text.
 function textOf(content: readonly { type: string; [field: string]: unknown }[]): string {
@@ -1055,6 +1062,10 @@ function bubbleText(shown: Section[], resolve: (name: string) => Thread | undefi
 // The thread view (pane.tsx) places a section by the rules the chat draws it by.
 const viewDeps: ViewDeps = { threadOf, personThreadOf, personSectionsOf, placeSection, stemOf }
 
+// Whether the thread view's window stood at or near its end when it last moved: then a
+// new message keeps it at the end; scrolled up, it stays where the person put it.
+let isViewAtEnd = true
+
 // Keeps the thread view's window on its newest rows as they come, until the person scrolls.
 async function pinViewToEnd($: EngineInterface) {
   try {
@@ -1377,7 +1388,21 @@ export const register: Register = on => {
       return stored
     } finally {
       const row = stored?.deny === undefined ? viewRowOf(stored === undefined ? e : { ...e, message: stored.message }, PERSON) : undefined
-      if (row !== undefined) await update($, viewRows, all => withViewRow(all, row))
+      if (row !== undefined) {
+        await update($, viewRows, all => withViewRow(all, row))
+        // A new message keeps the thread view at its end, unless the person scrolled up.
+        if (isViewAtEnd) void pinViewToEnd($)
+      }
+      // The view shows a turn's last reply: those a tool call follows in its turn are interim.
+      if (e.agentId === undefined && stored?.deny === undefined) {
+        if (e.message.type === 'user' && e.door === 'prompt') turnReplies = new Set()
+        if (row?.role === 'assistant' && row.interim !== true) turnReplies.add(row.id)
+        if (e.message.type === 'assistant' && hasToolCall(e.message.content)) {
+          const ids = turnReplies
+          turnReplies = new Set()
+          if (ids.size > 0) await update($, viewRows, all => withInterim(all, ids))
+        }
+      }
     }
   })
 
@@ -1385,6 +1410,7 @@ export const register: Register = on => {
   // are on: all of them then, those from before they came on too.
   on('turn.complete', async ($, e, next) => {
     const result = await next(e)
+    if (e.agentId === undefined) turnReplies = new Set()
     if (e.agentId === undefined && (await read($, isOn))) {
       if ((await read($, threads)).length > 0) await save($)
       const rows = await read($, viewRows)
@@ -1397,6 +1423,14 @@ export const register: Register = on => {
     if (!(await read($, isOn))) return { text: OFF_TEXT }
     const opened = await openView($)
     return { text: opened.isPlaced ? 'Thread view opened.' : `Thread view not shown: ${opened.reason}` }
+  })
+
+  // Where the thread view's window was last moved to, by the person or by this plugin:
+  // at or near its end, new messages keep it there.
+  on('ui.scroll', { component: 'Pane', requestId: VIEW }, async ($, e, next) => {
+    const result = await next(e)
+    if (result.deny === undefined) isViewAtEnd = isNearEnd(e)
+    return result
   })
 
   // Another pick of threads takes the thread view to the newest of what they hold.
@@ -1416,6 +1450,7 @@ export const register: Register = on => {
   on('ui.render', { component: 'Pane', requestId: VIEW }, async ($, e) =>
     drawView(
       {
+        surface: e.surface,
         ui: $.ui.resolve(e),
         markdown: text => drawMarkdown($, e, text),
         // the chat's tags without its move button: the picker it opens is the chat's row's

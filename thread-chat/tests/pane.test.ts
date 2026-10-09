@@ -9,6 +9,7 @@ import {
   dataFolderOf,
   fingerprintOf,
   isKeptView,
+  isNearEnd,
   markOf,
   marksOf,
   rowsOfChunks,
@@ -201,11 +202,10 @@ test('the thread view shows the picked threads alone, earlier replies too, and n
 
   for (const surface of ['terminal', 'desktop'] as const) {
     const pane = await $.ui.mount({ plugin: 'thread-chat', surface, ...PANE })
-    // none picked: the whole conversation, without its tool rows
+    // none picked: the whole conversation, without its tool rows or the words a tool call followed
     expect(await sectionsOf(pane)).toEqual([
       'you: hello',
       'you: fast?',
-      'Claude: on it',
       'Claude: the plan',
       'Claude: use a queue',
       'Claude: it is fine',
@@ -667,6 +667,182 @@ test('a session keeps no rows on disk until threads are on, then every one, thos
   await reply('a2', '# design\nin a thread')
   await done()
   expect(rowsIn(kept, files, 'session-1').map(row => row.id)).toEqual(['a1', 'a2'])
+})
+
+// The multitask plugin's wake-up, as it submits it in the person's words.
+const WAKE = '<local-command-stdout>Set model to unchanged (multitask wake-up: read the thought updates just above)</local-command-stdout>'
+
+type Origin = Parameters<Engine['session']['append']>[0]['origin']
+
+// Stores rows as the engine does: the person's message, a plugin's prompt in the
+// person's words, Claude's reply, Claude's tool call with its result; and ends a turn.
+function storer($: Engine) {
+  let calls = 0
+  const append = (uuid: string, door: 'prompt' | 'response' | 'tool-result', content: Block[], origin: Origin) =>
+    $.session
+      .append({
+        message: door === 'response' ? { type: 'assistant', role: 'assistant', content } : { type: 'user', role: 'user', content },
+        door,
+        origin,
+        uuid,
+      })
+      .catch(() => undefined)
+  return {
+    person: (uuid: string, text: string) => append(uuid, 'prompt', [{ type: 'text', text }], { kind: 'composer' }),
+    plugin: (uuid: string, text: string) => append(uuid, 'prompt', [{ type: 'text', text }], { kind: 'plugin', name: 'multitask', asUser: true }),
+    reply: (uuid: string, text: string) => append(uuid, 'response', [{ type: 'text', text }], model),
+    call: async (uuid: string) => {
+      const id = `toolu_${++calls}`
+      await append(uuid, 'response', [{ type: 'tool_use', id, name: 'Bash', input: {} }], model)
+      await append(`${uuid}-result`, 'tool-result', [{ type: 'tool_result', tool_use_id: id, content: 'ok' }], { kind: 'tool', tool: 'Bash' })
+    },
+    done: () => $.turn.complete({ answer: '', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' }),
+  }
+}
+
+test("the view shows messages alone: each turn's last reply, not a quiet one, nor another party's prompt", async ($, on) => {
+  const { kept, files } = engine(on)
+  await flipThreads($)
+  await $.prompt.submit(say('# design\nhello'))
+  const { person, plugin, reply, call, done } = storer($)
+  // the words before a turn's tool calls, of a thread or not, lead up to its last reply
+  await person('p1', '# design\nhello')
+  await reply('a1', 'Testing the fix live:')
+  await call('a2')
+  await reply('a3', '# design\nchecking the queue')
+  await call('a4')
+  await reply('a5', 'It works.\n# design\nthe queue holds')
+  await done()
+  // the voice saying nothing, and kept as saying nothing (as a reaction is too)
+  await person('p2', 'thanks')
+  await reply('a6', '(quiet)')
+  await done()
+  await plugin('w1', WAKE)
+  await reply('a7', 'No response requested.')
+  await done()
+  // a turn's last reply stays though the next turn calls a tool
+  await person('p3', 'and now?')
+  await reply('a8', 'On it.')
+  await done()
+  await plugin('w2', WAKE)
+  await call('a9')
+  await reply('a10', 'Done.')
+  await done()
+  // others' prompts, though stored as the person's
+  await person('o1', 'Thought updates:\n- fix: done')
+  await person('o2', WAKE)
+  await person('o3', '<task-notification>\n<task-id>b1</task-id>\n</task-notification>')
+  await person('o4', 'Another Claude session sent a message:\n[Subagent hand-back] all done')
+  await person('o5', '<command-name>/threads</command-name>')
+  // a reply a tool call followed, stored again, is still left out
+  await reply('a1', 'Testing the fix live:')
+  await done()
+
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const pane = await $.ui.mount({ plugin: 'thread-chat', surface, ...PANE })
+    // none picked: every message, its parts of no thread too
+    expect(await sectionsOf(pane)).toEqual([
+      'you: hello',
+      'Claude: It works.',
+      'Claude: the queue holds',
+      'you: thanks',
+      'you: and now?',
+      'Claude: On it.',
+      'Claude: Done.',
+    ])
+    // design picked: its parts alone
+    const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...BAND })
+    await band.press({ key: 'thread:design' })
+    expect(await sectionsOf(pane)).toEqual(['you: hello', 'Claude: the queue holds'])
+    await band.press({ key: 'thread:design' })
+    for (const site of [band, pane]) await site.unmount()
+  }
+  // kept so for the session's next run
+  expect(rowsIn(kept, files, 'session-1').flatMap(row => (row.interim === true ? [row.id] : []))).toEqual(['a1', 'a3'])
+})
+
+test('a session with no rows kept shows the messages its conversation holds, and no others', async ($, on) => {
+  const { transcript } = engine(on, { 'session:session-1': { threads: [DESIGN], aliases: {}, snaps: {} } })
+  const call = (id: string) => [{ tool_use_id: id, tool: 'Bash', input: {} }]
+  const result = (id: string) => [{ tool_use_id: id, text: 'ok' }]
+  transcript.push(
+    ...([
+      { role: 'user', text: '# design\nhello', toolUses: [] },
+      { role: 'assistant', text: 'Testing the fix live:', toolUses: call('toolu_1') },
+      { role: 'user', text: '', toolUses: [], toolResults: result('toolu_1') },
+      { role: 'assistant', text: '# design\nchecking the queue', toolUses: [] },
+      { role: 'assistant', text: '', toolUses: call('toolu_2') },
+      { role: 'user', text: '', toolUses: [], toolResults: result('toolu_2') },
+      { role: 'assistant', text: 'It works.\n# design\nthe queue holds', toolUses: [] },
+      { role: 'user', text: 'Thought updates:\n- fix: done', toolUses: [] },
+      { role: 'user', text: WAKE, toolUses: [] },
+      { role: 'assistant', text: '(quiet)', toolUses: [] },
+      { role: 'user', text: 'Another Claude session sent a message:\n[Subagent hand-back] all done', toolUses: [] },
+      { role: 'assistant', text: 'No response requested.', toolUses: [] },
+    ] as SessionMessage[]),
+  )
+  await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
+
+  const pane = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...PANE })
+  expect(await sectionsOf(pane)).toEqual(['you: hello', 'Claude: It works.', 'Claude: the queue holds'])
+})
+
+// (The kit answers none of the plugin's own scrolls, so the view's move to its end
+// as a message comes goes unseen here; where a move leaves it decides whether it does.)
+test('the thread view keeps to its end as messages come only while the person has it at or near the end', () => {
+  // a window of 20 rows over 60: its end is at row 40
+  const at = (offset: number) => isNearEnd({ offset, bodyRows: 20, contentRows: 60 })
+  expect([at(40), at(37), at(36), at(10), at(0)]).toEqual([true, true, false, false, false])
+  // a tree that fits shows its end wherever the window stands
+  expect(isNearEnd({ offset: 0, bodyRows: 20, contentRows: 12 })).toBe(true)
+})
+
+// A PNG's first bytes, base64: its signature and the header naming its size.
+function pngOf(width: number, height: number) {
+  const word = (n: number) => String.fromCharCode((n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255)
+  return btoa(`\x89PNG\r\n\x1a\n${word(13)}IHDR${word(width)}${word(height)}\x08\x06\x00\x00\x00`)
+}
+
+test('the pictures pasted with a message draw above it: thumbnails on a page, marks on the terminal', async ($, on) => {
+  const { kept, files } = engine(on)
+  await flipThreads($)
+  const shot = pngOf(400, 300)
+  // more than the desktop's largest picture takes
+  const huge = 'A'.repeat(140_000)
+  const image = (data: string): Block => ({ type: 'image', source: { type: 'base64', media_type: 'image/png', data } })
+  const paste = (uuid: string, content: Block[]) =>
+    $.session.append({ message: { type: 'user', role: 'user', content }, door: 'prompt', origin: { kind: 'composer' }, uuid }).catch(() => undefined)
+  await paste('p1', [image(shot), image(huge), { type: 'text', text: 'look at this' }])
+  await paste('p2', [image(shot)])
+
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const pane = await $.ui.mount({ plugin: 'thread-chat', surface, ...PANE })
+    // the words in a bubble; a message of pictures alone has none
+    expect(await sectionsOf(pane)).toEqual(['you: look at this'])
+    const thumbs = (await pane.findAll({ type: 'Svg' })).filter(svg => svg.props.alt === 'Pasted image')
+    const marks = (await pane.findAll({ type: 'Text' })).filter(t => t.text === '[image]')
+    if (surface === 'terminal') {
+      expect([thumbs.length, marks.length]).toEqual([0, 3])
+    } else {
+      // cards 200 pixels across, as tall as the picture's shape, at the right; a mark
+      // for the one too large to draw
+      expect(thumbs.map(svg => [svg.props.width, svg.props.height])).toEqual([
+        [200, 150],
+        [200, 150],
+      ])
+      expect(String(thumbs[0]?.props.source)).toContain(`href="data:image/png;base64,${shot}"`)
+      expect(marks.length).toBe(1)
+      expect((await pane.findAll({ type: 'Box' })).some(b => b.props.flexWrap === 'wrap' && b.props.justifyContent === 'flex-end')).toBe(true)
+    }
+    await pane.unmount()
+  }
+
+  // kept with their messages for the session's next run, the one too large without its bytes
+  await $.turn.complete({ answer: '', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })
+  expect(rowsIn(kept, files, 'session-1').map(row => row.images)).toEqual([
+    [{ type: 'image/png', width: 400, height: 300, data: shot }, { type: 'image/png' }],
+    [{ type: 'image/png', width: 400, height: 300, data: shot }],
+  ])
 })
 
 test('rows are kept one per id, every one, and read back from their files as written', async () => {
