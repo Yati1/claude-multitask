@@ -65,27 +65,37 @@ const assistantRow = (text: string) =>
 
 const say = (text: string) => ({ text, origin: { kind: 'composer' as const }, wait: false })
 
-// Thread-chat's dropdown in the band, and its rows that flip a switch: threads on or
-// off, and whether the agent may start them.
-const DROPDOWN = 'threads'
-const THREADS_SWITCH = 'threads'
+// Thread-chat's menu in the band, and its rows that flip a switch: threads on or off,
+// and whether the agent may start them.
+const MENU = 'threads'
+const THREADS_SWITCH = 'threads-on'
 const AGENT_SWITCH = 'agent-threads'
 
 type Band = {
   find: (query: { key: string }) => Promise<{ props: Record<string, unknown> } | undefined>
-  select: (target: { key: string; value: string }) => Promise<unknown>
+  press: (target: { key: string }) => Promise<unknown>
+  redraw: () => Promise<unknown>
 }
 
-// A switch in the band's dropdown as its row says it is: `on` where it ends in a check,
-// `off` where not, or undefined where the dropdown has no row for it.
-async function switchOf(band: Band, value: string) {
-  const options = (await band.find({ key: DROPDOWN }))?.props.options as { value: string; label?: string }[] | undefined
-  const label = options?.find(o => o.value === value)?.label
-  return label === undefined ? undefined : label.endsWith(' ✓') ? 'on' : 'off'
+// A switch in the band's menu as drawn: on the desktop, as its slide switch's hit area
+// holds it; on the terminal, as its button reads, `( ●)` on; undefined where the menu
+// has no row for it, or is shut.
+async function switchOf(band: Band, key: string) {
+  const hit = await band.find({ key: `switch:${key}` })
+  if (hit !== undefined) return (hit.props.props as { isOn: boolean }).isOn ? 'on' : 'off'
+  const button = await band.find({ key })
+  return button === undefined ? undefined : button.props.label === '( ●)' ? 'on' : 'off'
 }
 
-// The switch's row in the band's dropdown, picked: it flips the switch.
-const flipSwitch = (band: Band, value: string) => band.select({ key: DROPDOWN, value })
+// The switch's row in the band's menu, pressed: it flips the switch. A shut menu (the
+// terminal's) is opened first.
+async function flipSwitch(band: Band, key: string) {
+  if ((await band.find({ key })) === undefined) {
+    await band.press({ key: MENU })
+    await band.redraw()
+  }
+  return band.press({ key })
+}
 
 // The person's /threads, which turns threads on in the chat, or off again.
 const flipThreads = ($: Engine) =>
@@ -266,7 +276,7 @@ test('the model is told how threads work once they are on, of merges and the age
   expect(prompts.at(-1)).toBe('go on')
 })
 
-test('with no threads the band says how to start one; the agent switch in the dropdown gates the tool', async ($, on) => {
+test('with no threads the band says how to start one; the agent switch in the menu gates the tool', async ($, on) => {
   engine(on)
   await flipThreads($)
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
@@ -288,7 +298,7 @@ test('with no threads the band says how to start one; the agent switch in the dr
   expect(await band.find({ text: /start a thread/ })).toBeUndefined()
 })
 
-test('until /threads turns threads on, a session is left as it is: its rows, its prompts, its band but the dropdown, and its tools', async ($, on) => {
+test('until /threads turns threads on, a session is left as it is: its rows, its prompts, its band but the menu, and its tools', async ($, on) => {
   // what the mod offers the model
   const registered: string[] = []
   const prompts = engine(on, {}, undefined, registered)
@@ -308,11 +318,11 @@ test('until /threads turns threads on, a session is left as it is: its rows, its
   // its prompts go on as typed, with nothing beside them: a heading is plain text
   await $.prompt.submit(say('# design\na'))
   expect(prompts.at(-1)).toBe('# design\na')
-  // its band holds only the dropdown, threads off in it, and the model starts no thread
+  // its band holds only the menu, threads off in it, and the model starts no thread
   const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...BAND })
-  expect(await band.find({ type: 'Svg' })).toBeUndefined()
+  expect((await band.findAll({ type: 'Svg' })).map(p => p.props.alt)).toEqual(['menu', 'On in this chat: off'])
   expect(await band.find({ text: /start a thread/ })).toBeUndefined()
-  expect(await band.find({ key: DROPDOWN })).toBeDefined()
+  expect(await band.find({ key: MENU })).toBeDefined()
   expect(await switchOf(band, THREADS_SWITCH)).toBe('off')
   expect(await switchOf(band, AGENT_SWITCH)).toBeUndefined()
   expect((await $.tool.call({ tool: 'mcp__thread-chat__create_thread', tool_use_id: 't1', name: 'ideas' })).deny).toContain('off')
@@ -919,7 +929,8 @@ test('the move picker starts a new thread from a typed name, even with no thread
   await more.redraw()
   expect(await tagOf(more, 'ideas')).toBeDefined()
   const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...BAND })
-  expect(picturesIn(await band.drawn())).toEqual(['ideas', 'later on'])
+  // after the Threads menu's caret, the pills
+  expect(picturesIn(await band.drawn())).toEqual(['menu', 'ideas', 'later on'])
 
   // the terminal's picker has the "+" and its field too; mobile draws neither
   const terminal = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...assistantRow('# ideas\nx'), requestId: 'r2' })
@@ -1315,9 +1326,9 @@ test('a long desktop transcript draws Clients only in the band and the one open 
   }
   expect(await clientsInRows()).toBe(0)
 
-  // the band: one per thread
+  // the band: one per thread, and one per switch in its menu (threads on, the agent's)
   const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...BAND })
-  expect(await band.findAll({ type: 'Client' })).toHaveLength(threadCount)
+  expect(await band.findAll({ type: 'Client' })).toHaveLength(threadCount + 2)
 
   // an open picker adds its pills, at most one per thread and "none"; opening another closes it
   await rows[1]?.press({ key: 'tag:design' })
@@ -1363,9 +1374,10 @@ test('the band keeps one row with 12 threads beside another mod, and nothing the
     expect(all.filter(isPill)).toHaveLength(12)
     const pill = pathTo(tree, isPill)
     const other = pathTo(tree, isOther)
-    // the dropdown before the threads and `view` after them
-    const controls = [DROPDOWN, 'thread-view'].map(key => pathTo(tree, n => n.props?.key === key))
-    expect(controls.map(c => c?.at(-1)?.type)).toEqual(['Select', 'Button'])
+    // the menu before the threads and `view` after them: on the desktop the menu is the
+    // keyed Box its card hangs from, elsewhere a Button
+    const controls = [MENU, 'thread-view'].map(key => pathTo(tree, n => n.props?.key === key))
+    expect(controls.map(c => c?.at(-1)?.type)).toEqual([surface === 'desktop' ? 'Box' : 'Button', 'Button'])
 
     // the other mod shares the row and keeps its width; the threads give way
     expect(shareOf(pill, other)).toMatchObject({ a: { flexShrink: 1, minWidth: 0 }, b: { flexShrink: 0 } })
@@ -1386,19 +1398,25 @@ test('the band keeps one row with 12 threads beside another mod, and nothing the
     }
 
     // every Box the pointer reveals is out of the flow, or in a Box that is, so showing
-    // it moves nothing: on the desktop the view's tip, a card the desktop lifts, and each
-    // pill's lit picture, revealed in place over it and never lifted as a card
+    // it moves nothing: on the desktop the view's tip and the menu's card of switches,
+    // cards the desktop lifts, and each pill's lit picture, revealed in place over it
+    // and never lifted as a card
     const reveals = all.filter(n => n.hover?.display === 'flex')
     const isPlaced = (n: Drawn) => n.props?.position === 'absolute'
     expect(reveals.filter(n => !pathTo(tree, m => m === n)?.some(isPlaced))).toEqual([])
     if (surface === 'desktop') {
       const picturesShown = (n: Drawn) => (n.children ?? []).flatMap(restingPictures).length
-      const tips = reveals.filter(n => picturesShown(n) === 0)
-      const lit = reveals.filter(n => picturesShown(n) === 1)
+      const menu = controls[0]?.at(-1)
+      const card = (menu?.children ?? []).find(n => reveals.includes(n as Drawn)) as Drawn | undefined
+      expect(card !== undefined && isPlaced(card)).toBe(true)
+      expect((card?.children ?? []).flatMap(picturesIn)).toEqual(['On in this chat: on', 'Agent may start threads: off'])
+      const tips = reveals.filter(n => n !== card && picturesShown(n) === 0)
+      const lit = reveals.filter(n => n !== card && picturesShown(n) === 1)
       expect(tips).toHaveLength(1)
       expect(tips.every(isPlaced)).toBe(true)
       expect(lit).toHaveLength(12)
       expect(lit.filter(isPlaced)).toEqual([])
+      expect(reveals).toHaveLength(14)
     }
     await band.unmount()
   }

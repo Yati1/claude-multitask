@@ -25,7 +25,7 @@ Install either or both.
 
 ## Use
 
-Multitask and thread-chat each have a dropdown in the band above the prompt with their switches for the chat. The mobile app shows no dropdowns: use the commands there.
+Multitask has a dropdown, and thread-chat a `Threads` menu, in the band above the prompt with their switches for the chat. The mobile app shows neither: use the commands there.
 
 ### Multitask
 
@@ -36,11 +36,11 @@ Multitask and thread-chat each have a dropdown in the band above the prompt with
 
 ### Threads
 
-- `/threads`, or `On in this chat` in the `Threads` dropdown, turns threads on in a chat (again to turn them off). The dropdown checks each switch that is on.
+- `/threads`, or the `On in this chat` switch in the `Threads` menu, turns threads on in a chat (again to turn them off). The menu opens while the pointer is on `Threads` or it has the focus in the desktop app, and with a press on it in the terminal.
 - A `# name` heading in a message starts a thread, or replies to it if it exists. Close or abbreviated names find the existing thread. The agent replies under the same headings.
 - `#+name` starts a new thread even when an existing one is close.
 - To put a message in a thread, hover it for `+ thread` (desktop app); to move it to another, press `▾` beside its thread tag.
 - Pills above the prompt filter the chat to the threads you pick. With one picked, messages without a heading go to it.
 - `view` above the prompt, or `/thread-view`, opens the thread view: the picked threads' messages on their own, in a pane (all threads when none is picked).
 - `/merge-threads <thread> into <thread>` merges two threads.
-- `Agent may start threads`, in the `Threads` dropdown while threads are on, lets the agent start threads itself.
+- `Agent may start threads`, in the `Threads` menu while threads are on, lets the agent start threads itself.
