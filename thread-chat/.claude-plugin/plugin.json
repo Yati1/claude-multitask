@@ -1,6 +1,6 @@
 {
   "name": "thread-chat",
   "version": "0.1.0",
-  "description": "Conversation threads by # heading: colour-coded sections, show/hide toggles above the prompt, optional agent-created threads",
+  "description": "Conversation threads by # heading: colour-coded sections, a thread picker above the prompt, a pane to read one thread, optional agent-created threads",
   "types": "./types/index.d.ts"
 }

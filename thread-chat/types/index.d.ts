@@ -71,6 +71,14 @@ declare module 'claude-code' {
       // whether the band's `mods` menu is open off the desktop, where `mods` opens and closes
       // it; read only while this mod lays the band out
       menuOpen: boolean
+      // whether the thread picker's menu is open off the desktop, where its button opens and
+      // closes it (the desktop shows it as a card while the pointer or focus is on it)
+      pickerOpen: boolean
+      // what the thread picker's menu shows: '' the threads to post to, 'name' the field
+      // for a new thread's name, 'manage' each thread's merge, archive and delete,
+      // `merge:<key>` the threads that one can merge into, `delete:<key>` the question
+      // whether to delete it
+      pickerMode: string
     }
   }
 }

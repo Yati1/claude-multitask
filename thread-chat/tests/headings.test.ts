@@ -85,7 +85,7 @@ async function tagOf(drawing: Drawing, name: string) {
 // The thread names on the band, as its buttons are keyed.
 async function threadsOn(band: Drawing & { find: (q: { key: string }) => Promise<unknown> }, keys: string[]) {
   const on: string[] = []
-  for (const key of keys) if ((await band.find({ key: `thread:${key}` })) !== undefined) on.push(key)
+  for (const key of keys) if ((await band.find({ key: `picker:thread:${key}` })) !== undefined) on.push(key)
   return on
 }
 
@@ -248,7 +248,7 @@ test('the thread view shows the rest of a split heading as the first line of its
   await store('a1', 'assistant', '# Threads\non it')
 
   const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...BAND })
-  await band.press({ key: 'thread:threads' })
+  await band.press({ key: 'picker:thread:threads' })
   const pane = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...PANE })
   const said = (await pane.findAll({ type: 'Markdown' })).map(m => String(m.props.text))
   expect(said).toEqual(['Lets fix the view\nand the tags', 'on it'])

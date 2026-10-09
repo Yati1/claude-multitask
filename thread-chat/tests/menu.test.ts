@@ -95,7 +95,7 @@ test('with the other mods drawn beneath, the band still holds one mods menu, eve
     expect(await band.findAll({ key: MENU_BUTTON })).toHaveLength(1)
     expect(await switchKeys(band)).toEqual(['mods-menu:threads', 'mods-menu:agent-threads', 'mods-menu:multitask', 'mods-menu:react'])
     // the controls in one row, the threads first, the menu at the row's end
-    const pill = pathTo(tree, n => n.props?.key === 'thread:design')
+    const pill = pathTo(tree, n => n.props?.key === 'thread-picker')
     const thoughts = pathTo(tree, n => n.props?.key === 'open-thoughts')
     const menu = pathTo(tree, n => n.props?.key === MENU)
     expect(pill?.[0]).toBe(tree as unknown as Drawn)

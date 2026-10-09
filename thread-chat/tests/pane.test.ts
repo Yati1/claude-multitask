@@ -195,7 +195,7 @@ test('the thread view shows the picked threads alone, earlier replies too, and n
     // design picked: its sections alone, before the last message too
     const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...BAND })
     // (no redraw asked for: the pick draws the view again)
-    await band.press({ key: 'thread:design' })
+    await band.press({ key: 'picker:thread:design' })
     expect(await sectionsOf(pane)).toEqual(['you: hello', 'Claude: use a queue', 'Claude: next step'])
     expect(await pane.find({ type: 'Text', text: /All threads/ })).toBeUndefined()
 
@@ -210,7 +210,7 @@ test('the thread view shows the picked threads alone, earlier replies too, and n
     // no Client: every overlay on the desktop shares their one frame
     expect(await pane.findAll({ type: 'Client' })).toEqual([])
 
-    await band.press({ key: 'thread:design' })
+    await band.press({ key: 'picker:none' })
     for (const site of [band, pane]) await site.unmount()
   }
 
@@ -225,7 +225,7 @@ test('the view puts a message sent to the one picked thread, and a moved part, w
   await flipThreads($)
   await $.prompt.submit(say('# design\na\n# perf\nb'))
   const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...BAND })
-  await band.press({ key: 'thread:perf' })
+  await band.press({ key: 'picker:thread:perf' })
 
   // sent with no heading while perf alone was picked; the note to the model is stored beside it
   await $.prompt.submit(say('and the cache?'))
@@ -261,7 +261,7 @@ test('the view puts a message sent to the one picked thread, and a moved part, w
 
   // the person moves two reply parts from design to perf, with everything in view;
   // the terminal knows a reply by its row's id, the desktop by its API message's
-  await band.press({ key: 'thread:perf' })
+  await band.press({ key: 'picker:thread:perf' })
   const terminal = await $.ui.mount({
     plugin: 'thread-chat',
     surface: 'terminal',
@@ -283,7 +283,7 @@ test('the view puts a message sent to the one picked thread, and a moved part, w
   await desktop.redraw()
   await desktop.pointer({ type: 'down', x: 1, y: 0, button: 'left', in: 'pick:perf' } as never)
 
-  await band.press({ key: 'thread:perf' })
+  await band.press({ key: 'picker:thread:perf' })
   expect(await sectionsOf(pane)).toEqual(['you: and the cache?', 'Claude: use a queue', 'Claude: next step'])
 })
 

@@ -8,12 +8,13 @@ Notable changes to the thread-chat, multitask and react mods. The format is base
 
 - Added a react mod (`/react`) so the agent can acknowledge a message with an emoji reaction, not a reply.
 - Added a `mods` menu above the prompt to thread-chat, multitask and react, with their switches for the chat.
+- Added a thread picker to thread-chat's band to pick, start, merge, archive and delete threads.
 
 ### Changed
 
 - Changed thread-chat's agent to pick the right threads for its reply, even for unheaded messages.
 - Changed thread-chat's agent-threads switch and multitask's switch to sit in the `mods` menu.
-- Changed thread-chat's band to pick one thread at a time, where messages with no heading go.
+- Changed thread-chat's thread view to show the picked thread alone, or every thread with none picked.
 
 ### Fixed
 
@@ -23,7 +24,7 @@ Notable changes to the thread-chat, multitask and react mods. The format is base
 
 ### Removed
 
-- Removed filtering from thread-chat's chat; the thread view shows the picked thread alone.
+- Removed thread-chat's filter pills and the filtering of its chat.
 
 ## 0.1.0 - 2026-10-09
 
