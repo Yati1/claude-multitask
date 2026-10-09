@@ -2,7 +2,7 @@
   "name": "claude-multitask",
   "private": true,
   "scripts": {
-    "typecheck": "tsc --noEmit -p thread-chat && tsc --noEmit -p multitask && tsc --noEmit -p react",
+    "typecheck": "node scripts/check-menu.mjs && tsc --noEmit -p thread-chat && tsc --noEmit -p multitask && tsc --noEmit -p react",
     "types:refresh": "node scripts/refresh-types.mjs"
   },
   "devDependencies": {

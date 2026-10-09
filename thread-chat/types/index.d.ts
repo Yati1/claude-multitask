@@ -66,6 +66,9 @@ declare module 'claude-code' {
       // the person's messages and reply texts as stored, in order: what the thread
       // view draws, each by its transcript row's id
       viewRows: ViewRow[]
+      // whether the band's `mods` menu is open off the desktop, where `mods` opens and closes
+      // it; read only while this mod lays the band out
+      menuOpen: boolean
     }
   }
 }

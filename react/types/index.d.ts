@@ -25,6 +25,9 @@ declare module 'claude-code' {
       // the person's message the turn running now answers; null when the turn came
       // from anything else (a notification, a plugin's prompt)
       answering: Answering | null
+      // whether the band's `mods` menu is open off the desktop, where `mods` opens and closes
+      // it; read only while this mod lays the band out
+      menuOpen: boolean
     }
   }
 }

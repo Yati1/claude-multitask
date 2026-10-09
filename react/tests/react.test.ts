@@ -1,7 +1,8 @@
-import type { On, TurnStepChunk } from 'claude-code'
+import type { On, RenderElement, TurnStepChunk } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 
+import { MENU, MENU_BUTTON, drawBand } from '../hooks/menu'
 import { BRIEF, NO_RESPONSE, OFF_NOTE, couldBeEmoji, isOneEmoji, markOf, marksOf } from '../hooks/reactions'
 
 type Seen = {
@@ -300,4 +301,73 @@ test('a rewound or forked session, under a new id, takes up the switch and the r
   // its history may not hold the note, so the model is told again
   await say($, 'go on')
   expect(seen.prompts.at(-1)).toBe(`go on\n--\n${BRIEF}`)
+})
+
+const BAND = {
+  component: 'AbovePrompt',
+  props: {
+    hasSurvey: false,
+    isWorking: false,
+    maxRows: 10,
+    bodyColumns: 100,
+    scroll: { offset: 0, bodyRows: 10 },
+    view: {},
+  },
+} as const
+
+// Reactions' switch in the band's mods menu.
+const SWITCH = 'mods-menu:react'
+
+// The keys of the mods menu's switches, in the order drawn.
+async function switchKeys(band: { findAll: (query: { type: string }) => Promise<{ key: string | undefined }[]> }) {
+  return (await band.findAll({ type: 'Button' })).map(b => b.key ?? '').filter(key => key.startsWith('mods-menu:'))
+}
+
+test('alone, react draws the band with one mods menu, whose switch turns reactions on and off', async ($, on) => {
+  const seen = engine(on)
+  await start($)
+  for (const surface of ['desktop', 'terminal'] as const) {
+    const band = await $.ui.mount({ plugin: 'react', surface, ...BAND })
+    expect(await band.findAll({ key: MENU })).toHaveLength(1)
+    expect(await band.findAll({ key: MENU_BUTTON })).toHaveLength(1)
+    expect(await switchKeys(band)).toEqual([SWITCH])
+    expect((await band.find({ key: SWITCH }))?.props.label).toBe('off')
+    await band.unmount()
+  }
+  const band = await $.ui.mount({ plugin: 'react', surface: 'desktop', ...BAND })
+  await band.press({ key: SWITCH })
+  await band.redraw()
+  expect((await band.find({ key: SWITCH }))?.props.label).toBe('on')
+  await say($, 'hello')
+  expect(seen.prompts.at(-1)).toContain(BRIEF)
+})
+
+test('with the other mods drawn beneath, the band still holds one mods menu, every mod its switch in it', async ($, on) => {
+  // thread-chat and multitask, drawn beneath through the same band as they draw it
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e) => {
+    const ui = $.ui.resolve(e)
+    const parts = (name: string, rank: number, label: string, control: RenderElement, grows: boolean) => ({
+      ui,
+      surface: e.surface,
+      controls: { rank, name, element: control, grows },
+      switches: [{ rank, key: `mods-menu:${name}`, label, isOn: true, onPress: () => undefined }],
+      isOpen: async () => false,
+      onToggle: () => undefined,
+    })
+    const pills = ui.Text({ children: ['pills'] })
+    const thoughts = ui.Button({ key: 'open-thoughts', label: 'thoughts', onPress: () => undefined })
+    const multitask = await drawBand({ type: 'engine', ref: 0 }, parts('multitask', 20, 'Multitask', thoughts, false))
+    return drawBand(multitask, parts('threads', 10, 'Threads', pills, true))
+  })
+  engine(on)
+  await start($)
+  for (const surface of ['desktop', 'terminal'] as const) {
+    const band = await $.ui.mount({ plugin: 'react', surface, ...BAND })
+    expect(await band.findAll({ key: MENU })).toHaveLength(1)
+    expect(await band.findAll({ key: MENU_BUTTON })).toHaveLength(1)
+    expect(await switchKeys(band)).toEqual(['mods-menu:threads', 'mods-menu:multitask', SWITCH])
+    expect(await band.find({ text: /^pills$/ })).toBeDefined()
+    expect(await band.find({ key: 'open-thoughts' })).toBeDefined()
+    await band.unmount()
+  }
 })

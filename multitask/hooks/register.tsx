@@ -3,7 +3,6 @@ import type {
   AgentStatus,
   EngineInterface,
   Register,
-  RenderElement,
   SessionSendAddress,
   SessionSendResult,
   Timer,
@@ -33,6 +32,7 @@ import {
   oneLine,
   relayNames,
 } from './prompts'
+import { drawBand } from './menu'
 
 const isOn = atom({ plugin: 'multitask', key: 'isOn' } as const, false)
 const thoughts = atom({ plugin: 'multitask', key: 'thoughts' } as const, [])
@@ -42,9 +42,11 @@ const toldVoice = atom({ plugin: 'multitask', key: 'toldVoice' } as const, false
 const expanded = atom({ plugin: 'multitask', key: 'expanded' } as const, [])
 const openReports = atom({ plugin: 'multitask', key: 'openReports' } as const, [])
 const heard = atom({ plugin: 'multitask', key: 'heard' } as const, {})
+const menuOpen = atom({ plugin: 'multitask', key: 'menuOpen' } as const, false)
 
 const PANE = 'multitask-thoughts'
-const SWITCH = 'multitask-switch'
+// Multitask's switch in the band's `mods` menu.
+const SWITCH = 'mods-menu:multitask'
 const AGENT = 'multitask:thought'
 const TOOL = {
   think: 'mcp__multitask__think',
@@ -163,13 +165,6 @@ const TOOL_SPECS = [
     inputSchema: { type: 'object', properties: { name: { type: 'string', description: 'The thought\'s name' } } },
   },
 ]
-
-// The SVG of a slide switch: a rounded track with the knob to the right when on.
-function switchPicture(isOn: boolean): string {
-  const track = isOn ? '#3b82f6' : '#8c8c8c'
-  const knob = isOn ? 23 : 11
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="34" height="20" viewBox="0 0 34 20"><rect x="1" y="2" width="32" height="16" rx="8" fill="${track}"/><circle cx="${knob}" cy="10" r="6" fill="#ffffff"/></svg>`
-}
 
 function str(e: unknown, key: string): string {
   const value = (e as Record<string, unknown>)[key]
@@ -996,71 +991,40 @@ export const register: Register = (on, options) => {
     return <Text dimColor>◦ thought update{names.length > 0 ? `: ${names.join(', ')}` : ''}</Text>
   })
 
-  // The switch posts here when clicked.
-  on('ui.message', async ($, e, next) => {
-    if (e.element === SWITCH && (e.data as { flip?: unknown } | null)?.flip === true) await toggle($)
-    return next(e)
-  })
-
+  // The band above the prompt, shared with the other mods of this repository through
+  // ./menu.tsx: while Multitask is on or has thoughts left, `thoughts`; always, the switch
+  // in its `mods` menu that turns Multitask on and off.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const below = await next(e)
     if (e.props.hasSurvey) return below
 
     const on_ = await read($, isOn)
     const live = (await read($, thoughts)).filter(t => t.status !== 'stopped')
-    // Off with no thoughts left, there is no band: /multitask turns Multitask on.
-    if (!on_ && live.length === 0) return below
-    // The count is of the thoughts running now; an idle or failed one only keeps the band up.
+    // The count is of the thoughts running now; an idle or failed one only keeps the button up.
     const running = live.filter(t => t.status === 'running').length
     const queued = live.reduce((n, t) => n + t.queued.length, 0)
     const thoughtsLabel =
       (running > 0 ? `thoughts ${running}` : 'thoughts') + (queued > 0 ? ` · ${queued} queued` : '')
-    const { Box, Text, Button } = $.ui.resolve(e)
-
-    let toggleSwitch: RenderElement
-    if (e.surface === 'desktop') {
-      // A real switch: its picture with a hit area laid over it.
-      const { Svg, Client } = $.ui.resolve(e)
-      toggleSwitch = (
-        <Box>
-          <Svg source={switchPicture(on_)} alt={`Multitask: ${on_ ? 'on' : 'off'}`} width={34} height={20} />
-          <Box position="absolute" top={0} left={0} width="100%" height="100%">
-            <Client key={SWITCH} module="./switch.tsx" props={{ isOn: on_ }} width="100%" height="100%" />
-          </Box>
-        </Box>
-      )
-    } else {
-      toggleSwitch = (
-        <Button
-          key="multitask"
-          label={on_ ? '( ●)' : '(● )'}
-          variant={on_ ? 'primary' : 'secondary'}
-          dimColor={!on_}
-          onPress={() => void toggle($)}
-        />
-      )
-    }
-
-    // One row that keeps its width; nothing the pointer shows takes room.
-    const band = (
-      <Box flexDirection="row" columnGap={1} alignItems="center" flexShrink={0}>
-        <Text>Multitask</Text>
-        {toggleSwitch}
-        <Button key="open-thoughts" label={thoughtsLabel} onPress={() => void $.ui.open({ id: PANE, title: 'Thoughts' })} />
-      </Box>
-    )
-
-    // Shares the one row with other mods' controls, on its right: theirs give way, these
-    // keep their width.
-    if (below.type === 'engine') return band
-    return (
-      <Box flexDirection="row" justifyContent="space-between" alignItems="center" columnGap={2}>
-        <Box flexDirection="row" alignItems="center" flexGrow={1} flexShrink={1} minWidth={0}>
-          {below}
-        </Box>
-        {band}
-      </Box>
-    )
+    const { Button } = $.ui.resolve(e)
+    // Off with no thoughts left, the band has no `thoughts`: the switch turns Multitask on.
+    const controls =
+      !on_ && live.length === 0
+        ? undefined
+        : {
+            rank: 20,
+            name: 'multitask',
+            element: (
+              <Button key="open-thoughts" label={thoughtsLabel} onPress={() => void $.ui.open({ id: PANE, title: 'Thoughts' })} />
+            ),
+          }
+    return drawBand(below, {
+      ui: $.ui.resolve(e),
+      surface: e.surface,
+      controls,
+      switches: [{ rank: 20, key: SWITCH, label: 'Multitask', isOn: on_, onPress: () => toggle($) }],
+      isOpen: () => read($, menuOpen),
+      onToggle: () => update($, menuOpen, open => !open),
+    })
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
