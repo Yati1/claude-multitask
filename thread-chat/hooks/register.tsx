@@ -22,6 +22,7 @@ import {
   chunksOf,
   dataFolderOf,
   drawView,
+  drawViewFailure,
   fingerprintOf,
   hasToolCall,
   imagePathsOf,
@@ -1929,25 +1930,30 @@ export const register: Register = on => {
 
   // The thread view: the picked threads' sections, their tags and a reply's
   // borders drawn by the code that draws the chat's. No Client: a pane of many
-  // rows must not add to the Clients every overlay on the desktop shares.
+  // rows must not add to the Clients every overlay on the desktop shares. A failure to
+  // draw it says so in the pane: else the engine draws its own, an empty pane.
   on('ui.render', { component: 'Pane', requestId: VIEW }, async ($, e) => {
-    settleView($, e.props.scroll.offset)
-    // drawn again as the pictures it waits for are read
-    await read($, picturesRead)
-    return drawView(
-      {
-        surface: e.surface,
-        ui: $.ui.resolve(e),
-        markdown: text => drawMarkdown($, e, text),
-        // the chat's tags without its move button: the picker it opens is the chat's row's
-        tagRow: thread => drawTagRow($, e, [drawTag($, e, thread, isOnRightOf(e.surface) ? 'end' : 'start')]),
-        // its text is markdown, so its tag is not inset, as on the chat's markdown parts
-        threadPart: (thread, body) => drawThreadPart($, e, thread, drawTag($, e, thread, 'start'), body),
-        picture: image => pictureFor($, image),
-      },
-      await viewInputs($),
-      viewDeps,
-    )
+    try {
+      settleView($, e.props.scroll.offset)
+      // drawn again as the pictures it waits for are read
+      await read($, picturesRead)
+      return drawView(
+        {
+          surface: e.surface,
+          ui: $.ui.resolve(e),
+          markdown: text => drawMarkdown($, e, text),
+          // the chat's tags without its move button: the picker it opens is the chat's row's
+          tagRow: thread => drawTagRow($, e, [drawTag($, e, thread, isOnRightOf(e.surface) ? 'end' : 'start')]),
+          // its text is markdown, so its tag is not inset, as on the chat's markdown parts
+          threadPart: (thread, body) => drawThreadPart($, e, thread, drawTag($, e, thread, 'start'), body),
+          picture: image => pictureFor($, image),
+        },
+        await viewInputs($),
+        viewDeps,
+      )
+    } catch (error) {
+      return drawViewFailure($.ui.resolve(e), error)
+    }
   })
 
   on('command.run', { command: 'merge-threads' }, async ($, e) => {
