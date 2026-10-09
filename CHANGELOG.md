@@ -24,6 +24,7 @@ Notable changes to the thread-chat, multitask and react mods. The format is base
 - Fixed issue where multitask's voice could post a message to a thought it meant to queue or interrupt.
 - Fixed issue where multitask's `tell` showed as a success when its message did not reach the thought.
 - Fixed issue where multitask's messages to thoughts were never delivered in auto mode.
+- Fixed issue where multitask's messages to a thought were refused once it had finished its turn.
 
 ## 0.1.0 - 2026-10-09
 

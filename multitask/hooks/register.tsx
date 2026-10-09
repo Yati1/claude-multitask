@@ -691,7 +691,9 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
-  on('agent.offer', { agent: AGENT }, () => ({ isOffered: false }))
+  // The engine resumes an ended thought with a message only if its type is offered, so it
+  // is offered while Multitask is on; the model still cannot start one (tool.check, below).
+  on('agent.offer', { agent: AGENT }, async ($, e, next) => ((await read($, isOn)) ? next(e) : { isOffered: false }))
 
   on('command.run', { command: 'multitask' }, async $ => {
     const now = await toggle($)
@@ -880,13 +882,15 @@ export const register: Register = (on, options) => {
     return result
   })
 
-  // The voice's think call was allowed as any call is; the thought it starts is the
-  // mod's own agent type, which the model is never offered, so its start is not put
-  // to a second decider. What the thought then does is checked as any agent's work.
+  // Only this mod starts a thought. The voice's think call was allowed as any call is, so
+  // the thought it starts is not put to a second decider. Anyone else's start of one (the
+  // model's own Agent call, in any loop, or another plugin's) is refused. What a thought
+  // then does is checked as any agent's work.
   on('tool.check', { tool: 'Agent' }, async ($, e, next) => {
     const input = e.input as { subagent_type?: unknown; subagentType?: unknown } | null
     if (input?.subagent_type !== AGENT && input?.subagentType !== AGENT) return next(e)
-    return { decision: 'allow', reason: 'A thought the multitask voice started.' }
+    if (next.origin.plugin === $.plugin.name) return { decision: 'allow', reason: 'A thought the multitask voice started.' }
+    return { decision: 'deny', reason: 'Only the multitask mod starts a thought (the voice\'s think tool); use another agent type.' }
   })
 
   // The voice's messages to its thoughts go by the engine's SendMessage tool, called as
