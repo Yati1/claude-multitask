@@ -1414,6 +1414,7 @@ export const register: Register = on => {
   on('ui.render', { component: 'Pane', requestId: VIEW }, async ($, e) =>
     drawView(
       {
+        surface: e.surface,
         ui: $.ui.resolve(e),
         markdown: text => drawMarkdown($, e, text),
         // the chat's tags without its move button: the picker it opens is the chat's row's

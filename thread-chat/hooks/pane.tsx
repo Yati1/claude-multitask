@@ -1,4 +1,4 @@
-import type { Args, ElementTable, RenderElement, SessionMessage } from 'claude-code'
+import type { Args, ElementTable, RenderElement, RenderSurface, SessionMessage } from 'claude-code'
 
 import type { Thread, ViewRow } from '../types'
 import { isPluginFramed, keyOf, splitSections } from './parse'
@@ -366,11 +366,12 @@ export function viewEntries(inputs: ViewInputs, deps: ViewDeps) {
   return { entries, picked }
 }
 
-// How the pane draws, as the chat draws the same: the surface's elements; a reply's
-// text as markdown (kept to what a Markdown element takes); the row holding a
+// How the pane draws, as the chat draws the same: the surface and its elements; a
+// reply's text as markdown (kept to what a Markdown element takes); the row holding a
 // thread's tag above a person's message, at the side their messages sit; and a
 // reply's part of a thread, in a border of its colour under its tag.
 export type ViewDrawing = {
+  surface: RenderSurface
   ui: ElementTable
   markdown: (text: string) => RenderElement
   tagRow: (thread: Thread) => RenderElement
@@ -478,9 +479,9 @@ export function drawView(draw: ViewDrawing, inputs: ViewInputs, deps: ViewDeps):
   const shown = entries.slice(-SECTIONS_DRAWN)
   const hidden = entries.length - shown.length
   const names = picked.map(t => t.name).join(', ')
-  // An app that draws Svg lays the view out as a page (the desktop, the phone, an
-  // editor), a row there half a line; the terminal lays it out in cells.
-  const isPage = 'Svg' in draw.ui
+  // An app lays the view out as a page (the desktop, the phone, an editor), a row
+  // there half a line; the terminal lays it out in cells.
+  const isPage = draw.surface !== 'terminal'
   const gapBefore = (entry: Entry, i: number) => {
     const before = shown[i - 1]
     if (before === undefined) return 0
