@@ -808,7 +808,7 @@ test("a thought's queue goes over once the engine has ended its run, not while t
   expect(seen.sends.map(s => s.text)).toEqual(['and logout', 'and signup'])
 })
 
-test('a message that does not reach its thought says so: in tell, or to the voice with the message still queued', async ($, on) => {
+test('a message that does not reach its thought says so: as an error from tell, or to the voice with the message still queued', async ($, on) => {
   const seen = engine(on)
   const clock = mock.clock(on)
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
@@ -834,8 +834,11 @@ test('a message that does not reach its thought says so: in tell, or to the voic
   ])
   expect(await listed('c3')).toContain('- auth-bug [idle]: Find why login fails\n  queued: 1. check refresh too')
 
-  // A message told to it now says why it did not arrive, and leaves the thought as it was.
-  expect(await tell('c4', 'are you there?')).toBe(`auth-bug did not get the message: ${why}`)
+  // A message told to it now fails the call, saying why it did not arrive, and leaves the
+  // thought as it was.
+  const failed = await $.tool.call({ tool: 'mcp__multitask__tell', tool_use_id: 'c4', name: 'auth-bug', message: 'are you there?' })
+  expect(failed.result).toBeUndefined()
+  expect(failed.deny).toBe(`auth-bug did not get the message: ${why}`)
   expect(await listed('c5')).toContain('auth-bug [idle]')
 
   // Once it can be reached, it is, and its queue goes with its next turn's end.

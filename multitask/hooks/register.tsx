@@ -193,6 +193,13 @@ function unknownThought(list: Thought[], ref: string) {
   return { deny: `No thought called "${ref}". Thoughts: ${names}.` }
 }
 
+// What tell answers: what became of the message, or, as an error, why it did not arrive.
+type TellAnswer = { result: string } | { deny: string }
+
+function notDelivered(t: Thought, reason: string): TellAnswer {
+  return { deny: `${t.name} did not get the message: ${reason}` }
+}
+
 // A thought's name: up to three words of the text in lower-case kebab-case, of plain
 // letters and digits alone, as an agent's name is spelled; "" when it has none.
 function slug(text: string): string {
@@ -463,8 +470,8 @@ async function unqueue($: EngineInterface, id: string, index: number | undefined
 // Cuts a thought's running turn so the message goes in at once: the cut turn's end (or
 // the grace timer) hands it over. With no turn the engine will cut, the message waits in
 // its queue for the run's end, or goes now when the run has ended. The thought is never
-// stopped: a stopped agent takes no more messages.
-async function interrupt($: EngineInterface, t: Thought, text: string): Promise<string> {
+// stopped: a stopped agent takes no more messages. Answers as tell does.
+async function interrupt($: EngineInterface, t: Thought, text: string): Promise<TellAnswer> {
   let pending = text
   if (t.turnId !== null) {
     await patchThought($, t.id, one => ({
@@ -475,7 +482,7 @@ async function interrupt($: EngineInterface, t: Thought, text: string): Promise<
       await $.turn.abort({ turnId: t.turnId })
       // Normally its turn.complete hands the message over; this covers a turn that never reports.
       $.clock.after(INTERRUPT_GRACE_MS, () => void handOverInterrupt($, t.id))
-      return `Interrupting ${t.name}; it gets the message as soon as its current turn is cut.`
+      return { result: `Interrupting ${t.name}; it gets the message as soon as its current turn is cut.` }
     } catch {
       // That turn had ended. Unless its end handed the message over, it goes another way.
       let taken = null as string | null
@@ -483,19 +490,18 @@ async function interrupt($: EngineInterface, t: Thought, text: string): Promise<
         taken = one.interruptWith
         return { ...one, interruptWith: null }
       })
-      if (taken === null) return `${t.name}'s turn had just ended; it gets the message now.`
+      if (taken === null) return { result: `${t.name}'s turn had just ended; it gets the message now.` }
       pending = taken
     }
   }
   if ((await $.agent.list()).find(a => a.id === t.id)?.status === 'running') {
     const at = await queueFor($, t.id, pending)
-    if (at > 0) return `Could not cut ${t.name}'s turn; the message is queued as #${at}, for when that turn ends.`
+    if (at > 0) return { result: `Could not cut ${t.name}'s turn; the message is queued as #${at}, for when that turn ends.` }
   }
   await runEnded($, t.id)
   const sent = await deliver($, t, pending)
-  return sent.isDelivered
-    ? `${t.name} had no turn running; it has the message now and resumes.`
-    : `${t.name} did not get the message: ${sent.reason}`
+  if (!sent.isDelivered) return notDelivered(t, sent.reason)
+  return { result: `${t.name} had no turn running; it has the message now and resumes.` }
 }
 
 // Hands over the interruption still waiting, if any. Whichever comes second, the cut
@@ -763,11 +769,11 @@ export const register: Register = (on, options) => {
       if (at > 0) return { result: `Queued for ${t.name} as #${at}; it reads it when its turn ends.` }
       isRunning = false // its turn ended meanwhile
     }
-    if (how === 'interrupt' && isRunning) return { result: await interrupt($, t, message) }
+    if (how === 'interrupt' && isRunning) return interrupt($, t, message)
     // With no turn running, its last run may still be winding down: the message goes once it has ended.
     if (!isRunning) await runEnded($, t.id)
     const sent = await deliver($, t, message)
-    if (!sent.isDelivered) return { result: `${t.name} did not get the message: ${sent.reason}` }
+    if (!sent.isDelivered) return notDelivered(t, sent.reason)
     return {
       result: isRunning
         ? `Posted to ${t.name}; it reads it at its next step.`
