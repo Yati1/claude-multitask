@@ -1,0 +1,23 @@
+{
+  // Typed against the engine's plugin API committed in ../engine-types (refresh it with
+  // `npm run types:refresh`), not the .claude-plugin/types the engine rewrites on each
+  // load, so the check does not depend on which Claude Code version loaded the mod last.
+  // The built-in and MCP tool types are left out, so tool inputs are loosely typed.
+  // Self-contained, so an installed copy of the mod keeps its JSX options.
+  "compilerOptions": {
+    "target": "es2023",
+    "lib": ["es2023"],
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "jsx": "react",
+    "jsxFactory": "h",
+    "jsxFragmentFactory": "Fragment",
+    "typeRoots": ["../engine-types"],
+    "types": ["claude-code"]
+  },
+  "include": ["hooks", "types", "tests"]
+}
