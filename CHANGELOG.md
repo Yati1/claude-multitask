@@ -1,8 +1,12 @@
 # Changelog
 
-Notable changes to the thread-chat and multitask mods. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Both mods share one version.
+Notable changes to the thread-chat, multitask and react mods. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). All the mods share one version.
 
 ## Unreleased
+
+### Added
+
+- Added a react mod (`/react`) so the agent can acknowledge a message with an emoji reaction, not a reply.
 
 ### Changed
 

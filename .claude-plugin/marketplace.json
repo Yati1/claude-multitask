@@ -3,7 +3,7 @@
   "owner": {
     "name": "Adrian Cowan"
   },
-  "description": "Claude Code mods for conversation threads and a multitasking main session.",
+  "description": "Claude Code mods for conversation threads, a multitasking main session and emoji reactions.",
   "plugins": [
     {
       "name": "thread-chat",
@@ -14,6 +14,11 @@
       "name": "multitask",
       "source": "./multitask",
       "description": "Multitasking: the main session becomes the talking mind and hands all work to background thoughts it watches and steers"
+    },
+    {
+      "name": "react",
+      "source": "./react",
+      "description": "Emoji reactions: the agent can acknowledge a message with one emoji, shown as a reaction on it instead of a reply"
     }
   ]
 }
