@@ -31,8 +31,10 @@ type Seen = {
   isAbortRefused?: boolean
   // set to leave an agent's run counted as running after its turn ends, as while it winds down
   isWindingDown?: boolean
-  // set to keep the user rows the mod appends, as a transcript would; else appends are refused
+  // set to keep the user rows appended, as a transcript would; else the mod's own are refused
   hidden?: string[]
+  // the tools the mod offered the model, by name
+  registered: string[]
 }
 
 // An agent whose run has ended, which a message resumes from its transcript.
@@ -53,12 +55,15 @@ function engine(
   agents: AgentInfo[] = [{ id: 'agent-1', description: 'auth-bug', type: 'multitask:thought', status: 'running' }],
   store: Record<string, unknown> | null = {},
 ): Seen {
-  const seen: Seen = { prompts: [], sends: [], ran: [], efforts: [], aborts: [], spawns: 0, names: [] }
+  const seen: Seen = { prompts: [], sends: [], ran: [], efforts: [], aborts: [], spawns: 0, names: [], registered: [] }
   if (store !== null) mock.store(on, store)
   on('session.id', () => ({ value: 'session-1' }))
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('agent.register', () => ({ value: { agent: 'multitask:thought' } }))
-  on('tool.register', ($, e) => ({ value: { tool: `mcp__multitask__${e.name}` } }))
+  on('tool.register', ($, e) => {
+    seen.registered.push(e.name)
+    return { value: { tool: `mcp__multitask__${e.name}` } }
+  })
   on('command.register', ($, e) => ({ value: { command: e.name } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('ui.message', () => ({}))
@@ -86,10 +91,11 @@ function engine(
     seen.prompts.push([e.text, ...(e.context ?? [])].join('\n--\n'))
     return { text: e.text }
   })
-  on('session.append', ($, e) => {
-    if (seen.hidden === undefined || e.message.type !== 'user') throw new Error('no transcript to store the row in')
-    seen.hidden.push(e.message.content.map(block => (block.type === 'text' ? block.text : '')).join(''))
-    return { message: e.message, uuid: `row-${seen.hidden.length}` } as never
+  // Beneath this the kit stores every row; a hook may refuse only a plugin's own (door note).
+  on('session.append', ($, e, next) => {
+    if (seen.hidden === undefined) return e.door === 'note' ? { deny: 'no transcript to store the row in' } : next(e)
+    if (e.message.type === 'user') seen.hidden.push(e.message.content.map(block => (block.type === 'text' ? block.text : '')).join(''))
+    return next(e)
   })
   on('turn.complete', ($, e) => {
     const agent = agents.find(a => a.id === e.agentId)
@@ -181,13 +187,9 @@ test('a quiet reply draws as nothing on every surface while Multitask is on, and
 })
 
 test('a session that never switches Multitask on is left as it is: no `thoughts`, no tools, no notes, no folded notices', async ($, on) => {
-  // what the mod offers the model, answered here before the stand-in engine beneath
-  const registered: string[] = []
-  on('tool.register', ($, e) => {
-    registered.push(e.name)
-    return { value: { tool: `mcp__multitask__${e.name}` } }
-  })
   const seen = engine($, on)
+  // what the mod offers the model
+  const { registered } = seen
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
   expect(registered).toEqual([])
   await $.prompt.submit({ text: 'hello', origin: { kind: 'composer' }, wait: false })
@@ -314,7 +316,7 @@ test('a turn ending reaches the voice once: bare when it has nothing more to say
       origin: { kind: 'model', model: 'test' },
       uuid,
       agentId: 'agent-1',
-    }).catch(() => undefined) // the kit has no transcript to store the row in
+    })
   expect(await label()).toBe('thoughts 1')
 
   // A turn that ends with no text is a bare done; the band counts only running thoughts.
@@ -399,7 +401,7 @@ test('the voice is refused work, and its thoughts relay, queue and unqueue', asy
       origin: { kind: 'model', model: 'test' },
       uuid,
       agentId: 'agent-1',
-    }).catch(() => undefined) // the kit has no transcript to store the row in
+    })
   await says('u1', 'Checking how the token expiry is computed', { name: 'Grep', input: { pattern: 'expiresAt' } })
   await clock.advance(2500)
   const noted = RELAY_NOTES ? ['Thought updates:\nauth-bug: Checking how the token expiry is computed'] : []
@@ -517,14 +519,9 @@ const isOnAtStart = async ($: Engine, seen: Seen) => {
 }
 
 test('a restarted session takes up the switch it kept, with the voice\'s tools and the band', async ($, on) => {
-  const registered: string[] = []
-  on('tool.register', ($, e) => {
-    registered.push(e.name)
-    return { value: { tool: `mcp__multitask__${e.name}` } }
-  })
   const seen = engine($, on, undefined, { 'session:session-1': kept(true, 1, []) })
   expect(await isOnAtStart($, seen)).toBe(true)
-  expect(registered).toEqual(['think', 'tell', 'unqueue', 'stop', 'thoughts'])
+  expect(seen.registered).toEqual(['think', 'tell', 'unqueue', 'stop', 'thoughts'])
   const band = await $.ui.mount({ plugin: 'multitask', surface: 'desktop', ...BAND })
   expect(await modeOf(band)).toBe('multitask')
 })
@@ -563,7 +560,7 @@ test("what is new from the thoughts goes beside the person's messages and after 
       origin: { kind: 'model', model: 'test' },
       uuid,
       agentId,
-    }).catch(() => undefined) // the kit has no transcript to store the row in
+    })
   await $.command.run({ command: 'multitask', args: '', origin: { kind: 'composer' }, presentation: {} as never })
   await say('look into login and the docs')
   await $.tool.call({ tool: 'mcp__multitask__think', tool_use_id: 'c1', name: 'auth bug', task: 'Find why login fails' })
@@ -1072,7 +1069,7 @@ test("a thought's card shows its report's first line until opened, and none whil
       origin: { kind: 'model', model: 'test' },
       uuid,
       agentId: 'agent-1',
-    }).catch(() => undefined) // the kit has no transcript to store the row in
+    })
   const pane = await $.ui.mount({
     plugin: 'multitask',
     surface: 'terminal',
