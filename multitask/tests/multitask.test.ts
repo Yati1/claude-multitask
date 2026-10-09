@@ -635,13 +635,27 @@ test("the engine's hand-back of a thought's report goes in as the wake-up while 
   await deliver(handBack('someone-else', 'Hello.'))
   expect(seen.prompts.at(-1)).toBe(handBack('someone-else', 'Hello.'))
 
-  // The row is hidden on the desktop only while on and only for a thought's.
+  // As stored, a thought's hand-back is the wake-up, whatever text the engine kept for it.
+  const store = async (text: string) => {
+    await $.session.append({
+      message: { type: 'user', role: 'user', content: [{ type: 'text', text }] },
+      door: 'delivery',
+      origin: { kind: 'peer' },
+      uuid: `delivered-${seen.hidden?.length}`,
+    })
+    return seen.hidden?.at(-1)
+  }
+  expect(await store(handBack('auth-bug', 'Done.'))).toBe(WAKE)
+  expect(await store(handBack('someone-else', 'Hello.'))).toBe(handBack('someone-else', 'Hello.'))
+
+  // The row is hidden on the desktop only while on and only for a thought's. The desktop
+  // shows the message's body alone, its sender beside it.
   const hidden = async (from: string) => {
     const row = await $.ui.mount({
       plugin: 'multitask',
       surface: 'desktop',
       component: 'UserMessage',
-      props: { text: handBack(from, 'Done.'), origin: { kind: 'peer' } as never, isExpanded: false },
+      props: { text: '[Subagent hand-back] Done.', origin: { kind: 'peer' } as never, isExpanded: false, from: { name: from } },
     })
     const drawn = (await row.drawn()) as { props?: { display?: string } }
     await row.unmount()
@@ -653,6 +667,7 @@ test("the engine's hand-back of a thought's report goes in as the wake-up while 
   await flip()
   await deliver(handBack('auth-bug', 'Done.'))
   expect(seen.prompts.at(-1)).toBe(handBack('auth-bug', 'Done.'))
+  expect(await store(handBack('auth-bug', 'Done.'))).toBe(handBack('auth-bug', 'Done.'))
   expect(await hidden('auth-bug')).toBe(false)
 })
 

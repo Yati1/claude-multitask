@@ -822,8 +822,10 @@ export const register: Register = (on, options) => {
   // The engine's own notice that a thought's turn ended, and its hand-back of the thought's
   // final report, would tell the voice what the relay tells it: while Multitask is on, the
   // relay goes in as a hidden row and the notice as the wake-up after it. With nothing
-  // waiting, a notice goes in as it came and a hand-back as a bare wake-up (dropped, its
-  // reason would show), with what is new beside either.
+  // waiting, a notice goes in as it came, with what is new beside it. A hand-back waits
+  // for its thought's end here too, and takes the relay or what is new with it, but its
+  // text is not the hook's to change: the engine keeps the text it was queued with, so it
+  // becomes the wake-up as it is stored (session.append, below).
   // Beside the person's own message the voice is told when Multitask came on or went
   // off, and what is new from its thoughts: that is the one way it is told. A system
   // prompt section would not follow the switch, as the engine sends the prompt it
@@ -914,9 +916,20 @@ export const register: Register = (on, options) => {
   })
 
   // What a thought writes as it works is kept as its progress notes (and relayed, while RELAY_NOTES is on).
+  // While Multitask is on, the engine's hand-back of a thought's report is stored as the
+  // wake-up: the engine keeps the text a hand-back was queued with, whatever prompt.submit
+  // returns, so it is changed here, as it is stored.
   on('session.append', async ($, e, next) => {
     if (e.agentId !== undefined && e.door === 'response') {
       await noteThoughtSaid($, e.agentId, textOf(e.message.content))
+    }
+    if (e.agentId === undefined && e.door !== 'note' && e.message.type === 'user') {
+      const text = textOf(e.message.content)
+      const isThoughtHandBack =
+        text.includes(HANDBACK) &&
+        (await read($, isOn)) &&
+        (await read($, thoughts)).some(t => isAbout(text, t.id, t.name))
+      if (isThoughtHandBack) return next({ ...e, message: { ...e.message, content: [{ type: 'text', text: WAKE }] } })
     }
     return next(e)
   })
@@ -932,8 +945,10 @@ export const register: Register = (on, options) => {
   // as one dim line (ctrl+o shows them whole); other surfaces draw nothing. A surface
   // may not know the row came from this plugin (the desktop holds it under another
   // origin, its text still in the engine's frame), so the relay is known by its text too.
-  // The engine's notice that a thought finished is folded the same way while Multitask
-  // is on; off, it is the engine's drawing alone.
+  // The engine's notice that a thought finished, and a message from a thought (its
+  // hand-back), are folded the same way while Multitask is on; off, they are the engine's
+  // drawing alone. A message is known by its sender: the desktop shows its body alone,
+  // without the framing that names the sender.
   on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
     const origin = e.props.origin
     // The wake-up after a hidden relay says nothing to the person anywhere.
@@ -948,12 +963,15 @@ export const register: Register = (on, options) => {
       taskId !== undefined &&
       (await read($, isOn)) &&
       (await read($, thoughts)).some(t => t.id === taskId)
-    const isThoughtHandBack =
-      origin.kind === 'peer' &&
-      e.props.text.includes(HANDBACK) &&
+    const from = e.props.from?.name
+    const isHandBack = e.props.text.includes(HANDBACK)
+    const isFromThought =
+      (from !== undefined || isHandBack) &&
       (await read($, isOn)) &&
-      (await read($, thoughts)).some(t => isAbout(e.props.text, t.id, t.name))
-    if (!isRelay && !isThoughtNotice && !isThoughtHandBack) return next(e)
+      (await read($, thoughts)).some(
+        t => from === t.name || from === t.id || (isHandBack && isAbout(e.props.text, t.id, t.name)),
+      )
+    if (!isRelay && !isThoughtNotice && !isFromThought) return next(e)
     if (e.surface !== 'terminal') {
       const { Box } = $.ui.resolve(e)
       return <Box display="none" />
