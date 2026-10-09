@@ -880,6 +880,17 @@ export const register: Register = (on, options) => {
     return { decision: 'allow', reason: 'A thought the multitask voice started.' }
   })
 
+  // The voice's messages to its thoughts go by the engine's SendMessage tool, called as
+  // this plugin's own call, which the mode's decider would judge as the model's: auto
+  // mode refuses a call the model never asked for. This plugin's own send to one of its
+  // thoughts is allowed; any other send is decided as before.
+  on('tool.check', { tool: 'SendMessage' }, async ($, e, next) => {
+    if (next.origin.plugin !== $.plugin.name) return next(e)
+    const to = (e.input as { to?: unknown } | null)?.to
+    if (typeof to !== 'string' || findThought(await read($, thoughts), to.trim()) === undefined) return next(e)
+    return { decision: 'allow', reason: 'A message from the multitask voice to its own thought.' }
+  })
+
   on('turn.start', async ($, e, next) => {
     flushTimer?.cancel()
     await update($, isMainBusy, () => true)
