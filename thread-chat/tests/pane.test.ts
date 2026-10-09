@@ -3,6 +3,7 @@ import { expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 
 import type { ViewRow } from '../types'
+import { PALETTE } from '../hooks/parse'
 import {
   chunksOf,
   dataFolderOf,
@@ -145,14 +146,35 @@ const PANE = {
 const model = { kind: 'model', model: 'test' } as const
 
 type Drawing = {
-  findAll: (query: { type?: string; text?: string | RegExp }) => Promise<{ props: Record<string, unknown>; text: string }[]>
+  drawn: () => Promise<unknown>
 }
 
-// What the view shows, in order: who wrote each section, and its text.
+type Drawn = { type?: string; props?: Record<string, unknown>; children?: unknown[] }
+
+// The strings an element shows, its own and its children's, in order.
+const shownIn = (node: unknown): string =>
+  typeof node === 'string' ? node : ((node as Drawn | undefined)?.children ?? []).map(shownIn).join('')
+
+// What the view shows, in order: who wrote each section, and its text. The person's
+// sections are filled bubbles, their words the last Text in them; Claude's are markdown.
 async function sectionsOf(pane: Drawing) {
-  const who = (await pane.findAll({ type: 'Text', text: /^(you|Claude)$/ })).map(t => t.text)
-  const said = (await pane.findAll({ type: 'Markdown' })).map(m => String(m.props.text))
-  return who.map((name, i) => `${name}: ${said[i]}`)
+  const sections: string[] = []
+  const walk = (node: unknown) => {
+    if (typeof node !== 'object' || node === null) return
+    const { type, props = {}, children = [] } = node as Drawn
+    if (type === 'Markdown') {
+      sections.push(`Claude: ${String(props.text)}`)
+      return
+    }
+    if (type === 'Box' && props.backgroundColor !== undefined) {
+      const words = children.filter(child => (child as Drawn).type === 'Text').at(-1)
+      sections.push(`you: ${shownIn(words)}`)
+      return
+    }
+    for (const child of children) walk(child)
+  }
+  walk(await pane.drawn())
+  return sections
 }
 
 test('the thread view shows the picked threads alone, earlier replies too, and no tool rows', async ($, on) => {
@@ -199,14 +221,20 @@ test('the thread view shows the picked threads alone, earlier replies too, and n
     expect(await sectionsOf(pane)).toEqual(['you: hello', 'Claude: use a queue', 'Claude: next step'])
     expect(await pane.find({ type: 'Text', text: /All threads/ })).toBeUndefined()
 
-    // each section's tag; the person's sections carry a marker in the thread's colour
+    // each section's tag; the person's section a bubble in the surface's fill, and each
+    // reply part in its thread's border, as the chat draws them; nothing filled in it
     const tags =
       surface === 'terminal'
         ? (await pane.findAll({ type: 'Text', text: 'DESIGN' })).length
         : (await pane.findAll({ type: 'Svg' })).filter(p => p.props.alt === 'design').length
     expect(tags).toBe(3)
-    const markers = (await pane.findAll({ type: 'Box' })).filter(b => b.props.backgroundColor !== undefined)
-    expect(markers.map(b => b.props.backgroundColor)).toEqual(['#4fa3e0'])
+    const filled = (await pane.findAll({ type: 'Box' })).filter(b => b.props.backgroundColor !== undefined)
+    expect(filled.map(b => b.props.backgroundColor)).toEqual([surface === 'terminal' ? 'userMessageBackground' : '#8888881a'])
+    const bordered = (await pane.findAll({ type: 'Box' })).filter(b => PALETTE.some(color => b.props.borderColor === color))
+    expect(bordered.map(b => [b.props.borderStyle, b.props.borderColor])).toEqual([
+      ['round', '#4fa3e0'],
+      ['round', '#4fa3e0'],
+    ])
     // no Client: every overlay on the desktop shares their one frame
     expect(await pane.findAll({ type: 'Client' })).toEqual([])
 
@@ -309,6 +337,117 @@ test('a long section draws as markdown in pieces a Markdown element takes', asyn
     expect(pieces.map(piece => piece.length <= 10000)).toEqual([true, true, true])
     expect(pieces.join('\n') === long).toBe(true)
     await pane.unmount()
+  }
+})
+
+test("the person's messages draw as the chat's bubbles: their words as typed, a quote they replied to dim above them", async ($, on) => {
+  engine(on)
+  await flipThreads($)
+  // a reply to a selection, as the desktop writes one, typed on Windows
+  const typed = '<!-- reply 1 -->\r\n> use a\r\n> queue\r\n**why** a queue?\r\n- not a list'
+  await $.session
+    .append({
+      message: { type: 'user', role: 'user', content: [{ type: 'text', text: typed }] },
+      door: 'prompt',
+      origin: { kind: 'composer' },
+      uuid: 'p1',
+    })
+    .catch(() => undefined)
+
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const pane = await $.ui.mount({ plugin: 'thread-chat', surface, ...PANE })
+    expect(await sectionsOf(pane)).toEqual(['you: **why** a queue?\n- not a list'])
+    expect(await pane.findAll({ type: 'Markdown' })).toEqual([])
+    // the selection on one dim line beside a bar; no marker
+    const dim = (await pane.findAll({ type: 'Text' })).filter(t => t.props.dimColor === true).map(t => t.text)
+    expect(dim).toEqual(['All threads. Pick threads above the prompt to follow just those.', '│', 'use a queue'])
+    expect(await pane.findAll({ text: /<!--/ })).toEqual([])
+    // on the desktop, at the right, rounded
+    if (surface === 'desktop') {
+      const bubble = (await pane.findAll({ type: 'Box' })).find(b => b.props.backgroundColor !== undefined)
+      expect(bubble?.props.borderStyle).toBe('round')
+      expect((await pane.findAll({ type: 'Box' })).some(b => b.props.justifyContent === 'flex-end')).toBe(true)
+    }
+    await pane.unmount()
+  }
+})
+
+// How a drawing marks each of a thread's tags, in order: the tag, the row it sits in
+// above a person's message, and the border round it in a reply's part.
+function tagLooksIn(tree: unknown, name: string) {
+  const looks: { tag: Drawn; row: Drawn['props']; frame: Drawn['props'] }[] = []
+  const walk = (node: unknown, above: Drawn[]) => {
+    if (typeof node !== 'object' || node === null) return
+    const el = node as Drawn
+    if ((el.type === 'Text' && shownIn(el) === name.toUpperCase()) || (el.type === 'Svg' && el.props?.alt === name)) {
+      const nearest = (has: (props: Record<string, unknown>) => boolean) =>
+        above.findLast(box => box.type === 'Box' && has(box.props ?? {}))?.props
+      looks.push({
+        tag: { type: el.type, props: el.props },
+        row: nearest(props => props.justifyContent !== undefined),
+        frame: nearest(props => props.borderColor !== undefined),
+      })
+      return
+    }
+    for (const child of el.children ?? []) walk(child, [...above, el])
+  }
+  walk(tree, [])
+  return looks
+}
+
+test("the view draws a thread's tags and borders as the chat does", async ($, on) => {
+  engine(on)
+  await flipThreads($)
+  const typed = '# design\nhello'
+  // the reply's thread part is drawn as markdown in the chat too, as every part is in the view
+  const replied = 'the plan\n# design\nuse a queue'
+  await $.prompt.submit(say(typed))
+  const store = (uuid: string, door: 'prompt' | 'response', text: string) =>
+    $.session
+      .append({
+        message:
+          door === 'response'
+            ? { type: 'assistant', role: 'assistant', content: [{ type: 'text', text }] }
+            : { type: 'user', role: 'user', content: [{ type: 'text', text }] },
+        door,
+        origin: door === 'prompt' ? { kind: 'composer' } : model,
+        uuid,
+      })
+      .catch(() => undefined)
+  await store('p1', 'prompt', typed)
+  await store('a1', 'response', replied)
+
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const view = await $.ui.mount({ plugin: 'thread-chat', surface, ...PANE })
+    const message = await $.ui.mount({
+      plugin: 'thread-chat',
+      surface,
+      component: 'UserMessage',
+      requestId: 'p1',
+      props: { text: typed, origin: { kind: 'composer' }, isExpanded: false },
+    })
+    const reply = await $.ui.mount({
+      plugin: 'thread-chat',
+      surface,
+      component: 'AssistantMessage',
+      requestId: 'a1',
+      props: { text: replied, isFirstOfReply: true },
+    })
+
+    const [mine, part, ...more] = tagLooksIn(await view.drawn(), 'design')
+    expect(more).toEqual([])
+    // the person's tag: the same picture in the same row above their message, at its side
+    expect(mine).toEqual(tagLooksIn(await message.drawn(), 'design')[0])
+    expect(mine?.row?.justifyContent).toBe(surface === 'terminal' ? 'flex-start' : 'flex-end')
+    expect(mine?.frame).toBeUndefined()
+    // the reply part's: the same picture in the same border of the thread's colour
+    expect(part).toEqual(tagLooksIn(await reply.drawn(), 'design')[0])
+    expect(part?.frame?.borderColor).toBe('#4fa3e0')
+    if (surface === 'desktop') {
+      expect(String(mine?.tag.props?.source)).toContain('text-anchor="end"')
+      expect(String(part?.tag.props?.source)).toContain('text-anchor="start"')
+    }
+    for (const drawing of [view, message, reply]) await drawing.unmount()
   }
 })
 
