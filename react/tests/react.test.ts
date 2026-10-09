@@ -88,7 +88,7 @@ async function step($: Engine, seen: Seen, pieces: TurnStepChunk[], agentId?: st
   }
 }
 
-// How a person's message draws on a surface: the reaction under it, or the engine's
+// How a person's message draws on a surface: the reaction by it, or the engine's
 // drawing alone, or nothing.
 async function badgeOf($: Engine, surface: 'terminal' | 'desktop', requestId: string, said: string) {
   const row = await $.ui.mount({
@@ -106,6 +106,34 @@ async function badgeOf($: Engine, surface: 'terminal' | 'desktop', requestId: st
     const texts = await Promise.all(['(', ')'].map(mark => row.find({ type: 'Text', text: mark })))
     const emoji = await row.find({ type: 'Text', text: /\p{Extended_Pictographic}/u })
     return texts.every(t => t !== undefined) ? `(${emoji?.text ?? ''})` : 'no brackets'
+  } finally {
+    await row.unmount()
+  }
+}
+
+// Where a person's message's reaction sits by it, read from the drawing: the way the box
+// holding both runs, their order, and the edge the reaction keeps to in its own row.
+async function placeOf($: Engine, surface: 'terminal' | 'desktop', requestId: string, said: string) {
+  const row = await $.ui.mount({
+    plugin: 'react',
+    surface,
+    component: 'UserMessage',
+    props: { text: said, origin: { kind: 'composer' }, isExpanded: false },
+    requestId,
+  })
+  try {
+    type Drawn = { type: string; props?: { flexDirection?: string; justifyContent?: string }; children?: unknown[] }
+    const tree = (await row.drawn()) as Drawn
+    const holdsEngine = (node: unknown): boolean =>
+      typeof node === 'object' && node !== null && ((node as Drawn).type === 'engine' || ((node as Drawn).children ?? []).some(holdsEngine))
+    const parts = (tree.children ?? [])
+      .filter((child): child is Drawn => typeof child === 'object' && child !== null)
+      .map(child => {
+        if (holdsEngine(child)) return 'message'
+        const edge = child.props?.justifyContent
+        return edge === undefined ? 'reaction' : `reaction at ${edge}`
+      })
+    return `${tree.props?.flexDirection ?? 'row'}: ${parts.join(', ')}`
   } finally {
     await row.unmount()
   }
@@ -177,6 +205,10 @@ test("a reply of one emoji goes on as \"No response requested.\" and draws as a 
       badge: surface === 'desktop' ? 'Reaction: 👍🏽' : '(👍🏽)',
     })
   }
+  // On the desktop it sits on the line above the bubble, at the right as the bubble is;
+  // on the terminal it is the line under the message.
+  expect(await placeOf($, 'desktop', 'p1', 'thanks, that fixed the build')).toBe('column: reaction at flex-end, message')
+  expect(await placeOf($, 'terminal', 'p1', 'thanks, that fixed the build')).toBe('column: message, reaction')
   // A message with no reaction is the engine's drawing alone; one drawn under another id
   // is known by its text, where that is long enough to tell it from others.
   expect(await badgeOf($, 'desktop', 'p0', 'an earlier message')).toBe('none')
