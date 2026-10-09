@@ -4,6 +4,8 @@ Notable changes to the thread-chat and multitask mods. The format is based on [K
 
 ## Unreleased
 
+## 0.1.0 - 2026-10-09
+
 ### Added
 
 - Added a picker to thread-chat's tags, and `+ thread` once threads are on, to move messages.
