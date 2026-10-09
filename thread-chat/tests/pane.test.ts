@@ -9,6 +9,7 @@ import {
   dataFolderOf,
   fingerprintOf,
   isKeptView,
+  isNearEnd,
   markOf,
   marksOf,
   rowsOfChunks,
@@ -667,6 +668,16 @@ test('a session keeps no rows on disk until threads are on, then every one, thos
   await reply('a2', '# design\nin a thread')
   await done()
   expect(rowsIn(kept, files, 'session-1').map(row => row.id)).toEqual(['a1', 'a2'])
+})
+
+// (The kit answers none of the plugin's own scrolls, so the view's move to its end
+// as a message comes goes unseen here; where a move leaves it decides whether it does.)
+test('the thread view keeps to its end as messages come only while the person has it at or near the end', () => {
+  // a window of 20 rows over 60: its end is at row 40
+  const at = (offset: number) => isNearEnd({ offset, bodyRows: 20, contentRows: 60 })
+  expect([at(40), at(37), at(36), at(10), at(0)]).toEqual([true, true, false, false, false])
+  // a tree that fits shows its end wherever the window stands
+  expect(isNearEnd({ offset: 0, bodyRows: 20, contentRows: 12 })).toBe(true)
 })
 
 test('rows are kept one per id, every one, and read back from their files as written', async () => {

@@ -23,6 +23,7 @@ import {
   drawView,
   fingerprintOf,
   isKeptView,
+  isNearEnd,
   markHashOf,
   markOf,
   marksOf,
@@ -1053,6 +1054,10 @@ function bubbleText(shown: Section[], resolve: (name: string) => Thread | undefi
 // The thread view (pane.tsx) places a section by the rules the chat draws it by.
 const viewDeps: ViewDeps = { threadOf, personThreadOf, personSectionsOf, placeSection, stemOf }
 
+// Whether the thread view's window stood at or near its end when it last moved: then a
+// new message keeps it at the end; scrolled up, it stays where the person put it.
+let isViewAtEnd = true
+
 // Keeps the thread view's window on its newest rows as they come, until the person scrolls.
 async function pinViewToEnd($: EngineInterface) {
   try {
@@ -1375,7 +1380,11 @@ export const register: Register = on => {
       return stored
     } finally {
       const row = stored?.deny === undefined ? viewRowOf(stored === undefined ? e : { ...e, message: stored.message }, PERSON) : undefined
-      if (row !== undefined) await update($, viewRows, all => withViewRow(all, row))
+      if (row !== undefined) {
+        await update($, viewRows, all => withViewRow(all, row))
+        // A new message keeps the thread view at its end, unless the person scrolled up.
+        if (isViewAtEnd) void pinViewToEnd($)
+      }
     }
   })
 
@@ -1395,6 +1404,14 @@ export const register: Register = on => {
     if (!(await read($, isOn))) return { text: OFF_TEXT }
     const opened = await openView($)
     return { text: opened.isPlaced ? 'Thread view opened.' : `Thread view not shown: ${opened.reason}` }
+  })
+
+  // Where the thread view's window was last moved to, by the person or by this plugin:
+  // at or near its end, new messages keep it there.
+  on('ui.scroll', { component: 'Pane', requestId: VIEW }, async ($, e, next) => {
+    const result = await next(e)
+    if (result.deny === undefined) isViewAtEnd = isNearEnd(e)
+    return result
   })
 
   // Another pick of threads takes the thread view to the newest of what they hold.

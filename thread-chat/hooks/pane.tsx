@@ -69,6 +69,14 @@ const BUBBLE_ROOM = '15%'
 const PART_GAP = 1
 const MESSAGE_GAP = 4
 
+// Rows short of its end the view's window may stand and still keep to its end as new
+// messages come.
+const NEAR_END_ROWS = 3
+
+// Whether a move left the view's window at or near the end of what it shows.
+export const isNearEnd = (move: { offset: number; bodyRows: number; contentRows: number }) =>
+  move.contentRows - move.bodyRows - move.offset <= NEAR_END_ROWS
+
 // Where the store notes how a session's view rows are kept between runs of the app
 // (KeptView); an earlier version kept the rows themselves there.
 export const viewKey = (sessionId: string) => `view:${sessionId}`
