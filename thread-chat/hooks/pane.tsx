@@ -393,9 +393,9 @@ export function dataFolderOf(root: string, name: string, config: string | undefi
 }
 
 // The name of a picture's smaller copy, kept under the plugin's data folder: one per
-// file, made again when the file changes.
-export const thumbNameOf = (path: string, size: number, mtimeMs: number) =>
-  `${hashOf(path)}-${size.toString(36)}-${Math.floor(mtimeMs).toString(36)}.jpg`
+// file and size across, made again when the file changes.
+export const thumbNameOf = (path: string, size: number, mtimeMs: number, across: number) =>
+  `${hashOf(path)}-${size.toString(36)}-${Math.floor(mtimeMs).toString(36)}-${across}.jpg`
 
 // Each transcript message's stored row (its index in `known`), matched in order by
 // role and mark; none for a message stored before the view kept rows, or not the
@@ -604,6 +604,48 @@ export type ViewDrawing = {
   // a pasted picture's bytes to draw, read from its file (or a smaller copy of it):
   // `loading` while they are read, none where they cannot be
   picture: (image: ViewImage) => Picture | 'loading' | undefined
+  // where the window stands over the view: 0 at its top, 1 at its end (when not given)
+  near?: number
+}
+
+// The most picture data one drawing of the view holds, in base64 characters. The desktop
+// draws nothing of a view that holds much more (one with 158,000 drew nothing; 92,000
+// drew), so the pictures nearest the window draw their bytes and the rest empty cards.
+export const PICTURE_CHARS_DRAWN = 80_000
+
+// What each of the view's pictures draws as, the sections' pictures in order: its bytes,
+// for those nearest the window (`near`, 0 at the top and 1 at the end) while their data
+// fits in `room`; else an empty card (`loading`), the rest not read; none (a mark) where
+// it has no bytes to be had.
+export function picturesNear(
+  sections: readonly (readonly ViewImage[])[],
+  near: number,
+  room: number,
+  pictureOf: (image: ViewImage) => Picture | 'loading' | undefined,
+): Map<ViewImage, Picture | 'loading' | undefined> {
+  const drawn = new Map<ViewImage, Picture | 'loading' | undefined>()
+  const at = Math.round(Math.min(1, Math.max(0, near)) * Math.max(0, sections.length - 1))
+  // nearest first; of two as near, the newer
+  const order = sections.map((_, i) => i).sort((a, b) => Math.abs(a - at) - Math.abs(b - at) || b - a)
+  let left = room
+  for (const i of order) {
+    for (const image of sections[i] ?? []) {
+      if (left <= 0) {
+        drawn.set(image, image.path !== undefined || image.data !== undefined ? 'loading' : undefined)
+        continue
+      }
+      const picture = pictureOf(image)
+      if (picture === undefined || picture === 'loading') {
+        drawn.set(image, picture)
+      } else if (picture.data.length <= left) {
+        drawn.set(image, picture)
+        left -= picture.data.length
+      } else {
+        drawn.set(image, 'loading')
+      }
+    }
+  }
+  return drawn
 }
 
 // A picture's bytes as drawn, base64, few enough for an Svg, with its media type and
@@ -724,13 +766,16 @@ function pictureOf(draw: ViewDrawing, image: ViewImage): Picture | 'loading' | u
 }
 
 // The pictures pasted with a person's message, above their words as the chat draws
-// them: on a page, thumbnails side by side at the right; on the terminal, which draws
-// none in the pane, a dim mark for each, as for a picture whose file is gone.
-function drawImages(draw: ViewDrawing, isPage: boolean, images: readonly ViewImage[], gapBelow: number): RenderElement {
+// them: on a page, thumbnails side by side at the right (`drawn`: what each draws as);
+// on the terminal, which draws none in the pane, a dim mark for each, as for a picture
+// whose file is gone.
+type Drawn = ReadonlyMap<ViewImage, Picture | 'loading' | undefined>
+
+function drawImages(draw: ViewDrawing, isPage: boolean, images: readonly ViewImage[], drawn: Drawn, gapBelow: number): RenderElement {
   const { Box, Text } = draw.ui
   const Svg = isPage ? (draw.ui as Partial<ElementTable<'desktop'>>).Svg : undefined
   const marks = images.map(image => {
-    const picture = Svg === undefined ? undefined : pictureOf(draw, image)
+    const picture = Svg === undefined ? undefined : drawn.get(image)
     if (Svg === undefined || picture === undefined) return <Text dimColor>[image]</Text>
     const thumb = thumbOf(image, picture)
     return <Svg source={thumb.source} alt="Pasted image" width={thumb.width} height={thumb.height} />
@@ -746,7 +791,7 @@ function drawImages(draw: ViewDrawing, isPage: boolean, images: readonly ViewIma
 // it. Claude's is its text as markdown, as the chat draws a reply's, in its thread's
 // border under its tag; the person's a bubble under its thread's tag and the pictures
 // they pasted with it.
-function drawEntry(draw: ViewDrawing, isPage: boolean, entry: Entry, gap: number): RenderElement {
+function drawEntry(draw: ViewDrawing, isPage: boolean, entry: Entry, drawn: Drawn, gap: number): RenderElement {
   const { Box } = draw.ui
   const { thread } = entry
   if (entry.role === 'assistant') {
@@ -761,7 +806,7 @@ function drawEntry(draw: ViewDrawing, isPage: boolean, entry: Entry, gap: number
   return (
     <Box flexDirection="column" marginTop={gap}>
       {thread !== undefined && draw.tagRow(thread)}
-      {entry.images !== undefined && drawImages(draw, isPage, entry.images, hasWords && isPage ? PART_GAP : 0)}
+      {entry.images !== undefined && drawImages(draw, isPage, entry.images, drawn, hasWords && isPage ? PART_GAP : 0)}
       {hasWords && drawBubble(draw, isPage, entry.text)}
     </Box>
   )
@@ -783,13 +828,22 @@ export function drawView(draw: ViewDrawing, inputs: ViewInputs, deps: ViewDeps):
     if (!isPage) return 1
     return entry.id !== undefined && entry.id === before.id ? PART_GAP : MESSAGE_GAP
   }
+  // the pictures' bytes drawn, nearest the window first, within what the desktop draws
+  const drawn = isPage
+    ? picturesNear(
+        shown.map(entry => entry.images ?? []),
+        draw.near ?? 1,
+        PICTURE_CHARS_DRAWN,
+        image => pictureOf(draw, image),
+      )
+    : new Map<ViewImage, undefined>()
 
   return (
     <Box flexDirection="column" rowGap={1}>
       {picked.length === 0 && <Text dimColor>All threads. Pick threads above the prompt to follow just those.</Text>}
       {hidden > 0 && <Text dimColor>{`${hidden} earlier sections not shown`}</Text>}
       {shown.length === 0 && <Text dimColor>{picked.length === 0 ? 'Nothing here yet.' : `Nothing in ${names} yet.`}</Text>}
-      {shown.length > 0 && <Box flexDirection="column">{shown.map((entry, i) => drawEntry(draw, isPage, entry, gapBefore(entry, i)))}</Box>}
+      {shown.length > 0 && <Box flexDirection="column">{shown.map((entry, i) => drawEntry(draw, isPage, entry, drawn, gapBefore(entry, i)))}</Box>}
     </Box>
   )
 }
