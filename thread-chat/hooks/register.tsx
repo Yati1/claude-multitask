@@ -2072,7 +2072,11 @@ function drawThreadActions($: EngineInterface, ui: MenuUi, surface: RenderSurfac
   ]
 }
 
-// Threads' controls in the band: the thread picker after a dot of the picked thread's
+// The opacity of the desktop's tint behind the thread picker, as two hex digits added to
+// the thread's colour: about 15%, which still shows on a dark theme.
+const PICKER_TINT = '26'
+
+// Threads' controls in the band: the thread picker after a mark of the picked thread's
 // colour, or, with no threads to post to, how to start one. They take the room the band
 // has left and give way first.
 async function drawThreadControls(
@@ -2099,10 +2103,16 @@ async function drawThreadControls(
 
   if (e.surface !== 'mobile') {
     const { Select } = $.ui.resolve(e)
+    // The thread messages go to shows in its colour: on the desktop, a light tint of it
+    // behind the dot and picker; elsewhere, where a see-through fill may not show, one
+    // solid cell of it for the dot. With no thread, the hollow dot alone.
+    const isDesktop = e.surface === 'desktop'
+    const tint = isDesktop && picked !== undefined ? { backgroundColor: picked.color + PICKER_TINT, paddingX: 0.5, paddingY: 0 } : {}
+    const mark = picked !== undefined && !isDesktop ? <Text backgroundColor={picked.color}> </Text> : dot(picked)
     return (
       <Box flexDirection="row" alignItems="center" flexGrow={1} flexShrink={1} minWidth={0}>
-        <Box flexDirection="row" alignItems="center" columnGap={1} flexShrink={0}>
-          {dot(picked)}
+        <Box flexDirection="row" alignItems="center" columnGap={1} flexShrink={0} {...tint}>
+          {mark}
           <Select
             key={PICKER}
             options={[...active.map(t => ({ value: THREAD_OPTION + keyOf(t.name), label: t.name })), { value: NO_THREAD, label: 'No thread' }]}
