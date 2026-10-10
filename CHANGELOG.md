@@ -9,6 +9,7 @@ Notable changes to the thread-chat, multitask and react mods. The format is base
 - Changed multitask's thoughts to take four main colours in turn, dimming an ended thought's when reused.
 - Changed a done thought's mark in multitask's Thoughts pane to a solid dot in its colour.
 - Changed multitask's Thoughts pane to list the 16 latest ended thoughts, the rest behind `N more`.
+- Changed react's desktop reaction to sit on your message's corner, or under it with `/react place`.
 
 ### Fixed
 
