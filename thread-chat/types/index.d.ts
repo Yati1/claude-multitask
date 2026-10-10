@@ -1,9 +1,10 @@
 export type Thread = {
   name: string
   color: string
-  // picked in the band's filter; none picked shows everything
-  isSelected: boolean
   createdBy: 'user' | 'agent'
+  // hidden from the thread picker, the move picker and the thread view's filter, but
+  // kept: its messages keep their tags, and a heading naming it brings it back
+  isArchived?: boolean
 }
 
 // A row of the main conversation the thread view draws: a person's message or a
@@ -55,8 +56,8 @@ declare module 'claude-code' {
       // a merged-away thread's key -> the key of the thread it now belongs to
       aliases: Record<string, string>
       agentMayCreate: boolean
-      // whether picking threads in the band filters the chat to them; off, a pick still
-      // says where messages with no heading go, but the chat shows every row
+      // whether the chat is filtered to the thread picked above the prompt; off (as at
+      // first), the chat shows every row
       filtersChat: boolean
       // a heading's key as typed -> the key of the thread it was decided to mean at send
       snaps: Record<string, string>
@@ -66,8 +67,15 @@ declare module 'claude-code' {
       // the start of each reply text in those rows: a screen may know a reply by an
       // id of its own (the desktop's is the API message's), so a reply is matched by text
       recentTexts: string[]
+      // the key of the thread picked above the prompt ('' none): where a message with
+      // no heading goes. The thread view does not follow it (viewThreads).
+      current: string
+      // the keys of threads the person deleted: a heading that names one, or a merge or
+      // an earlier send that points to one, belongs to no thread. A thread started again
+      // by that name takes its key back.
+      deleted: string[]
       // a person's message row id -> the key of the thread it went to: sent with no
-      // heading while that thread alone was picked
+      // heading while that thread was picked
       sentTo: Record<string, string>
       // `${row id}|${key of the thread a part was first placed in, '' none}` -> the key
       // of the thread the person moved it to ('' none)
@@ -77,7 +85,7 @@ declare module 'claude-code' {
       // whether the open move picker shows a field for a new thread's name in place
       // of its pills
       naming: boolean
-      // moves to tell the model beside the person's next message
+      // moves, archives and deletions to tell the model beside the person's next message
       untold: string[]
       // what the model was last told of the threads; null until it is told how they
       // work (and again after a compaction)
@@ -89,10 +97,21 @@ declare module 'claude-code' {
       // one read draws the view again
       picturesRead: number
       // the first of the thread view's sections it draws, by its place among them; null
-      // while it draws the newest (as opened, or another pick of threads)
+      // while it draws the newest (as opened, or another pick in its filter)
       viewFrom: number | null
+      // what the thread view's own filter picked: the keys of the threads it shows, and
+      // '' for the sections of no thread; none, it shows every section
+      viewThreads: string[]
       // whether the band's menu shows its switches, on a surface where a press opens it
       menuOpen: boolean
+      // what the band's menu shows of the threads: '' its first rows (the switches, opening
+      // the thread view, starting a thread, managing them), 'name' the field for a new
+      // thread's name, 'manage' each thread's merge, archive and delete, `merge:<key>` the
+      // threads that one can merge into, `delete:<key>` the question whether to delete it
+      menuMode: string
+      // whether the thread picker's list is open in the mobile app, which draws no Select:
+      // its button opens and closes it
+      pickerOpen: boolean
     }
   }
 }

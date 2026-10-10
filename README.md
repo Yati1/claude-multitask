@@ -7,7 +7,7 @@ Talk to Claude while it works, keep every topic in its own thread, and get a qui
 - **Talk while it works.** With multitask you talk to one **voice**, and its **thoughts** (background agents) do the work. The voice is always free to talk.
 - **No waiting, nothing held back.** Ask something new, add a detail or change your mind whenever it occurs to you. The voice passes it to the right piece of work.
 - **Questions come straight away.** Your message isn't queued behind work in progress, so clarifying questions come at once and the right work starts sooner.
-- **Topics stay apart.** With thread-chat, a `# heading` puts a message in its topic's thread: colour-coded, filterable and easy to find later.
+- **Topics stay apart.** With thread-chat, a `# heading` puts a message in its topic's thread: colour-coded, readable on its own and easy to find later.
 - **Emoji reactions.** With react, the agent can acknowledge a message with an emoji reaction instead of a reply.
 
 Examples: [docs/why.md](docs/why.md).
@@ -27,7 +27,7 @@ Install any or all of them.
 
 ## Use
 
-Multitask has a dropdown, and thread-chat a `Threads` menu, in the band above the prompt with their switches for the chat. The mobile app shows neither: use the commands there. React has no control in the band: `/react` is its switch.
+Multitask has a dropdown, and thread-chat a `Threads` menu, in the band above the prompt with their switches for the chat; thread-chat's thread picker sits beside its menu. The mobile app shows only the thread picker: use the commands there. React has no control in the band: `/react` is its switch.
 
 ### Multitask
 
@@ -42,10 +42,12 @@ Multitask has a dropdown, and thread-chat a `Threads` menu, in the band above th
 - A `# name` heading in a message starts a thread, or replies to it if it exists. Close or abbreviated names find the existing thread. The agent replies under the same headings.
 - `#+name` starts a new thread even when an existing one is close.
 - To put a message in a thread, hover it for `+ thread` (desktop app); to move it to another, press `▾` beside its thread tag.
-- Pills above the prompt filter the chat to the threads you pick. With one picked, messages without a heading go to it.
-- `Filter the chat`, in the `Threads` menu while threads are on, is on at first; off, picking pills still chooses where messages go but the chat shows everything. It is per chat, and kept when the chat is restarted.
-- `/thread-view`, or `Open thread view` in the `Threads` menu, opens the thread view: the picked threads' messages on their own, in a pane (all threads when none is picked).
-- `/merge-threads <thread> into <thread>` merges two threads.
+- The thread picker above the prompt, a dropdown named for the picked thread, picks the thread messages without a heading go to, or `No thread`. A heading still wins.
+- `New thread` in the `Threads` menu starts a thread by name and picks it; `Manage threads` there merges, archives or deletes threads.
+- Archived threads leave the pickers but keep their messages; `Manage threads` brings them back, as does a heading naming one. Deleting a thread takes its tag off its messages.
+- `Filter the chat`, in the `Threads` menu while threads are on, is off at first, so the chat shows every message. On, with a thread picked, the chat shows only that thread's messages, and those since your last message that are in no thread. It is per chat, and kept when the chat is restarted.
+- `/thread-view`, or `Open thread view` in the `Threads` menu, opens the thread view: a pane with a switch for each thread below its newest message. With none on it shows every message; with some on, only those threads' messages, and those since your last message that are in no thread, as `Filter the chat` does. The thread picker above the prompt and `Filter the chat` do not change it.
+- `/merge-threads <thread> into <thread>` also merges two threads.
 - `Agent may start threads`, in the `Threads` menu while threads are on, lets the agent start threads itself. It is per chat, and kept when the chat is restarted.
 
 ### Reactions
