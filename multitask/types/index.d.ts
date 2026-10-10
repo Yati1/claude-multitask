@@ -71,6 +71,9 @@ declare module 'claude-code' {
       paneTick: number
       // the thought whose card in the Thoughts pane has its field open to tell it something; '' none
       tellingTo: string
+      // where the turn through the palette's first colours stands: the index of the next a
+      // thought takes, unless a running thought holds it
+      colorTurn: number
     }
   }
 }

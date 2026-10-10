@@ -3,7 +3,15 @@ import { expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 
 import { markOf } from '../hooks/pane'
-import { PALETTE, closestThread, headingsIn, rewriteHeadings, splitSections } from '../hooks/parse'
+import {
+  PALETTE,
+  closestThread,
+  headingsIn,
+  leadingQuoteOf,
+  rewriteHeadings,
+  splitSections,
+  withOpeningQuote,
+} from '../hooks/parse'
 
 // The test stands in for the engine beneath the plugin, and records the prompts
 // that reach it, each with the notes beside it, and in `registered` the tools the mod
@@ -163,6 +171,37 @@ test('a heading that is not a thread drops back to the unthreaded conversation',
   const sections = splitSections('# design\nx\n# Summary\ny', name => known.has(name.toLowerCase()))
   expect(sections.map(s => s.thread)).toEqual(['design', null])
   expect(sections[1]?.text).toBe('# Summary\ny')
+})
+
+test('a quoted selection opening a message, right before a thread heading, joins that thread', async () => {
+  const isThread = (name: string) => name !== 'Summary'
+  const split = (text: string) => withOpeningQuote(splitSections(text, () => true), isThread)
+  // two selections back to back, as the desktop writes them on Windows
+  const quotes = '<!-- reply 2 -->\r\n> invisible\r\n>\r\n> on light\r\n<!-- reply -->\r\n> fast'
+  expect(split(`\r\n${quotes}\r\n\r\n# perf\r\nabout speed\r\n# design\r\nmore`)).toEqual([
+    { thread: 'perf', text: `${quotes}\n\nabout speed` },
+    { thread: 'design', text: 'more' },
+  ])
+  expect(split('<!-- reply 1 -->\n> invisible\n\n# perf')).toEqual([{ thread: 'perf', text: '<!-- reply 1 -->\n> invisible' }])
+
+  // words of the person's own, a quote of their own with no marker, a heading that is
+  // no thread's, or no heading at all: the opening text stays unthreaded
+  for (const text of [
+    '<!-- reply 1 -->\n> invisible\n\nfix it\n# perf\nb',
+    '<!-- reply 1 -->\n> invisible\nfix it\n# perf\nb',
+    '> invisible\n\n# perf\nb',
+    'intro\n# perf\nb',
+    '<!-- reply 1 -->\n> invisible\n\n# Summary\nb',
+    '<!-- reply 1 -->\n> invisible',
+  ]) {
+    expect(split(text)).toEqual(splitSections(text, () => true))
+  }
+
+  expect(leadingQuoteOf('<!-- reply 1 -->\r\n> use a\r\n> queue\r\n**why** a queue?')).toEqual({
+    quote: '<!-- reply 1 -->\r\n> use a\r\n> queue',
+    rest: '**why** a queue?',
+  })
+  expect(leadingQuoteOf('> mine\n\nwords')).toBeUndefined()
 })
 
 test('a typed name finds the thread it most likely means', async () => {
@@ -980,6 +1019,57 @@ test('a reply to a selected part of a reply goes to the thread that part is in',
   const headed = '<!-- reply 1 -->\n> invisible\n\n# perf\nabout speed'
   await $.prompt.submit(say(headed))
   expect(prompts.at(-1)).toBe(headed)
+})
+
+test('a quoted selection opening a message goes with the thread heading right after it, wherever it was quoted from', async ($, on) => {
+  const prompts = engine(on)
+  // the selection is of a part of a reply in design
+  on('session.messages', () => ({
+    value: [{ role: 'assistant', text: '# design\nthe two tasks deferred until after this release are due now', toolUses: [] }],
+  }))
+  await flipThreads($)
+  await $.prompt.submit(say('# design\na\n# multitasking\nb'))
+  // the model is told the rule the chat draws by
+  expect(prompts.at(-1)).toContain("right before a heading, which belongs to that heading's thread")
+
+  // as the desktop writes it on Windows, under a heading that starts a thread's name
+  const quote = '<!-- reply 1 -->\r\n> The two tasks deferred until after this release are due now:\r\n>\r\n> reusing a colour'
+  const text = `${quote}\r\n\r\n# Multitask\r\nyes`
+  await $.prompt.submit(say(text))
+  // the heading decides: the model is told what it means, and nothing of design
+  expect(prompts.at(-1)).toBe(`${text}\n--\nThread headings in this message, as the user meant them: "#Multitask" is the thread "multitasking".`)
+  await $.session.append({
+    message: { type: 'user', role: 'user', content: [{ type: 'text', text }] },
+    door: 'prompt',
+    origin: { kind: 'composer' },
+    uuid: 'q1',
+  })
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const row = await $.ui.mount({ plugin: 'thread-chat', surface, ...userRow(text), requestId: 'q1' })
+    expect(await tagOf(row, 'multitasking')).toBeDefined()
+    expect(await tagOf(row, 'design')).toBeUndefined()
+    // no part of no thread, so no "+ thread"
+    expect(await row.find({ key: 'tag:' })).toBeUndefined()
+    // the engine draws the quote, then the words, with no line marking a thread's part
+    expect((await row.find({ type: 'Text', text: /deferred/ }))?.text).toBe(`${quote}\n\nyes`)
+    await row.unmount()
+  }
+
+  // with a second thread's part after it, the quote stays at the top, above the first part's name
+  const two = '<!-- reply 1 -->\n> due now\n\n# Multitask\nyes\n# design\nand this'
+  const both = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...userRow(two), requestId: 'q2' })
+  expect((await both.find({ type: 'Text', text: /due now/ }))?.text).toBe(
+    '<!-- reply 1 -->\n> due now\n\n▸ multitasking\nyes\n\n▸ design\nand this',
+  )
+  expect(await both.find({ key: 'tag:' })).toBeUndefined()
+  await both.unmount()
+
+  // the chat filtered to design hides it, quote and all
+  const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...BAND })
+  await flipSwitch(band, FILTER_SWITCH)
+  await pickIn(band, 'terminal', 'design')
+  const picked = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...userRow(text), requestId: 'q1' })
+  expect(await picked.find({ text: /deferred|yes/ })).toBeUndefined()
 })
 
 test('a reply of several sections draws one by the engine and the rest as markdown', async ($, on) => {

@@ -1371,6 +1371,87 @@ test("a card says how long its thought has run and since its latest note, in the
   expect(await status()).toBe('done 3m ago')
 })
 
+test('new thoughts take the first four colours in turn, past any held, then the rest; one that ended keeps its own, dim while taken', async ($, on) => {
+  const names = ['one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight']
+  const agents: AgentInfo[] = names.map(name => ({ id: name, description: name, type: 'multitask:thought', status: 'running' }))
+  const seen = engine($, on, agents)
+  const clock = mock.clock(on)
+  await $.session.start({ cwd: '.', surface: 'terminal', isInteractive: true })
+  await $.command.run({ command: 'multitask', args: '', origin: { kind: 'composer' }, presentation: {} as never })
+  const think = (name: string) => $.tool.call({ tool: 'mcp__multitask__think', tool_use_id: `think-${name}`, name, task: `the brief for ${name}` })
+  const tell = (name: string) => $.tool.call({ tool: 'mcp__multitask__tell', tool_use_id: `tell-${name}`, name, message: 'and logout' })
+  const end = async (name: string) => {
+    await $.turn.complete({ ...finished(name), answer: 'Done.' })
+    await clock.settle()
+  }
+  const pane = await $.ui.mount({
+    plugin: 'multitask',
+    surface: 'terminal',
+    component: 'Pane',
+    requestId: 'multitask-thoughts',
+    props: { title: 'Thoughts', isFocused: false, bodyColumns: 80, placement: 'dock', scroll: { offset: 0, bodyRows: 40 }, view: {} },
+  })
+  // The colour a thought's glyph is drawn in, whether dim, and its card's border, if a card.
+  const lookOf = async (id: string) => {
+    await pane.redraw()
+    const box = elementsOf(await pane.drawn()).find(n => n.props?.key === `card:${id}` || n.props?.key === `line:${id}`)
+    const glyph = elementsOf(box).find(n => n.type === 'Text')
+    return { color: glyph?.props?.color, isDim: glyph?.props?.dimColor === true, border: box?.props?.borderColor }
+  }
+  // The palette: the first four, the clearest, go in turn; the rest only while those are all held.
+  const [c1, c2, c3, c4, c5, c6] = ['#4fa3e0', '#d9636a', '#58b36b', '#c98a2e', '#9b6fd6', '#2fb3a6']
+
+  await think('one')
+  await think('two')
+  expect(await lookOf('one')).toEqual({ color: c1, isDim: false, border: c1 })
+  expect(await lookOf('two')).toEqual({ color: c2, isDim: false, border: c2 })
+
+  // Ended, its colour is free, but the next thought takes the next colour in turn; the ended
+  // one, its colour held by no running thought, is drawn as it is.
+  await end('one')
+  await think('three')
+  expect((await lookOf('three')).color).toBe(c3)
+  expect(await lookOf('one')).toEqual({ color: c1, isDim: false, border: undefined })
+
+  // The turn is kept in the session, so it carries on after a reload rather than starting over.
+  await $.session.start({ cwd: '.', surface: 'terminal', isInteractive: true })
+  await think('four')
+  expect((await lookOf('four')).color).toBe(c4)
+
+  // Round again to the first, which the ended thought keeps, drawn dim while it is taken.
+  await think('five')
+  expect(await lookOf('five')).toEqual({ color: c1, isDim: false, border: c1 })
+  expect(await lookOf('one')).toEqual({ color: c1, isDim: true, border: undefined })
+
+  // With the first four all held by running thoughts, the first of the rest none holds.
+  await think('six')
+  expect((await lookOf('six')).color).toBe(c5)
+
+  // Resumed while its colour is taken, it takes a free one; the running thoughts keep theirs.
+  expect((await tell('one')).deny).toBeUndefined()
+  expect(seen.sends).toEqual([{ to: 'one', text: 'and logout' }])
+  expect(await lookOf('one')).toEqual({ color: c6, isDim: false, border: c6 })
+  expect((await lookOf('five')).color).toBe(c1)
+  expect((await lookOf('six')).color).toBe(c5)
+
+  // Picks from the rest left the turn where it was: the next takes the second, now free.
+  await end('two')
+  await think('seven')
+  expect((await lookOf('seven')).color).toBe(c2)
+
+  // The next in turn, the third, is held, so the next thought takes the fourth, now free.
+  await end('four')
+  await think('eight')
+  expect((await lookOf('eight')).color).toBe(c4)
+  expect((await lookOf('three')).color).toBe(c3)
+
+  // Resumed with its colour free, a thought keeps it.
+  await end('three')
+  expect(await lookOf('three')).toEqual({ color: c3, isDim: false, border: undefined })
+  expect((await tell('three')).deny).toBeUndefined()
+  expect(await lookOf('three')).toEqual({ color: c3, isDim: false, border: c3 })
+})
+
 test("the person tells a thought something from its card: it gets it, resuming if its turn ended, and the voice hears of it", async ($, on) => {
   const seen = engine($, on)
   const clock = mock.clock(on)

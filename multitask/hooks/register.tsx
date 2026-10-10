@@ -47,6 +47,7 @@ const openReports = atom({ plugin: 'multitask', key: 'openReports' } as const, [
 const heard = atom({ plugin: 'multitask', key: 'heard' } as const, {})
 const paneTick = atom({ plugin: 'multitask', key: 'paneTick' } as const, 0)
 const tellingTo = atom({ plugin: 'multitask', key: 'tellingTo' } as const, '')
+const colorTurn = atom({ plugin: 'multitask', key: 'colorTurn' } as const, 0)
 
 const PANE = 'multitask-thoughts'
 // Multitask's dropdown in the band. Its face is the mode the chat is in, Multitask or
@@ -74,7 +75,10 @@ const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
 // What the voice may still call itself while multitasking is on.
 const VOICE_TOOLS = /^(mcp__multitask__|mcp__thread-chat__)|^(AskUserQuestion|ToolSearch)$/
 
-const PALETTE = ['#4fa3e0', '#d9636a', '#58b36b', '#c98a2e', '#9b6fd6', '#2fb3a6', '#d66bb0', '#8a9a3a']
+// The colours thoughts are drawn in: the first ones, the clearest, taken in turn; the rest
+// only while every one of those is held (see freeColor).
+const FIRST_COLORS = ['#4fa3e0', '#d9636a', '#58b36b', '#c98a2e']
+const PALETTE = [...FIRST_COLORS, '#9b6fd6', '#2fb3a6', '#d66bb0', '#8a9a3a']
 
 // Updates arriving close together reach the voice as one message.
 const FLUSH_MS = 2000
@@ -237,6 +241,32 @@ function uniqueName(list: Thought[], name: string): string {
   return candidate
 }
 
+// The colour a thought takes as it starts, or resumes when its own is taken, and where the
+// turn through the first colours stands after it. The first colours go in turn from `turn`,
+// past any another running thought holds, and the turn moves on past the one taken, so
+// thoughts started one after another go through them all; with every first colour held,
+// the first of the rest no running thought holds, the turn left as it is; with every one
+// held, the one fewest hold. An ended thought holds none, so a new one may take its colour.
+function freeColor(list: readonly Thought[], turn: number, except?: string): { color: string; turn: number } {
+  const held = list.filter(t => t.status === 'running' && t.id !== except).map(t => t.color)
+  const next = [...FIRST_COLORS.slice(turn), ...FIRST_COLORS.slice(0, turn)].find(color => !held.includes(color))
+  if (next !== undefined) return { color: next, turn: (FIRST_COLORS.indexOf(next) + 1) % FIRST_COLORS.length }
+  const holders = (color: string) => held.filter(one => one === color).length
+  return { color: PALETTE.reduce((best, color) => (holders(color) < holders(best) ? color : best)), turn }
+}
+
+// Picks a colour for a thought in `list` through freeColor, moving the turn on.
+type PickColor = (list: readonly Thought[], except?: string) => string
+
+// A thought set running in `list`: one running already is left as it is, so its rows keep
+// their colour while it runs; one resuming keeps its colour unless a running thought now
+// holds it, then takes a free one.
+function asRunning(list: readonly Thought[], t: Thought, pick: PickColor): Thought {
+  if (t.status === 'running') return t
+  const isTaken = list.some(one => one.id !== t.id && one.status === 'running' && one.color === t.color)
+  return { ...t, status: 'running', color: isTaken ? pick(list, t.id) : t.color }
+}
+
 function statusOf(status: AgentStatus): ThoughtStatus {
   if (status === 'failed') return 'failed'
   if (status === 'killed') return 'stopped'
@@ -262,8 +292,30 @@ async function timeNow($: EngineInterface): Promise<number | undefined> {
   }
 }
 
+// Updates the thoughts through `fn`, which picks any colour it needs with `pick`. Where the
+// turn through the first colours then stands is kept in state, so a reload carries it on.
+async function updateThoughts($: EngineInterface, fn: (list: readonly Thought[], pick: PickColor) => Thought[]) {
+  const start = await read($, colorTurn)
+  let turn = start
+  await update($, thoughts, list => {
+    // Run again from the start should the write miss.
+    turn = start
+    return fn(list, (all, except) => {
+      const picked = freeColor(all, turn, except)
+      turn = picked.turn
+      return picked.color
+    })
+  })
+  if (turn !== start) await update($, colorTurn, () => turn)
+}
+
 async function patchThought($: EngineInterface, id: string, fn: (t: Thought) => Thought) {
   await update($, thoughts, list => list.map(t => (t.id === id ? fn(t) : t)))
+}
+
+// Patches a thought as patchThought does, for a change that may pick it a colour.
+async function patchPicking($: EngineInterface, id: string, fn: (t: Thought, list: readonly Thought[], pick: PickColor) => Thought) {
+  await updateThoughts($, (list, pick) => list.map(t => (t.id === id ? fn(t, list, pick) : t)))
 }
 
 // Opens a thought in the Thoughts pane to show everything, or closes it: a finished
@@ -431,9 +483,11 @@ async function relayDone($: EngineInterface, t: Thought, report: string, isFaile
 // keeps the status it had.
 async function deliver($: EngineInterface, t: Thought, text: string): Promise<SessionSendResult> {
   let was: ThoughtStatus = t.status
-  await patchThought($, t.id, one => {
+  let wasColor = t.color
+  await patchPicking($, t.id, (one, list, pick) => {
     was = one.status
-    return { ...one, status: 'running' }
+    wasColor = one.color
+    return asRunning(list, one, pick)
   })
   const send = async (to: SessionSendAddress): Promise<SessionSendResult> => {
     try {
@@ -444,7 +498,11 @@ async function deliver($: EngineInterface, t: Thought, text: string): Promise<Se
   }
   const byId = await send({ agentId: t.id })
   const sent = byId.isDelivered || !(await send(t.name)).isDelivered ? byId : { isDelivered: true as const }
-  if (!sent.isDelivered) await patchThought($, t.id, one => (one.status === 'running' ? { ...one, status: was } : one))
+  // Not delivered, it goes back to its colour; the turn through the first colours stays
+  // moved on, which does no harm, as a pick passes over the colours held.
+  if (!sent.isDelivered) {
+    await patchThought($, t.id, one => (one.status === 'running' ? { ...one, status: was, color: wasColor } : one))
+  }
   return sent
 }
 
@@ -922,11 +980,10 @@ export const register: Register = (on, options) => {
       (await $.agent.list()).filter(a => a.description === name && a.type === AGENT).at(-1)?.id
     if (id === undefined) return { deny: 'The thought did not start: no agent id came back.' }
 
-    const thought: Thought = {
+    const thought: Omit<Thought, 'color'> = {
       id,
       name,
       task,
-      color: PALETTE[list.length % PALETTE.length] ?? '#888888',
       status: 'running',
       queued: [],
       lastText: '',
@@ -935,7 +992,8 @@ export const register: Register = (on, options) => {
       interruptWith: null,
       startedAt: await timeNow($),
     }
-    await update($, thoughts, all => [...all, thought])
+    // Its colour is picked as it joins the list, so thoughts started together differ.
+    await updateThoughts($, (all, pick) => [...all, { ...thought, color: pick(all) }])
     return { result: `Started thought "${name}". Its updates reach you as they come.` }
   })
 
@@ -993,13 +1051,18 @@ export const register: Register = (on, options) => {
 
   on('tool.call', { tool: 'mcp__multitask__thoughts' }, async ($, e) => {
     // Bring statuses up to date with the engine's own view of the agents.
+    // One by one, so thoughts found running again take colours that differ.
     const agents = await $.agent.list()
-    await update($, thoughts, list =>
-      list.map(t => {
+    await updateThoughts($, (list, pick) => {
+      const next = [...list]
+      next.forEach((t, i) => {
         const agent = agents.find(a => a.id === t.id)
-        return agent === undefined || t.status === 'stopped' ? t : { ...t, status: statusOf(agent.status) }
-      }),
-    )
+        if (agent === undefined || t.status === 'stopped') return
+        const status = statusOf(agent.status)
+        next[i] = status === 'running' ? asRunning(next, t, pick) : { ...t, status }
+      })
+      return next
+    })
     const list = await read($, thoughts)
     const ref = refOf(e)
     if (ref === '') return { result: describeThoughts(list) }
@@ -1113,10 +1176,9 @@ export const register: Register = (on, options) => {
     const t = (await read($, thoughts)).find(one => one.id === id)
     if (t !== undefined && t.turnId !== e.turnId) {
       const now = await timeNow($)
-      await patchThought($, id, one => ({
-        ...one,
+      await patchPicking($, id, (one, list, pick) => ({
+        ...(one.status === 'stopped' ? one : asRunning(list, one, pick)),
         turnId: e.turnId,
-        status: one.status === 'stopped' ? one.status : 'running',
         startedAt: now,
       }))
       // New work: the report it ends on starts folded, as every report does.
@@ -1183,6 +1245,8 @@ export const register: Register = (on, options) => {
       return <Box display="none" />
     }
     const isRelay = (origin.kind === 'plugin' && origin.name === 'multitask') || isRelayText(e.props.text)
+    // A thought's notice folds to the dim line on the terminal. The desktop may never ask to
+    // draw one (it draws its own task chips), but that is unconfirmed, so it is hidden there.
     const taskId = e.props.task?.id
     const isThoughtNotice =
       origin.kind === 'task-notification' &&
