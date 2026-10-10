@@ -81,10 +81,16 @@ test('the desktop draws a Threads button like its Select, its switches in a card
   const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...BAND })
 
   // the button: a keyed Box, one line high, with the Select's ring (stronger under the
-  // pointer), fill and caret, reading Threads
+  // pointer), fill, padding and caret, reading Threads
   const button = keyedIn(await band.drawn(), MENU)
   expect(button?.type).toBe('Box')
-  expect(button?.props).toMatchObject({ height: 1, paddingX: 1, paddingY: 0, borderStyle: 'single', backgroundColor: 'userMessageBackground' })
+  expect(button?.props).toMatchObject({
+    height: 1,
+    paddingX: 0.7,
+    paddingY: 0,
+    borderStyle: 'single',
+    backgroundColor: 'rgba(255,255,255,0.05)',
+  })
   expect(button?.hover).toEqual({ borderColor: 'promptBorder' })
   expect(await band.find({ type: 'Text', text: 'Threads' })).toBeDefined()
   const caret = await band.find({ type: 'Svg' })

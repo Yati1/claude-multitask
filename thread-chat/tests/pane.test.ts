@@ -877,15 +877,17 @@ test('the thread view keeps to its end as messages come only while the person ha
 })
 
 test('a surface that draws the view afresh at its top is taken back where the person left it', () => {
-  // opened, or back on its tab, at the end: to the end
-  expect(viewMoveOf('end', undefined, 0)).toEqual({ to: 'end' })
-  // left at row 10: to the end first, where the surface measures its rows, then back to row 10
-  expect(viewMoveOf(10, undefined, 0)).toEqual({ to: 'end', back: 10 })
-  expect(viewMoveOf(10, 10, 40)).toEqual({ to: 10 })
+  // a window of 20 rows; opened, or back on its tab, at the end: to the end
+  expect(viewMoveOf('end', undefined, 0, 20)).toEqual({ to: 'end' })
+  // left at row 30: to the end first, where the surface measures its rows, then back to row 30
+  expect(viewMoveOf(30, undefined, 0, 20)).toEqual({ to: 'end', back: 30 })
+  expect(viewMoveOf(30, 30, 40, 20)).toEqual({ to: 30 })
   // nothing where it stands away from the top, or at the top the person left it at
-  expect(viewMoveOf('end', undefined, 40)).toBeUndefined()
-  expect(viewMoveOf(10, undefined, 10)).toBeUndefined()
-  expect(viewMoveOf(0, undefined, 0)).toBeUndefined()
+  expect(viewMoveOf('end', undefined, 40, 20)).toBeUndefined()
+  expect(viewMoveOf(30, undefined, 30, 20)).toBeUndefined()
+  expect(viewMoveOf(0, undefined, 0, 20)).toBeUndefined()
+  // nor within a window of the top, where earlier sections come as the person scrolls up
+  expect([viewMoveOf(10, undefined, 0, 20), viewMoveOf(20, undefined, 0, 20)]).toEqual([undefined, undefined])
 })
 
 // The runtime's own timer, which the kit's typings leave out.
@@ -920,25 +922,27 @@ test('the view is taken back where the person left it on opening and on coming b
   await drawAt(40)
   expect(moves).toBe(1)
 
-  // left at row 10, back on its tab at the top: to its end, then from there back to row 10
-  await personTo(10)
-  await drawAt(10)
+  // left at row 30, back on its tab at the top: to its end, then from there back to row 30
+  await personTo(30)
+  await drawAt(30)
   await drawAt(0)
   await advance()
   await drawAt(40)
   await advance()
-  await drawAt(10)
+  await drawAt(30)
   expect(moves).toBe(3)
 
   // the person's move while a move back waits stands, and no move back follows it
   await drawAt(0)
-  await personTo(5)
+  await personTo(25)
   await advance()
   await drawAt(40)
   expect(moves).toBe(4)
 
-  // left at the top, it stays there
+  // left at the top, or within a window of it, it stays there
   await personTo(0)
+  await drawAt(0)
+  await personTo(5)
   await drawAt(0)
   await advance()
   expect(moves).toBe(4)
@@ -1050,6 +1054,53 @@ test('the view draws its newest messages, and earlier ones as the person scrolls
   await $.command.run({ command: 'thread-view', args: '', origin: { kind: 'composer' }, presentation: {} as never })
   await settle()
   expect(await shown()).toEqual([30, 'you: message 40', '40 earlier messages'])
+})
+
+// (As above, the plugin's own scrolls go unseen and every wait is held. A move of the
+// window that the plugin times is a wait of 100ms it asks the clock for: the test counts
+// those, the move to the end and back a surface drawing the view afresh has among them.)
+test('near its top as earlier messages come, the view stays there as the desktop draws it at its top', async ($, on) => {
+  const { scrolls } = engine(on)
+  let moves = 0
+  on('clock.after', ($, e) => {
+    if (e.ms === 100) moves += 1
+    return new Promise(() => {})
+  })
+  const settle = () => new Promise<void>(resolve => later(resolve, 10))
+  const moveTo = async (offset: number, by: number, contentRows: number) => {
+    const pointer = { column: 1, row: 1 }
+    await $.ui.scroll({ component: 'Pane', requestId: 'thread-view', offset, by, bodyRows: 20, contentRows, origin: { kind: 'person' }, pointer })
+    await settle()
+    return scrolls.at(-1)?.offset
+  }
+  await flipThreads($)
+  const { person } = storer($)
+  for (let i = 0; i < 70; i++) await person(`p${i}`, `message ${i}`)
+  const pane = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...PANE })
+  const drawAt = async (offset: number) => {
+    await pane.redraw({ ...PANE.props, scroll: { offset, bodyRows: 20 } })
+    await settle()
+  }
+
+  // scrolled up within a window of the top: 30 more above, drawn
+  await moveTo(50, -50, 120)
+  await drawAt(50)
+  expect(await moveTo(15, -35, 120)).toBe(15)
+  await drawAt(15)
+  expect((await sectionsOf(pane)).length).toBe(60)
+  const before = moves
+  // the desktop draws them with its window at the top, where the person scrolled: it stays
+  await drawAt(0)
+  expect(moves).toBe(before)
+  // the person's move goes down by the rows they added; the desktop draws the view at the
+  // top before it takes that move: it stays
+  expect(await moveTo(14, -1, 240)).toBe(134)
+  await drawAt(0)
+  expect(moves).toBe(before)
+  // a while later, a drawing at the top is the desktop's afresh: to the end, then back
+  await new Promise<void>(resolve => later(resolve, 600))
+  await drawAt(0)
+  expect(moves).toBe(before + 1)
 })
 
 test('scrolled up, the view keeps what it draws as messages come; at its end, the newest', async ($, on) => {

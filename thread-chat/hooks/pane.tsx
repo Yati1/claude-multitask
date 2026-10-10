@@ -132,20 +132,23 @@ export function messagesBefore(ids: readonly (string | undefined)[], from: numbe
 export type ViewSpan = { from: number; count: number }
 
 // How the view's window is put back where the person left it, as a surface draws the
-// view with its window `offset` rows down; `back` a row it is still to go back to. A
-// surface that draws the view afresh (on opening it, on coming back to its tab) starts
-// at the top, and the engine does not move it back:
-// - at the top though the person left it elsewhere: to the end, and on to their row
-//   (`back`) where they left it short of it, once the surface has measured its rows;
+// view with its window `offset` rows down, `bodyRows` tall; `back` a row it is still to go
+// back to. A surface that draws the view afresh (on opening it, on coming back to its tab)
+// starts at the top, and the engine does not move it back:
+// - at the top though the person left it further than a window below it: to the end, and
+//   on to their row (`back`) where they left it short of it, once the surface has measured
+//   its rows;
 // - away from the top with a row to go back to: to that row;
-// - else nothing.
+// - else nothing: a window at the top shows where the person left it near the top, where
+//   earlier sections are drawn as they scroll up and a surface draws them there.
 export function viewMoveOf(
   place: ViewPlace,
   back: number | undefined,
   offset: number,
+  bodyRows: number,
 ): { to: 'end'; back?: number } | { to: number } | undefined {
   if (back !== undefined && offset > 0) return { to: back }
-  if (offset !== 0 || place === 0) return undefined
+  if (offset !== 0 || (place !== 'end' && place <= bodyRows)) return undefined
   return place === 'end' ? { to: 'end' } : { to: 'end', back: place }
 }
 
