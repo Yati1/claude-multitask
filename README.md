@@ -27,32 +27,33 @@ Install any or all of them.
 
 ## Use
 
-Multitask has a dropdown, and thread-chat a `Threads` menu, in the band above the prompt with their switches for the chat; thread-chat's thread picker sits beside its menu. The mobile app shows only the thread picker: use the commands there. React has no control in the band: `/react` is its switch.
+In the band above the prompt, Multitask has a dropdown, and thread-chat a thread picker followed by its threads menu, a cog (`⚙`), with their switches for the chat. The mobile app shows only the thread picker: use the commands there. React has no control in the band: `/react` is its switch.
 
 ### Multitask
 
 - `/multitask` turns Multitask on in a chat (run it again to turn it off). The chat becomes the voice and hands all work to thoughts.
 - Multitask's dropdown reads `Multitask` while it is on and `Focus` while it is off; pick the other to switch.
+- Left of the dropdown, a dot in its colour for each running thought pulses at each of its notes and fades out as it ends, as a check, or a cross if it failed. In the desktop app, hover a dot for the thought's name, latest note and its age.
 - `/thoughts`, or the `thoughts` button above the prompt, opens the Thoughts pane: what each thought is doing and how long since its last note, its report, `tell` to send it a message yourself, and `stop`. It lists the 16 most recently ended thoughts (`N more` shows the rest). The thoughts are per chat, and kept when the chat is restarted.
 - The `voiceEffort` setting (Voice effort, in `/config`) sets how hard the voice thinks: `low` (default), `medium`, `high`, or `session` to match the session. Thoughts keep the session's setting.
 
 ### Threads
 
-- `/threads`, or the `On in this chat` switch in the `Threads` menu, turns threads on in a chat (again to turn them off). The menu opens while the pointer is on `Threads` or it has the focus in the desktop app, and with a press on it in the terminal.
+- `/threads`, or the `On in this chat` switch in the threads menu (the cog), turns threads on in a chat (again to turn them off). The menu opens while the pointer is on the cog or it has the focus in the desktop app, and with a press on it in the terminal.
 - A `# name` heading in a message starts a thread, or replies to it if it exists. Close or abbreviated names find the existing thread. The agent replies under the same headings.
 - `#+name` starts a new thread even when an existing one is close.
 - To put a message in a thread, hover it for `+ thread` (desktop app); to move it to another, press `▾` beside its thread tag.
-- The thread picker above the prompt, a dropdown named for the picked thread, picks the thread messages without a heading go to, or `No thread`. A heading still wins.
-- `New thread` in the `Threads` menu starts a thread by name and picks it; `Manage threads` there merges, archives or deletes threads.
+- The thread picker above the prompt, a dropdown named for the picked thread and tinted in its colour, picks the thread messages without a heading go to, or `No thread`. A heading still wins, and moves the picker to its thread.
+- `New thread` in the threads menu starts a thread by name and picks it; `Manage threads` there merges, archives or deletes threads.
 - Archived threads leave the pickers but keep their messages; `Manage threads` brings them back, as does a heading naming one. Deleting a thread takes its tag off its messages.
-- `Filter the chat`, in the `Threads` menu while threads are on, is off at first, so the chat shows every message. On, with a thread picked, the chat shows only that thread's messages, and those since your last message that are in no thread. It is per chat, and kept when the chat is restarted.
-- `/thread-view`, or `Open thread view` in the `Threads` menu, opens the thread view: a pane with a switch for each thread below its newest message. With none on it shows every message; with some on, only those threads' messages, and those since your last message that are in no thread, as `Filter the chat` does. The thread picker above the prompt and `Filter the chat` do not change it.
+- `Filter the chat`, in the threads menu while threads are on, is off at first, so the chat shows every message. On, with a thread picked, the chat shows only that thread's messages, and those since your last message that are in no thread. It is per chat, and kept when the chat is restarted.
+- `/thread-view`, or `Open thread view` in the threads menu, opens the thread view: a pane with a switch for each thread below its newest message. With none on it shows every message; with some on, only those threads' messages, and those since your last message that are in no thread, as `Filter the chat` does. The thread picker above the prompt and `Filter the chat` do not change it.
 - `/merge-threads <thread> into <thread>` also merges two threads.
-- `Agent may start threads`, in the `Threads` menu while threads are on, lets the agent start threads itself. It is per chat, and kept when the chat is restarted.
+- `Agent may start threads`, in the threads menu while threads are on, lets the agent start threads itself. It is per chat, and kept when the chat is restarted.
 
 ### Reactions
 
 - Reactions are on in a new chat. `/react` turns them off in that chat (again to turn them back on). The choice is per chat, and kept when the chat is restarted.
 - `/react default` switches whether reactions are on by default: in new chats, and in chats where you have not used `/react`. A chat's own `/react` choice wins over the default. The default applies to every chat and is kept across restarts.
-- While they are on, a reply of a single emoji shows as a reaction on your message, not as a reply.
+- While they are on, a reply of a single emoji shows as a reaction on your message, not as a reply. With thread-chat, reactions show in its thread view too.
 - On the desktop the reaction sits on your message's bottom-right corner. `/react place under` moves it under the message, where its time and copy buttons show; `/react place corner` moves it back. The choice applies to every chat.
