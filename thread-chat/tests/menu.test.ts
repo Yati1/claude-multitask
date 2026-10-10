@@ -66,27 +66,30 @@ function picturesIn(node: unknown): string[] {
   return n.type === 'Svg' ? [String(n.props?.alt)] : (n.children ?? []).flatMap(picturesIn)
 }
 
-// The desktop menu's switches as drawn: each one's slide switch, by its picture's alt.
-const switchesOf = async (band: { drawn: () => Promise<unknown> }) => picturesIn(keyedIn(await band.drawn(), MENU))
+// The desktop menu's switches as drawn: each one's slide switch, by its picture's alt,
+// in the menu after its caret.
+const switchesOf = async (band: { drawn: () => Promise<unknown> }) =>
+  picturesIn(keyedIn(await band.drawn(), MENU)).filter(alt => alt !== 'menu')
 
 // A press on a slide switch's hit area, as a click on it.
 const clickSwitch = (band: { pointer: (p: never) => Promise<unknown> }, key: string) =>
   band.pointer({ type: 'down', x: 1, y: 0, button: 'left', in: `switch:${key}` } as never)
 
-test('the desktop draws a Threads button like its model button, its switches in a card the pointer reveals; nothing below the input', async ($, on) => {
+test('the desktop draws a Threads button like its Select, its switches in a card the pointer reveals; nothing below the input', async ($, on) => {
   engine(on)
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
   const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...BAND })
 
-  // the button: a keyed Box with no ring, fill, padding or caret of its own, its face a
-  // plain Button reading Threads, which the band draws as the desktop's model button
+  // the button: a keyed Box, one line high, with the Select's ring (stronger under the
+  // pointer), fill and caret, reading Threads
   const button = keyedIn(await band.drawn(), MENU)
   expect(button?.type).toBe('Box')
-  expect(Object.keys(button?.props ?? {}).filter(prop => /^(border|padding|height|background)/.test(prop))).toEqual([])
-  expect(button?.hover).toBeUndefined()
-  const [face, ...rest] = button?.children as Drawn[]
-  expect(face).toMatchObject({ type: 'Button', props: { label: 'Threads', plain: true } })
-  expect(rest.map(n => n.type)).toEqual(['Box'])
+  expect(button?.props).toMatchObject({ height: 1, paddingX: 1, paddingY: 0, borderStyle: 'single', backgroundColor: 'userMessageBackground' })
+  expect(button?.hover).toEqual({ borderColor: 'promptBorder' })
+  expect(await band.find({ type: 'Text', text: 'Threads' })).toBeDefined()
+  const caret = await band.find({ type: 'Svg' })
+  expect(caret?.props).toMatchObject({ alt: 'menu', width: 20, height: 14 })
+  expect(String(caret?.props.source)).toContain('d="M4 6l4 4 4-4"')
 
   // the card: out of the flow, shown only under the pointer, so the desktop lifts it;
   // a row per switch, its label a Button and its slide switch a picture with a hit area
