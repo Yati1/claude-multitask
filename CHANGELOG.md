@@ -26,6 +26,7 @@ Notable changes to the thread-chat, multitask and react mods. The format is base
 - Fixed issue where multitask's `tell` showed as a success when its message did not reach the thought.
 - Fixed issue where multitask's messages to thoughts were never delivered in auto mode.
 - Fixed issue where multitask's messages to a thought were refused once it had finished its turn.
+- Fixed issue where multitask's queued messages never reached a finished thought in auto mode.
 - Fixed issue where thread-chat's thread view went blank, without saying why, when it failed to draw.
 - Fixed issue where thread-chat's thread view drew nothing once it held a dozen or so pasted pictures.
 

@@ -35,6 +35,27 @@ type Seen = {
   hidden?: string[]
   // the tools the mod offered the model, by name
   registered: string[]
+  // set to refuse, as auto mode does, every message the mod sends but from inside an event
+  // the engine raised to it, which the test raises through raised() (seen.raising counts them)
+  isAutoMode?: boolean
+  raising: number
+}
+
+// What auto mode answers a SendMessage of the mod's that the mod's own allowance (its
+// tool.check) never saw: one made after the hook that made it had returned, or from a
+// timer, which the engine runs beneath the mod's own frame, every hook of the mod left out.
+const NO_VERDICT =
+  'The server-side auto mode classifier gave no verdict for SendMessage: the request that produced this action did not ask for one.'
+
+// Raises an event to the mod as the engine does, in its own call: in auto mode, what the
+// mod sends from inside it is allowed.
+async function raised<T>(seen: Seen, call: () => Promise<T>): Promise<T> {
+  seen.raising++
+  try {
+    return await call()
+  } finally {
+    seen.raising--
+  }
 }
 
 // An agent whose run has ended, which a message resumes from its transcript.
@@ -55,7 +76,7 @@ function engine(
   agents: AgentInfo[] = [{ id: 'agent-1', description: 'auth-bug', type: 'multitask:thought', status: 'running' }],
   store: Record<string, unknown> | null = {},
 ): Seen {
-  const seen: Seen = { prompts: [], sends: [], ran: [], efforts: [], aborts: [], spawns: 0, names: [], registered: [] }
+  const seen: Seen = { prompts: [], sends: [], ran: [], efforts: [], aborts: [], spawns: 0, names: [], registered: [], raising: 0 }
   if (store !== null) mock.store(on, store)
   on('session.id', () => ({ value: 'session-1' }))
   on('session.start', ($, e) => ({ cwd: e.cwd }))
@@ -78,6 +99,7 @@ function engine(
   on('agent.offer', () => ({ isOffered: true }))
   on('session.send', async (_, e) => {
     seen.sends.push({ to: e.to, text: e.text })
+    if (seen.isAutoMode === true && seen.raising === 0) return { isDelivered: false, reason: NO_VERDICT }
     if (seen.refuse !== undefined) return { isDelivered: false, reason: seen.refuse }
     const agent = agents.find(a => a.id === e.to || a.description === e.to)
     if (agent !== undefined && ENDED.has(agent.status)) {
@@ -97,6 +119,7 @@ function engine(
     if (e.message.type === 'user') seen.hidden.push(e.message.content.map(block => (block.type === 'text' ? block.text : '')).join(''))
     return next(e)
   })
+  on('turn.start', ($, e) => ({ turnId: e.turnId }))
   on('turn.complete', ($, e) => {
     const agent = agents.find(a => a.id === e.agentId)
     if (agent !== undefined && seen.isWindingDown !== true) agent.status = 'completed'
@@ -149,6 +172,13 @@ const finished = (agentId: string) => ({
   agentId,
   reason: 'answer' as const,
 })
+
+// The end of one of the voice's own turns, on the main loop.
+const voiceTurnEnd = (turnId: string) => ({ answer: '', durationMs: 10, isAborted: false, turnId, reason: 'answer' as const })
+
+// The engine's notice that a thought's run finished.
+const noticeOf = (agentId: string, result: string) =>
+  `<task-notification>\n<task-id>${agentId}</task-id>\n<status>completed</status>\n<result>${result}</result>\n</task-notification>`
 
 test('quiet is exact and updates are one line each under a short header', async () => {
   expect(isQuiet(' (quiet)\n')).toBe(true)
@@ -418,17 +448,21 @@ test('the voice is refused work, and its thoughts relay, queue and unqueue', asy
   expect(seen.sends).toHaveLength(0)
 
   // Its next notes (while relayed) and the text its turn ends with reach the voice as one
-  // prompt, once things go quiet, the report once; and the queue is handed over.
+  // prompt, once things go quiet, the report once, with the queue still pending; the turn
+  // that prompt wakes the voice to hands the queue over.
   await says('u2', 'Reading the refresh path')
   await says('u3', 'Token expiry is off by one.')
   await $.turn.complete({ ...finished('agent-1'), answer: 'Token expiry is off by one.' })
   await clock.settle()
-  expect(seen.sends).toEqual([{ to: expect.any(String), text: 'keep' }])
+  expect(seen.sends).toHaveLength(0)
   expect(seen.prompts).toEqual(noted)
   await clock.advance(2500)
   expect(seen.prompts.slice(noted.length)).toEqual([
-    `Thought updates:\n${RELAY_NOTES ? 'auth-bug: Reading the refresh path\n' : ''}auth-bug (done): Token expiry is off by one.`,
+    `Thought updates:\n${RELAY_NOTES ? 'auth-bug: Reading the refresh path\n' : ''}auth-bug (done): Token expiry is off by one. — 1 message still pending; it will be handed over and you'll hear back`,
   ])
+  await $.turn.start({ text: '', turnId: 'voice-1' })
+  expect(seen.sends).toEqual([{ to: expect.any(String), text: 'keep' }])
+  await $.turn.complete(voiceTurnEnd('voice-1'))
   expect(seen.prompts.join('\n')).not.toContain('expiresAt')
   const after = String((await $.tool.call({ tool: 'mcp__multitask__thoughts', tool_use_id: 'c5b' })).result)
   expect(after).toContain('· Checking how the token expiry is computed')
@@ -738,11 +772,14 @@ test('an interrupt cuts the running turn and hands the message over; a second on
   const cut = (turnId: string) =>
     $.turn.complete({ ...finished('agent-1'), turnId, isAborted: true, reason: 'aborted', answer: 'half a thought' })
 
+  // The cut turn's end makes the message due; the voice's turn that interrupted, ending, hands it over.
   await step('turn-1')
   await interrupt('c2', 'stop, check refresh first')
   expect(seen.aborts).toEqual(['turn-1'])
   await cut('turn-1')
   await clock.settle()
+  expect(seen.sends).toHaveLength(0)
+  await $.turn.complete(voiceTurnEnd('voice-1'))
   expect(seen.sends.map(s => s.text)).toEqual(['Interruption from the voice: stop, check refresh first'])
   // The cut turn's text is no report.
   await clock.advance(2500)
@@ -758,7 +795,7 @@ test('an interrupt cuts the running turn and hands the message over; a second on
   expect(seen.aborts).toEqual(['turn-1', 'turn-2'])
   expect(seen.ran).not.toContain('TaskStop')
   await cut('turn-2')
-  await clock.settle()
+  await $.turn.complete(voiceTurnEnd('voice-2'))
   expect(seen.sends.at(-1)?.text).toBe('Interruption from the voice: and the logout path')
   const listed = String((await $.tool.call({ tool: 'mcp__multitask__thoughts', tool_use_id: 'c4' })).result)
   expect(listed).toContain('auth-bug [running]')
@@ -784,6 +821,8 @@ test('an interrupt the engine cannot cut never stops the thought: the message wa
   expect(seen.sends).toHaveLength(0)
   await $.turn.complete({ ...finished('agent-1'), answer: 'Found it.' })
   await clock.settle()
+  expect(seen.sends).toHaveLength(0)
+  await $.prompt.submit({ text: noticeOf('agent-1', 'Found it.'), origin: { kind: 'task-notification' }, wait: false })
   expect(seen.sends.map(s => s.text)).toEqual(['check refresh first'])
 
   // Its run ended with no turn of it seen, the message goes at once and resumes it.
@@ -797,6 +836,96 @@ test('an interrupt the engine cannot cut never stops the thought: the message wa
   expect(seen.ran).toContain('TaskStop')
 })
 
+test('in auto mode, a message an interrupt could not cut in reaches the thought once that turn ends, resuming it', async ($, on) => {
+  const agents: AgentInfo[] = [{ id: 'agent-1', description: 'auth-bug', type: 'multitask:thought', status: 'running' }]
+  const seen = engine($, on, agents)
+  const clock = mock.clock(on)
+  seen.isAutoMode = true
+  await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
+  await $.command.run({ command: 'multitask', args: '', origin: { kind: 'composer' }, presentation: {} as never })
+  await raised(seen, () => $.tool.call({ tool: 'mcp__multitask__think', tool_use_id: 'c1', name: 'auth bug', task: 'Find why login fails' }))
+  for await (const _ of $.turn.step({ turnId: 'turn-1', index: 0, model: 'opus', effort: 'high', messageCount: 1, agentId: 'agent-1' })) void _
+  const listed = async (id: string) => String((await $.tool.call({ tool: 'mcp__multitask__thoughts', tool_use_id: id })).result)
+
+  seen.isAbortRefused = true
+  const told = await raised(seen, () =>
+    $.tool.call({ tool: 'mcp__multitask__tell', tool_use_id: 'c2', name: 'auth-bug', message: 'check refresh first', how: 'interrupt' }),
+  )
+  expect(told.result).toBe("Could not cut auth-bug's turn; the message is queued as #1, for when that turn ends.")
+
+  // Its turn ends in its own loop, its run with it: nothing is sent from there, where auto
+  // mode would refuse it.
+  await $.turn.complete({ ...finished('agent-1'), answer: 'Found it.' })
+  await clock.settle()
+  expect(seen.sends).toEqual([])
+
+  // The engine's notice that it finished hands the message over, resuming it, and the voice
+  // is told it has it.
+  await raised(seen, () => $.prompt.submit({ text: noticeOf('agent-1', 'Found it.'), origin: { kind: 'task-notification' }, wait: false }))
+  expect(seen.sends).toEqual([{ to: 'agent-1', text: 'check refresh first' }])
+  expect(seen.prompts).toEqual(["Thought updates:\nauth-bug (done): Found it. — it has your queued message now; you'll hear back"])
+  expect(await listed('c3')).toContain('- auth-bug [running]: Find why login fails\n  report: Found it.')
+
+  // Nothing more is sent, and nothing else wakes the voice for it.
+  await clock.advance(90000)
+  expect(seen.sends).toHaveLength(1)
+  expect(seen.prompts).toHaveLength(1)
+})
+
+test('a message due to a thought that no notice handed over wakes the voice, whose turn hands it over; a refusal is told once', async ($, on) => {
+  const agents: AgentInfo[] = [{ id: 'agent-1', description: 'auth-bug', type: 'multitask:thought', status: 'running' }]
+  const seen = engine($, on, agents)
+  const clock = mock.clock(on)
+  seen.isAutoMode = true
+  await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
+  await $.command.run({ command: 'multitask', args: '', origin: { kind: 'composer' }, presentation: {} as never })
+  await raised(seen, () => $.tool.call({ tool: 'mcp__multitask__think', tool_use_id: 'c1', name: 'auth bug', task: 'Find why login fails' }))
+  const listed = async (id: string) => String((await $.tool.call({ tool: 'mcp__multitask__thoughts', tool_use_id: id })).result)
+  const voiceTurn = async (turnId: string) => {
+    await raised(seen, () => $.turn.start({ text: '', turnId }))
+    await raised(seen, () => $.turn.complete(voiceTurnEnd(turnId)))
+  }
+  await raised(seen, () => $.tool.call({ tool: 'mcp__multitask__tell', tool_use_id: 'c2', name: 'auth-bug', message: 'and logout', how: 'queue' }))
+
+  // The notice comes while its run still counts as running: the message would wait unread,
+  // so it stays pending, and the voice is told it will get it.
+  seen.isWindingDown = true
+  await $.turn.complete({ ...finished('agent-1'), answer: 'Found it.' })
+  await raised(seen, () => $.prompt.submit({ text: noticeOf('agent-1', 'Found it.'), origin: { kind: 'task-notification' }, wait: false }))
+  expect(seen.sends).toEqual([])
+  expect(seen.prompts).toEqual(["Thought updates:\nauth-bug (done): Found it. — 1 message still pending; it will be handed over and you'll hear back"])
+
+  // Its run ends with no word of it; nothing hands the message over, so the voice is woken to.
+  agents[0] = { ...(agents[0] as AgentInfo), status: 'completed' }
+  await clock.advance(5000)
+  expect(seen.sends).toEqual([])
+  expect(seen.prompts.at(-1)).toBe("Thought updates:\nauth-bug: (1 message still pending; it will be handed over and you'll hear back)")
+
+  // Its turn tries, and is refused: the voice is told why once, the message still pending.
+  const why = 'Agent "auth-bug" was stopped by the user and was not resumed.'
+  seen.refuse = why
+  await voiceTurn('voice-1')
+  await clock.advance(2500)
+  expect(seen.sends.map(s => s.text)).toEqual(['and logout', 'and logout', 'and logout', 'and logout'])
+  expect(seen.prompts.at(-1)).toBe(
+    `Thought updates:\nauth-bug: (1 message still pending; it will be handed over and you'll hear back. The last try failed: ${why})`,
+  )
+  expect(await listed('c3')).toContain('- auth-bug [idle]: Find why login fails\n  queued: 1. and logout')
+  await voiceTurn('voice-2')
+  await clock.advance(2500)
+  expect(seen.prompts).toHaveLength(3)
+
+  // Once it can be reached, the voice's next turn hands it over.
+  seen.refuse = undefined
+  await voiceTurn('voice-3')
+  expect(seen.sends.at(-1)).toEqual({ to: 'agent-1', text: 'and logout' })
+  const now = await listed('c4')
+  expect(now).toContain('- auth-bug [running]')
+  expect(now).not.toContain('queued')
+  await clock.advance(90000)
+  expect(seen.prompts).toHaveLength(3)
+})
+
 test("a thought's queue goes over once the engine has ended its run, not while the run winds down", async ($, on) => {
   const agents: AgentInfo[] = [{ id: 'agent-1', description: 'auth-bug', type: 'multitask:thought', status: 'running' }]
   const seen = engine($, on, agents)
@@ -807,25 +936,32 @@ test("a thought's queue goes over once the engine has ended its run, not while t
   const queue = (id: string, message: string) =>
     $.tool.call({ tool: 'mcp__multitask__tell', tool_use_id: id, name: 'auth-bug', message, how: 'queue' })
 
+  const voiceTurn = async (turnId: string) => {
+    await $.turn.start({ text: '', turnId })
+    await $.turn.complete(voiceTurnEnd(turnId))
+  }
+
   seen.isWindingDown = true
   await queue('c2', 'and logout')
   await $.turn.complete({ ...finished('agent-1'), answer: 'Found it.' })
-  await clock.advance(250)
+  await $.prompt.submit({ text: noticeOf('agent-1', 'Found it.'), origin: { kind: 'task-notification' }, wait: false })
   expect(seen.sends).toHaveLength(0)
   agents[0] = { ...(agents[0] as AgentInfo), status: 'completed' }
-  await clock.advance(250)
+  await voiceTurn('voice-1')
   expect(seen.sends.map(s => s.text)).toEqual(['and logout'])
 
   // A run the engine never reports ended still gets its queue, after a few seconds.
   await queue('c3', 'and signup')
   await $.turn.complete({ ...finished('agent-1'), answer: 'Logout is fine.' })
   await clock.advance(4000)
+  await voiceTurn('voice-2')
   expect(seen.sends).toHaveLength(1)
   await clock.advance(1000)
+  await voiceTurn('voice-3')
   expect(seen.sends.map(s => s.text)).toEqual(['and logout', 'and signup'])
 })
 
-test('a message that does not reach its thought says so: as an error from tell, or to the voice with the message still queued', async ($, on) => {
+test('a message that does not reach its thought says so: as an error from tell, or to the voice with the message still pending', async ($, on) => {
   const seen = engine($, on)
   const clock = mock.clock(on)
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
@@ -836,37 +972,40 @@ test('a message that does not reach its thought says so: as an error from tell, 
   const listed = async (id: string) => String((await $.tool.call({ tool: 'mcp__multitask__thoughts', tool_use_id: id })).result)
   const why = 'Agent "auth-bug" was stopped by the user and was not resumed.'
 
-  // Handed over at its turn's end and refused: by its id, then by its name.
+  // Handed over once its turn has ended (at the engine's notice) and refused: by its id,
+  // then by its name. The voice is told it is still pending, and why.
   expect(await tell('c2', 'check refresh too', 'queue')).toBe('Queued for auth-bug as #1; it reads it when its turn ends.')
   seen.refuse = why
   await $.turn.complete({ ...finished('agent-1'), answer: 'Found it.' })
-  await clock.settle()
+  await $.prompt.submit({ text: noticeOf('agent-1', 'Found it.'), origin: { kind: 'task-notification' }, wait: false })
   expect(seen.sends).toEqual([
     { to: expect.any(String), text: 'check refresh too' },
     { to: 'auth-bug', text: 'check refresh too' },
   ])
-  await clock.advance(2500)
+  const pending = "1 message still pending; it will be handed over and you'll hear back"
   expect(seen.prompts).toEqual([
-    `Thought updates:\nauth-bug (done): Found it.\nauth-bug: (a message did not reach it, still queued for the end of its next turn: ${why})`,
+    `Thought updates:\nauth-bug (done): Found it. — ${pending}\nauth-bug: (${pending}. The last try failed: ${why})`,
   ])
   expect(await listed('c3')).toContain('- auth-bug [idle]: Find why login fails\n  queued: 1. check refresh too')
 
   // A message told to it now fails the call, saying why it did not arrive, and leaves the
-  // thought as it was.
+  // thought as it was, the other still pending.
   const failed = await $.tool.call({ tool: 'mcp__multitask__tell', tool_use_id: 'c4', name: 'auth-bug', message: 'are you there?' })
   expect(failed.result).toBeUndefined()
   expect(failed.deny).toBe(`auth-bug did not get the message: ${why}`)
-  expect(await listed('c5')).toContain('auth-bug [idle]')
+  expect(await listed('c5')).toContain('- auth-bug [idle]: Find why login fails\n  queued: 1. check refresh too')
 
-  // Once it can be reached, it is, and its queue goes with its next turn's end.
+  // Once it can be reached, a message told to it goes after the one still pending.
   seen.refuse = undefined
-  expect(await tell('c6', 'go on')).toBe('auth-bug was idle; it has the message now and resumes.')
-  await $.turn.complete({ ...finished('agent-1'), answer: 'Done.' })
-  await clock.settle()
-  expect(seen.sends.at(-1)?.text).toBe('check refresh too')
+  expect(await tell('c6', 'go on')).toBe('auth-bug was idle; it has the message now, after the message still pending for it, and resumes.')
+  expect(seen.sends.at(-1)).toEqual({ to: expect.any(String), text: 'check refresh too\n\ngo on' })
+  expect(await listed('c7')).not.toContain('queued')
+  // The voice was told of that refusal once.
+  await clock.advance(90000)
+  expect(seen.prompts.join('\n').split('The last try failed').length).toBe(2)
 })
 
-test('a message to a thought whose run has ended resumes it while Multitask is on; while off, the engine refuses it', async ($, on) => {
+test('a message to a thought whose run has ended resumes it while Multitask is on; while off, it waits for Multitask', async ($, on) => {
   const seen = engine($, on)
   const clock = mock.clock(on)
   const flip = () => $.command.run({ command: 'multitask', args: '', origin: { kind: 'composer' }, presentation: {} as never })
@@ -890,17 +1029,20 @@ test('a message to a thought whose run has ended resumes it while Multitask is o
   expect(seen.sends).toEqual([{ to: 'agent-1', text: 'check refresh too' }])
   expect(await listed('c3')).toContain('- auth-bug [running]')
 
-  // With Multitask switched off before its turn ends, what waited for it is refused, and stays queued.
+  // With Multitask switched off before its turn ends, what waited for it, which the engine
+  // would not resume it with, stays pending; switched on again, it goes to it.
   expect((await tell('c4', 'and logout', 'queue')).result).toBe('Queued for auth-bug as #1; it reads it when its turn ends.')
   await flip()
   expect(await offered()).toBe(false)
   await $.turn.complete({ ...finished('agent-1'), answer: 'Refresh is fine.' })
-  await clock.settle()
-  expect(seen.sends.slice(1)).toEqual([
-    { to: 'agent-1', text: 'and logout' },
-    { to: 'auth-bug', text: 'and logout' },
-  ])
+  await $.prompt.submit({ text: noticeOf('agent-1', 'Refresh is fine.'), origin: { kind: 'task-notification' }, wait: false })
+  await $.turn.start({ text: 'hello', turnId: 'main-1' })
+  await clock.advance(90000)
+  expect(seen.sends).toHaveLength(1)
   expect(await listed('c5')).toContain('- auth-bug [idle]: Find why login fails\n  queued: 1. and logout')
+  await flip()
+  expect(seen.sends.slice(1)).toEqual([{ to: 'agent-1', text: 'and logout' }])
+  expect(await listed('c6')).toContain('- auth-bug [running]')
 })
 
 test('the model cannot start a thought itself, in any loop; other agents are asked as before', async ($, on) => {
