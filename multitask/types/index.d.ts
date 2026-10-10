@@ -22,6 +22,12 @@ export type Thought = {
   // whether its queue waits no longer for a turn to end: the turn it waited for ended, and
   // it goes to the thought at the next chance
   isHandOverDue?: boolean
+  // when it was started, or its latest turn began; when it wrote its latest note; when its
+  // latest turn ended or it was stopped (ms, by $.clock). Absent for a thought kept before
+  // they were noted.
+  startedAt?: number
+  notedAt?: number
+  endedAt?: number
 }
 
 // What a thought said, waiting to reach the voice: a progress note, or the end of a
@@ -59,6 +65,8 @@ declare module 'claude-code' {
       // thoughts whose last report the person opened in the Thoughts pane to read whole,
       // instead of its first line; a thought leaves it when it starts new work
       openReports: string[]
+      // counts the minutes the Thoughts pane has stood open, so its ages are drawn afresh
+      paneTick: number
     }
   }
 }

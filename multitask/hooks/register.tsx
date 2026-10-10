@@ -34,6 +34,7 @@ import {
   pendingNote,
   relayNames,
 } from './prompts'
+import { drawThoughts } from './pane'
 
 const isOn = atom({ plugin: 'multitask', key: 'isOn' } as const, false)
 const thoughts = atom({ plugin: 'multitask', key: 'thoughts' } as const, [])
@@ -43,6 +44,7 @@ const toldVoice = atom({ plugin: 'multitask', key: 'toldVoice' } as const, false
 const expanded = atom({ plugin: 'multitask', key: 'expanded' } as const, [])
 const openReports = atom({ plugin: 'multitask', key: 'openReports' } as const, [])
 const heard = atom({ plugin: 'multitask', key: 'heard' } as const, {})
+const paneTick = atom({ plugin: 'multitask', key: 'paneTick' } as const, 0)
 
 const PANE = 'multitask-thoughts'
 // Multitask's dropdown in the band. Its face is the mode the chat is in, Multitask or
@@ -71,7 +73,6 @@ const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
 const VOICE_TOOLS = /^(mcp__multitask__|mcp__thread-chat__)|^(AskUserQuestion|ToolSearch)$/
 
 const PALETTE = ['#4fa3e0', '#d9636a', '#58b36b', '#c98a2e', '#9b6fd6', '#2fb3a6', '#d66bb0', '#8a9a3a']
-const GLYPH: Record<ThoughtStatus, string> = { running: '◐', idle: '○', stopped: '×', failed: '!' }
 
 // Updates arriving close together reach the voice as one message.
 const FLUSH_MS = 2000
@@ -102,6 +103,9 @@ const OFF = {
 const NOT_VOICE = { deny: 'Only the voice starts, steers or lists thoughts; this call came from another agent.' }
 
 let flushTimer: Timer | undefined
+// What draws the Thoughts pane's ages afresh, AGE_TICK_MS after it was last drawn.
+let ageTick: Timer | undefined
+const AGE_TICK_MS = 60_000
 // The settling of each thought's latest turn end, by thought id, with its name, which the
 // engine's notice or hand-back of that end waits for. Kept here, not in state: what one
 // dispatch reads of state stands still while it runs, so a wait for it would never see it.
@@ -246,6 +250,16 @@ function textOf(content: readonly { type: string; [field: string]: unknown }[]):
     .trim()
 }
 
+// The time now, for the Thoughts pane's ages; none where the clock cannot be read, which
+// leaves them out and fails nothing else.
+async function timeNow($: EngineInterface): Promise<number | undefined> {
+  try {
+    return await $.clock.now()
+  } catch {
+    return undefined
+  }
+}
+
 async function patchThought($: EngineInterface, id: string, fn: (t: Thought) => Thought) {
   await update($, thoughts, list => list.map(t => (t.id === id ? fn(t) : t)))
 }
@@ -259,11 +273,6 @@ async function toggleExpanded($: EngineInterface, id: string) {
 // Opens a thought's last report in the Thoughts pane to read whole, or folds it to its first line.
 async function toggleReport($: EngineInterface, id: string) {
   await update($, openReports, ids => (ids.includes(id) ? ids.filter(one => one !== id) : [...ids, id]))
-}
-
-// A task's first line, which a running card shows until it is opened.
-function firstLine(task: string): string {
-  return task.trimStart().split('\n')[0]?.trimEnd() ?? ''
 }
 
 // The voice's tools are the model's from Multitask first coming on: a session that
@@ -378,10 +387,12 @@ async function noteThoughtSaid($: EngineInterface, id: string, text: string) {
   const t = (await read($, thoughts)).find(one => one.id === id)
   // The turn's report, should its row land after the turn ended, has been relayed already.
   if (t === undefined || text === '' || text === t.lastText) return
+  const now = await timeNow($)
   await patchThought($, id, one => ({
     ...one,
     notes: [...(one.notes ?? []), text.slice(0, NOTE_MAX)].slice(-NOTES_KEPT),
     notedSinceReport: true,
+    notedAt: now,
   }))
   if (RELAY_NOTES) await relay($, list => [...list, { thought: t.name, text }])
 }
@@ -572,7 +583,8 @@ async function handOver($: EngineInterface, id: string, also?: string): Promise<
 }
 
 async function stopThought($: EngineInterface, id: string) {
-  await patchThought($, id, t => ({ ...t, status: 'stopped', queued: [], interruptWith: null, isHandOverDue: false }))
+  const now = await timeNow($)
+  await patchThought($, id, t => ({ ...t, status: 'stopped', queued: [], interruptWith: null, isHandOverDue: false, endedAt: now }))
   forgetDue(id)
   try {
     await $.tool.call({ tool: 'TaskStop', task_id: id })
@@ -680,11 +692,12 @@ async function settleThought($: EngineInterface, id: string, reason: TurnComplet
   const isFailed = reason === 'error' || reason === 'refusal'
   const status: ThoughtStatus = isFailed ? 'failed' : 'idle'
   let pending = 0
+  const now = await timeNow($)
   await patchThought($, id, one => {
     if (one.status === 'stopped') return one
     const queued = withInterruption(one)
     pending = queued.length
-    return { ...one, status, turnId: null, queued, interruptWith: null, isHandOverDue: pending > 0 }
+    return { ...one, status, turnId: null, queued, interruptWith: null, isHandOverDue: pending > 0, endedAt: now }
   })
   if (!isCut) await relayDone($, t, report, isFailed, pending)
   if (pending > 0) await fellDue($, id)
@@ -875,6 +888,7 @@ export const register: Register = (on, options) => {
       notes: [],
       turnId: null,
       interruptWith: null,
+      startedAt: await timeNow($),
     }
     await update($, thoughts, all => [...all, thought])
     return { result: `Started thought "${name}". Its updates reach you as they come.` }
@@ -1055,10 +1069,12 @@ export const register: Register = (on, options) => {
     }
     const t = (await read($, thoughts)).find(one => one.id === id)
     if (t !== undefined && t.turnId !== e.turnId) {
+      const now = await timeNow($)
       await patchThought($, id, one => ({
         ...one,
         turnId: e.turnId,
         status: one.status === 'stopped' ? one.status : 'running',
+        startedAt: now,
       }))
       // New work: the report it ends on starts folded, as every report does.
       await update($, openReports, ids => ids.filter(one => one !== id))
@@ -1203,107 +1219,30 @@ export const register: Register = (on, options) => {
     )
   })
 
+  // The Thoughts pane, laid out by pane.tsx. Its ages are drawn afresh each minute it
+  // stands open with thoughts in it, by a write of `paneTick`, which it alone reads.
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const { Box, Text, Button, Markdown } = $.ui.resolve(e)
     const list = await read($, thoughts)
-    const on_ = await read($, isOn)
-    // Running thoughts come first, as cards showing their task's first line; the rest draw
-    // as one line. Opening one (its name, or more) shows everything, the whole task too.
-    const ordered = [...list].sort((a, b) => Number(a.status !== 'running') - Number(b.status !== 'running'))
-    const opened = await read($, expanded)
-    const shownReports = await read($, openReports)
-    // Cells a card's task line has: the pane's body less the card's border and padding.
-    const taskColumns = e.props.bodyColumns - 4
-
-    return (
-      <Box flexDirection="column">
-        <Box marginBottom={1}>
-          <Text dimColor>
-            Multitask is {on_ ? 'on' : 'off'}. {list.length === 0 ? 'No thoughts yet.' : `${list.length} thought(s).`}
-          </Text>
-        </Box>
-        {ordered.map(t =>
-          t.status !== 'running' && !opened.includes(t.id) ? (
-            <Box flexDirection="row" columnGap={1} alignItems="center">
-              <Text color={t.color}>{GLYPH[t.status]}</Text>
-              <Button key={`expand:${t.id}`} plain label={t.name} onPress={() => void toggleExpanded($, t.id)} />
-              <Text dimColor>{t.status}</Text>
-              {t.status !== 'stopped' && (
-                <Button key={`stop:${t.id}`} label="stop" onPress={() => void stopThought($, t.id)} />
-              )}
-            </Box>
-          ) : (
-          <Box flexDirection="column" borderStyle="round" borderColor={t.color} paddingX={1} marginBottom={1}>
-            <Box flexDirection="row" columnGap={1} alignItems="center">
-              <Text color={t.color} bold>
-                {GLYPH[t.status]}
-              </Text>
-              <Button key={`expand:${t.id}`} plain label={t.name} onPress={() => void toggleExpanded($, t.id)} />
-              <Text dimColor>{t.status}</Text>
-              {t.status !== 'stopped' && (
-                <Button key={`stop:${t.id}`} label="stop" onPress={() => void stopThought($, t.id)} />
-              )}
-              {t.status === 'running' && (t.task.trim() !== firstLine(t.task) || firstLine(t.task).length > taskColumns) && (
-                <Button
-                  key={`more:${t.id}`}
-                  plain
-                  dimColor
-                  label={opened.includes(t.id) ? 'less' : 'more'}
-                  onPress={() => void toggleExpanded($, t.id)}
-                />
-              )}
-              {t.status !== 'running' && (
-                <Button key={`collapse:${t.id}`} plain dimColor label="hide" onPress={() => void toggleExpanded($, t.id)} />
-              )}
-            </Box>
-            {opened.includes(t.id) ? (
-              <Text dimColor>{t.task}</Text>
-            ) : (
-              <Text dimColor wrap="truncate-end">
-                {firstLine(t.task)}
-              </Text>
-            )}
-            {t.queued.map((q, i) => (
-              <Box flexDirection="row" columnGap={1}>
-                <Text>
-                  queued {i + 1}: {q}
-                </Text>
-                <Button key={`unqueue:${t.id}:${i}`} label="unqueue" onPress={() => void unqueue($, t.id, i)} />
-              </Box>
-            ))}
-            {(t.notes ?? []).slice(-3).map(n => (
-              <Text dimColor wrap="truncate-end">
-                · {oneLine(n, 200)}
-              </Text>
-            ))}
-            {/* Its report, its first line until opened. Not while it works on, nor once it has
-                written notes since: an old report would read as the result of the new work. */}
-            {t.lastText !== '' && t.status !== 'running' && t.notedSinceReport !== true && (
-              <Box key={`reportbox:${t.id}`} flexDirection="column">
-                {shownReports.includes(t.id) && <Markdown text={t.lastText.slice(-1500)} />}
-                <Box flexDirection="row" columnGap={1}>
-                  {!shownReports.includes(t.id) && (
-                    <Box flexShrink={1} minWidth={0}>
-                      <Text wrap="truncate-end">{oneLine(t.lastText, 200)}</Text>
-                    </Box>
-                  )}
-                  {/* Lit in the thought's colour with the pointer anywhere on the report; the line gives way, not it. */}
-                  <Box flexShrink={0}>
-                    <Button
-                      key={`report:${t.id}`}
-                      plain
-                      dimColor
-                      hover={{ color: t.color }}
-                      label={shownReports.includes(t.id) ? 'less' : 'more'}
-                      onPress={() => void toggleReport($, t.id)}
-                    />
-                  </Box>
-                </Box>
-              </Box>
-            )}
-          </Box>
-        ))}
-      </Box>
+    await read($, paneTick)
+    const now = await timeNow($)
+    ageTick?.cancel()
+    const hasAges = now !== undefined && list.length > 0
+    ageTick = hasAges ? $.clock.after(AGE_TICK_MS, () => void update($, paneTick, n => n + 1)) : undefined
+    return drawThoughts(
+      {
+        surface: e.surface,
+        ui: $.ui.resolve(e),
+        now,
+        isOn: await read($, isOn),
+        bodyColumns: e.props.bodyColumns,
+        opened: await read($, expanded),
+        shownReports: await read($, openReports),
+        toggleExpanded: id => void toggleExpanded($, id),
+        toggleReport: id => void toggleReport($, id),
+        stop: id => void stopThought($, id),
+        unqueue: (id, index) => void unqueue($, id, index),
+      },
+      list,
     )
   })
 }

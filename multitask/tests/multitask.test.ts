@@ -1130,7 +1130,7 @@ test("a call from another agent's loop (an engine fork, a subagent) never starts
   expect(await list('v3')).toBe('- auth-bug [running]: Find why login fails')
 })
 
-test("the Thoughts pane draws running thoughts first with their task's first line, the rest as one line, until opened", async ($, on) => {
+test("the Thoughts pane draws running thoughts first with their task's first line, then failed, done and stopped ones as one line, until opened", async ($, on) => {
   // Each thought's agent, named for it, in the status the engine reports for it.
   const statuses = { done: 'completed', busy: 'running', gone: 'killed', broke: 'failed' } as const
   engine(
@@ -1162,6 +1162,8 @@ test("the Thoughts pane draws running thoughts first with their task's first lin
     },
   })
 
+  // A line counts them by status.
+  expect((await pane.find({ type: 'Text', text: /^Multitask is on/ }))?.text).toBe('Multitask is on · 1 running · 1 failed · 1 done · 1 stopped')
   // The running card shows only its task's first line.
   expect(await pane.find({ text: /brief for busy/ })).toBeDefined()
   expect(await pane.find({ text: /details for busy/ })).toBeUndefined()
@@ -1169,13 +1171,13 @@ test("the Thoughts pane draws running thoughts first with their task's first lin
   const keys = (await pane.findAll({ type: 'Button' })).map(b => b.key)
   expect(keys).toEqual([
     'expand:busy',
-    'stop:busy',
     'more:busy',
+    'stop:busy',
+    'expand:broke',
+    'stop:broke',
     'expand:done',
     'stop:done',
     'expand:gone',
-    'expand:broke',
-    'stop:broke',
   ])
 
   // More shows its whole task; a click on its name hides it again.
@@ -1224,7 +1226,7 @@ test("a thought's card shows its report's first line until opened, and none whil
   const shown = async () => {
     await pane.redraw()
     return {
-      notes: (await pane.findAll({ type: 'Text', text: /^· / })).map(n => n.text),
+      notes: sectionOf(await pane.drawn(), 'notes'),
       line: (await pane.find({ type: 'Text', text: /^Refresh|^The token/ }))?.text,
       whole: (await pane.find({ type: 'Markdown' }))?.text,
       toggle: (await pane.find({ key: 'report:agent-1' }))?.text,
@@ -1237,7 +1239,7 @@ test("a thought's card shows its report's first line until opened, and none whil
   await $.turn.complete({ ...finished('agent-1'), answer: 'The token expires early.\n\nIt is set an hour short.' })
   await clock.settle()
   await $.ui.press({ plugin: 'multitask', key: 'expand:agent-1' })
-  const notes = ['· Checking the token']
+  const notes = ['Checking the token']
   expect(await shown()).toEqual({
     notes,
     line: 'The token expires early. It is set an hour short.',
@@ -1263,14 +1265,14 @@ test("a thought's card shows its report's first line until opened, and none whil
   expect(await shown()).toEqual({ notes, ...nothing })
   for await (const _ of $.turn.step({ turnId: 'turn-2', index: 0, model: 'opus', messageCount: 1, agentId: 'agent-1' })) void _
   await says('u3', 'Reading the refresh path')
-  expect(await shown()).toEqual({ notes: [...notes, '· Reading the refresh path'], ...nothing })
+  expect(await shown()).toEqual({ notes: [...notes, 'Reading the refresh path'], ...nothing })
 
   // Its next report shows, folded again though the last was opened.
   await says('u4', 'Refresh is fine.')
   await $.turn.complete({ ...finished('agent-1'), turnId: 'turn-2', answer: 'Refresh is fine.' })
   await clock.settle()
   expect(await shown()).toEqual({
-    notes: [...notes, '· Reading the refresh path'],
+    notes: [...notes, 'Reading the refresh path'],
     line: 'Refresh is fine.',
     whole: undefined,
     toggle: 'more',
@@ -1278,6 +1280,21 @@ test("a thought's card shows its report's first line until opened, and none whil
 })
 
 type Drawn = { type?: string; props?: Record<string, unknown>; hover?: Record<string, unknown>; children?: unknown[] }
+
+// The text a drawing shows, all of it, in order.
+function textIn(node: unknown): string {
+  if (typeof node === 'string') return node
+  if (typeof node !== 'object' || node === null) return ''
+  return ((node as Drawn).children ?? []).map(textIn).join('')
+}
+
+// The lines of a card's part under its label ('task', 'notes', 'report', 'queued'):
+// each line's first text, as the line beside it (an age) is left out.
+function sectionOf(tree: unknown, label: string): string[] {
+  const row = elementsOf(tree).find(n => n.type === 'Box' && n.children?.length === 2 && textIn(n.children[0]) === label)
+  const lines = ((row?.children?.[1] as Drawn | undefined)?.children ?? []).filter(line => typeof line === 'object' && line !== null)
+  return lines.map(line => textIn(elementsOf(line).find(n => n.type === 'Text')))
+}
 
 // Every element of a drawing, outermost first.
 function elementsOf(node: unknown): Drawn[] {
@@ -1297,6 +1314,57 @@ function pathTo(node: unknown, is: (n: Drawn) => boolean): Drawn[] | undefined {
   }
   return undefined
 }
+
+test("a card says how long its thought has run and since its latest note, in the warning colour once it has been quiet a while", async ($, on) => {
+  engine($, on)
+  const clock = mock.clock(on, { now: 1_000_000 })
+  await $.session.start({ cwd: '.', surface: 'terminal', isInteractive: true })
+  await $.command.run({ command: 'multitask', args: '', origin: { kind: 'composer' }, presentation: {} as never })
+  await $.tool.call({ tool: 'mcp__multitask__think', tool_use_id: 'c1', name: 'auth bug', task: 'Find why login fails' })
+  const says = (uuid: string, text: string) =>
+    $.session.append({
+      message: { type: 'assistant', role: 'assistant', content: [{ type: 'text', text }] },
+      door: 'response',
+      origin: { kind: 'model', model: 'test' },
+      uuid,
+      agentId: 'agent-1',
+    })
+  const pane = await $.ui.mount({
+    plugin: 'multitask',
+    surface: 'terminal',
+    component: 'Pane',
+    requestId: 'multitask-thoughts',
+    props: { title: 'Thoughts', isFocused: false, bodyColumns: 80, placement: 'dock', scroll: { offset: 0, bodyRows: 40 }, view: {} },
+  })
+  const status = async () => (await pane.find({ type: 'Text', text: /^(running|done|failed|stopped)/ }))?.text
+
+  expect(await status()).toBe('running for <1m')
+  expect(sectionOf(await pane.drawn(), 'notes')).toEqual(['none yet, started just now'])
+
+  // The latest note at full strength with its age; those before it dim.
+  await says('u1', 'Checking the token')
+  await clock.advance(60_000)
+  await says('u2', 'Reading the refresh path')
+  await clock.advance(2 * 60_000)
+  // drawn afresh as the minutes pass, with nothing else changing
+  expect(await status()).toBe('running for 3m')
+  expect(sectionOf(await pane.drawn(), 'notes')).toEqual(['Checking the token', 'Reading the refresh path'])
+  expect((await pane.find({ type: 'Text', text: 'Checking the token' }))?.props.dimColor).toBe(true)
+  expect((await pane.find({ type: 'Text', text: 'Reading the refresh path' }))?.props.dimColor).toBeUndefined()
+  const age = await pane.find({ type: 'Text', text: '2m ago' })
+  expect(age?.props).toMatchObject({ dimColor: true })
+  expect(age?.props.color).toBeUndefined()
+
+  // Quiet a while, the age is drawn in the warning colour.
+  await clock.advance(4 * 60_000)
+  expect((await pane.find({ type: 'Text', text: '6m ago' }))?.props).toMatchObject({ color: 'warning' })
+
+  // Its turn ended, it says how long ago.
+  await $.turn.complete({ ...finished('agent-1'), answer: 'Found it.' })
+  await clock.settle()
+  await clock.advance(3 * 60_000)
+  expect(await status()).toBe('done 3m ago')
+})
 
 test('the band shares one row with another mod: its controls keep their width, nothing wraps or shows on hover', async ($, on) => {
   // another mod's controls, drawn beneath, as thread-chat's are
