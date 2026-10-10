@@ -41,7 +41,7 @@ Multitask has a dropdown, and thread-chat a `Threads` menu, in the band above th
 - `#+name` starts a new thread even when an existing one is close.
 - To put a message in a thread, hover it for `+ thread` (desktop app); to move it to another, press `▾` beside its thread tag.
 - Pills above the prompt filter the chat to the threads you pick. With one picked, messages without a heading go to it.
-- `Filter the chat`, in the `Threads` menu while threads are on, is on at first; off, picking pills still chooses where messages go but the chat shows everything. It is per chat, and back on after a restart.
+- `Filter the chat`, in the `Threads` menu while threads are on, is on at first; off, picking pills still chooses where messages go but the chat shows everything. It is per chat, and kept when the chat is restarted.
 - `/thread-view`, or `Open thread view` in the `Threads` menu, opens the thread view: the picked threads' messages on their own, in a pane (all threads when none is picked).
 - `/merge-threads <thread> into <thread>` merges two threads.
-- `Agent may start threads`, in the `Threads` menu while threads are on, lets the agent start threads itself.
+- `Agent may start threads`, in the `Threads` menu while threads are on, lets the agent start threads itself. It is per chat, and kept when the chat is restarted.

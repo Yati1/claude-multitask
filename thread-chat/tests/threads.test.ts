@@ -66,10 +66,11 @@ const assistantRow = (text: string) =>
 const say = (text: string) => ({ text, origin: { kind: 'composer' as const }, wait: false })
 
 // Thread-chat's menu in the band, and its rows that flip a switch: threads on or off,
-// and whether the agent may start them.
+// whether the agent may start them, and whether picking threads filters the chat.
 const MENU = 'threads'
 const THREADS_SWITCH = 'threads-on'
 const AGENT_SWITCH = 'agent-threads'
+const FILTER_SWITCH = 'filter-chat'
 
 type Band = {
   find: (query: { key: string }) => Promise<{ props: Record<string, unknown> } | undefined>
@@ -585,6 +586,110 @@ for (const [isOn, kept] of KEPT_SWITCHES) {
   })
 }
 
+test("a session keeps the menu's agent and filter switches for its next run", async ($, on) => {
+  const kept: Record<string, unknown> = {}
+  on('store.get', ($, e) => ({ value: kept[e.key] }))
+  on('store.set', ($, e) => {
+    kept[e.key] = e.value
+    return { value: undefined }
+  })
+  on('store.keys', () => ({ value: Object.keys(kept) }))
+  engine(on, null)
+  const switchesKept = () => {
+    const saved = kept['session:session-1'] as { agentMayCreate?: unknown; filtersChat?: unknown } | undefined
+    return { agentMayCreate: saved?.agentMayCreate, filtersChat: saved?.filtersChat }
+  }
+  const click = (band: { pointer: (p: never) => Promise<unknown> }, key: string) =>
+    band.pointer({ type: 'down', x: 1, y: 0, button: 'left', in: `switch:${key}` } as never)
+  await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
+  expect(switchesKept()).toEqual({ agentMayCreate: false, filtersChat: true })
+  await flipThreads($)
+  const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...BAND })
+  // each flip is kept at once, with no message sent after it
+  await click(band, FILTER_SWITCH)
+  expect(switchesKept()).toEqual({ agentMayCreate: false, filtersChat: false })
+  await click(band, AGENT_SWITCH)
+  expect(switchesKept()).toEqual({ agentMayCreate: true, filtersChat: false })
+  await click(band, FILTER_SWITCH)
+  expect(switchesKept()).toEqual({ agentMayCreate: true, filtersChat: true })
+})
+
+// The menu's agent and filter switches as a session kept them: flipped from how a new
+// session starts, or absent from a record kept before they were kept.
+const KEPT_MENU_SWITCHES = [
+  [{ agentMayCreate: true, filtersChat: false }, 'flipped'],
+  [{}, 'kept before the switches were'],
+] as const
+
+for (const [switches, kept] of KEPT_MENU_SWITCHES) {
+  test(`a restarted session takes up the agent and filter switches it kept (${kept})`, async ($, on) => {
+    const registered: string[] = []
+    engine(
+      on,
+      {
+        'session:session-1': {
+          isOn: true,
+          ...switches,
+          threads: [
+            { name: 'design', color: '#4fa3e0', isSelected: false, createdBy: 'user' },
+            { name: 'perf', color: '#9b6fd6', isSelected: false, createdBy: 'user' },
+          ],
+          aliases: {},
+          snaps: {},
+        },
+      },
+      () => false,
+      registered,
+    )
+    await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
+    // absent, the agent is kept out and picks filter the chat, as in a new session
+    const mayCreate = 'agentMayCreate' in switches ? switches.agentMayCreate : false
+    const filters = 'filtersChat' in switches ? switches.filtersChat : true
+    const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...BAND })
+    expect(await switchOf(band, AGENT_SWITCH)).toBe(mayCreate ? 'on' : 'off')
+    expect(await switchOf(band, FILTER_SWITCH)).toBe(filters ? 'on' : 'off')
+    // the agent let start threads is offered its tool again
+    expect(registered.includes('create_thread')).toBe(mayCreate)
+
+    // a pick hides another thread's part of a message only while the filter is on
+    const mine = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...userRow('# design\nqueue?\n# perf\nfast?') })
+    await band.pointer({ type: 'down', x: 1, y: 0, button: 'left', in: 'thread:design' })
+    await mine.redraw()
+    expect(await mine.find({ text: /queue/ })).toBeDefined()
+    expect((await mine.find({ text: /fast/ })) === undefined).toBe(filters)
+  })
+}
+
+test('a rewound session, under a new id, takes up the agent and filter switches of the session it came from', async ($, on) => {
+  const said = ['# design\nwhy is the band two rows high?', 'It wraps because both mods share one row.', '# perf\nhow long do the tests take?']
+  const registered: string[] = []
+  engine(
+    on,
+    {
+      'session:old': {
+        isOn: true,
+        agentMayCreate: true,
+        filtersChat: false,
+        threads: [
+          { name: 'design', color: '#4fa3e0', isSelected: false, createdBy: 'user' },
+          { name: 'perf', color: '#9b6fd6', isSelected: false, createdBy: 'user' },
+        ],
+        aliases: {},
+        snaps: {},
+      },
+      'view:old': said.map((text, i) => ({ id: `row-${i}`, role: 'user', mark: markOf(text) })),
+    },
+    () => false,
+    registered,
+  )
+  on('session.messages', () => ({ value: said.map(text => ({ role: 'user' as const, text, toolUses: [] })) }))
+  await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
+  const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...BAND })
+  expect(await switchOf(band, AGENT_SWITCH)).toBe('on')
+  expect(await switchOf(band, FILTER_SWITCH)).toBe('off')
+  expect(registered).toContain('create_thread')
+})
+
 test('a reload joins the threads saved for the session to those it holds', async ($, on) => {
   const kept: Record<string, unknown> = {}
   on('store.get', ($, e) => ({ value: kept[e.key] }))
@@ -673,9 +778,6 @@ test('while filtering, rows of no thread show only since the last message', asyn
   expect(await oldChat.find({ text: /just chatting/ })).toBeDefined()
   expect(await isHidden(oldTool)).toBe(false)
 })
-
-// The menu's switch for whether picking threads filters the chat.
-const FILTER_SWITCH = 'filter-chat'
 
 test("with the menu's filter off, a pick leaves every row in the chat and still says where unheaded messages go", async ($, on) => {
   const prompts = engine(on)
