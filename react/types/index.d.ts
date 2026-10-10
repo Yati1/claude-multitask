@@ -15,6 +15,9 @@ export type Answering = { id: string; mark: string }
 // bottom-right corner, or under it, where the desktop shows the message's time and copy.
 export type Place = 'corner' | 'under'
 
+// thread-chat's thread view reads `isOn` and `reactions` to draw the reactions on the
+// person's messages as the chat does (its types/react.d.ts): keep their keys and shape,
+// or change both mods together.
 declare module 'claude-code' {
   interface PluginState {
     react: {
