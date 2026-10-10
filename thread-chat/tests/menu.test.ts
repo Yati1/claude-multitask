@@ -35,6 +35,8 @@ const MODE = { component: 'SessionMode', props: { modes: [] } } as const
 const MENU = 'threads'
 const THREADS_SWITCH = 'threads-on'
 const AGENT_SWITCH = 'agent-threads'
+// The menu's row that opens the thread view, while threads are on.
+const VIEW = 'thread-view'
 
 const TOOL = 'mcp__thread-chat__create_thread'
 
@@ -101,6 +103,7 @@ test('the desktop draws a Threads button like its Select, its switches in a card
   expect(String(hit?.props.module)).toEndWith('switch.tsx')
   expect(hit?.props.props).toEqual({ isOn: false })
   expect(await band.find({ key: AGENT_SWITCH })).toBeUndefined()
+  expect(await band.find({ key: VIEW })).toBeUndefined()
 
   const mode = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...MODE })
   expect(await mode.drawn()).toEqual({ type: 'engine', ref: 0 })
@@ -112,10 +115,12 @@ test("the desktop menu's labels and slide switches flip threads and the agent sw
   const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...BAND })
   expect((await $.tool.call({ tool: TOOL, tool_use_id: 't1', name: 'ideas' })).deny).toContain('off')
 
-  // On in this chat's label turns threads on, as /threads does, and the agent's switch joins it
+  // On in this chat's label turns threads on, as /threads does, and the agent's switch
+  // joins it, then the row that opens the thread view, in the card
   await band.press({ key: THREADS_SWITCH })
   await band.redraw()
   expect(await switchesOf(band)).toEqual(['On in this chat: on', 'Agent may start threads: off'])
+  expect(keyedIn(keyedIn(await band.drawn(), MENU), VIEW)).toMatchObject({ type: 'Button', props: { label: 'Open thread view', plain: true } })
   expect(await band.find({ text: /start a thread with # name/ })).toBeDefined()
   expect((await $.tool.call({ tool: TOOL, tool_use_id: 't2', name: 'ideas' })).deny).toBeDefined()
 
@@ -128,10 +133,11 @@ test("the desktop menu's labels and slide switches flip threads and the agent sw
   await band.redraw()
   expect(await switchesOf(band)).toEqual(['On in this chat: on', 'Agent may start threads: off'])
 
-  // On in this chat's slide switch turns them off
+  // On in this chat's slide switch turns them off, and the view's row goes
   await clickSwitch(band, THREADS_SWITCH)
   await band.redraw()
   expect(await switchesOf(band)).toEqual(['On in this chat: off'])
+  expect(await band.find({ key: VIEW })).toBeUndefined()
   const reply = await $.command.run({ command: 'merge-threads', args: 'a into b', origin: { kind: 'composer' }, presentation: {} as never })
   expect(reply.text).toBe('Threads are off in this chat; /threads turns them on.')
 })
@@ -152,12 +158,14 @@ test('the terminal opens and shuts the menu with a press on Threads, its switche
   expect(await labelOf(MENU)).toBe('Threads ▴')
   expect(await band.find({ text: 'On in this chat' })).toBeDefined()
   expect(await labelOf(THREADS_SWITCH)).toBe('(● )')
+  expect(await band.find({ key: VIEW })).toBeUndefined()
 
-  // a press flips one, and threads on bring the agent's
+  // a press flips one, and threads on bring the agent's, then the thread view's row
   await band.press({ key: THREADS_SWITCH })
   await band.redraw()
   expect(await labelOf(THREADS_SWITCH)).toBe('( ●)')
   expect(await labelOf(AGENT_SWITCH)).toBe('(● )')
+  expect(await labelOf(VIEW)).toBe('Open thread view')
   await band.press({ key: AGENT_SWITCH })
   await band.redraw()
   expect(await labelOf(AGENT_SWITCH)).toBe('( ●)')
@@ -168,6 +176,7 @@ test('the terminal opens and shuts the menu with a press on Threads, its switche
   await band.redraw()
   expect(await labelOf(MENU)).toBe('Threads ▾')
   expect(await band.find({ key: THREADS_SWITCH })).toBeUndefined()
+  expect(await band.find({ key: VIEW })).toBeUndefined()
 })
 
 test('the mobile app, which draws no menu, shows the threads alone while they are on', async ($, on) => {
@@ -179,5 +188,6 @@ test('the mobile app, which draws no menu, shows the threads alone while they ar
   await $.prompt.submit(say('# design\na'))
   await band.redraw()
   expect(await band.find({ key: MENU })).toBeUndefined()
+  expect(await band.find({ key: VIEW })).toBeUndefined()
   expect(await band.find({ key: 'thread:design' })).toBeDefined()
 })

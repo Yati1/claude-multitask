@@ -488,25 +488,32 @@ test("the view draws a thread's tags and borders as the chat does", async ($, on
   }
 })
 
-test('/thread-view and the band button open the view, once threads are on', async ($, on) => {
+test("/thread-view and the Threads menu's row open the view, once threads are on", async ($, on) => {
   const { opened } = engine(on)
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
   const view = () => $.command.run({ command: 'thread-view', args: '', origin: { kind: 'composer' }, presentation: {} as never })
   expect((await view()).text).toBe('Threads are off in this chat; /threads turns them on.')
+  // the terminal's menu, opened by a press on it, stays open from here on
+  const terminal = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...BAND })
+  await terminal.press({ key: 'threads' })
+  await terminal.unmount()
+
+  for (const surface of ['terminal', 'desktop'] as const) {
+    // off, the menu holds its switch and no row for the view
+    const band = await $.ui.mount({ plugin: 'thread-chat', surface, ...BAND })
+    expect(await band.find({ key: 'threads-on' })).toBeDefined()
+    expect(await band.find({ key: 'thread-view' })).toBeUndefined()
+    await band.unmount()
+  }
   expect(opened).toEqual([])
   await flipThreads($)
   expect((await view()).text).toBe('Thread view opened.')
   expect(opened).toEqual(['thread-view'])
 
   for (const surface of ['terminal', 'desktop'] as const) {
-    // the band offers it once there is a thread
+    // on, the menu's row opens it, before any thread starts
     const band = await $.ui.mount({ plugin: 'thread-chat', surface, ...BAND })
-    expect(await band.find({ key: 'thread-view' })).toBeUndefined()
-    await band.unmount()
-  }
-  await $.prompt.submit(say('# design\nhello'))
-  for (const surface of ['terminal', 'desktop'] as const) {
-    const band = await $.ui.mount({ plugin: 'thread-chat', surface, ...BAND })
+    expect((await band.find({ key: 'thread-view' }))?.props.label).toBe('Open thread view')
     await band.press({ key: 'thread-view' })
     await band.unmount()
   }

@@ -80,7 +80,7 @@ const THREADS_SWITCH = 'threads-on'
 const AGENT_SWITCH = 'agent-threads'
 // A switch's hit area over its picture, keyed by this and the switch's key.
 const SWITCH_HIT = 'switch:'
-// The thread view's pane id, which is also its command's name and its band button's key.
+// The thread view's pane id, which is also its command's name and its menu row's key.
 const VIEW = 'thread-view'
 const VIEW_TITLE = 'Thread view'
 
@@ -959,18 +959,6 @@ function drawAddThread(
   )
 }
 
-// A tip for the control in the keyed Box it sits in, shown while the pointer is over
-// that Box. Placed out of the flow, so showing it moves nothing; the desktop lifts it
-// into a card over the band, beside the control.
-function drawTip($: EngineInterface, e: Parameters<EngineInterface['ui']['resolve']>[0], text: string): RenderElement {
-  const { Box, Text } = $.ui.resolve(e)
-  return (
-    <Box position="absolute" display="none" hover={{ display: 'flex' }}>
-      <Text>{text}</Text>
-    </Box>
-  )
-}
-
 type MenuSwitch = { key: string; label: string; isOn: boolean }
 
 // The switches of the band's menu: threads on in this chat, and, while they are, whether
@@ -1000,16 +988,20 @@ function drawMenuRow($: EngineInterface, elements: Elements['desktop'], s: MenuS
   )
 }
 
+// The menu's row that opens the thread view, as /thread-view does; only while threads are on.
+const VIEW_ROW = 'Open thread view'
+
 // The band's "Threads" menu. On the desktop, a button drawn as the desktop draws a
 // Select: the field's fill and its ring, stronger under the pointer, the radius, one
-// line high, the caret. The keyed Box it is holds the switches in a card the desktop
-// lifts over the band while the pointer is on the button or the card, or the focus is
-// in them. Elsewhere, a Button that shows or hides the switches beside it.
+// line high, the caret. The keyed Box it is holds the switches, then the thread view's
+// row, in a card the desktop lifts over the band while the pointer is on the button or
+// the card, or the focus is in them. Elsewhere, a Button that shows or hides them beside it.
 async function drawMenu($: EngineInterface, e: Parameters<EngineInterface['ui']['resolve']>[0]): Promise<RenderElement> {
   const switches = await menuSwitches($)
+  const isThreadsOn = await read($, isOn)
   if (e.surface === 'desktop') {
     const desktop = $.ui.resolve(e)
-    const { Box, Text, Svg } = desktop
+    const { Box, Text, Svg, Button } = desktop
     return (
       <Box
         key={MENU}
@@ -1026,6 +1018,11 @@ async function drawMenu($: EngineInterface, e: Parameters<EngineInterface['ui'][
         <Svg source={CARET_PICTURE} alt="menu" width={CARET_GAP + CARET_SIZE} height={CARET_SIZE} />
         <Box position="absolute" display="none" hover={{ display: 'flex' }} flexDirection="column" rowGap={2}>
           {switches.map(s => drawMenuRow($, desktop, s))}
+          {isThreadsOn && (
+            <Box flexDirection="row" alignItems="center">
+              <Button key={VIEW} label={VIEW_ROW} plain onPress={() => openView($)} />
+            </Box>
+          )}
         </Box>
       </Box>
     )
@@ -1053,6 +1050,7 @@ async function drawMenu($: EngineInterface, e: Parameters<EngineInterface['ui'][
             />
           </Box>
         ))}
+      {isOpen && isThreadsOn && <Button key={VIEW} label={VIEW_ROW} variant="secondary" onPress={() => openView($)} />}
     </Box>
   )
 }
@@ -1755,8 +1753,8 @@ async function resizeElsewhere($: EngineInterface, job: ThumbJob): Promise<boole
 
 const THUMBS_README = 'Smaller copies of pictures pasted in Claude Code sessions, drawn in the thread view. Safe to delete: they are made again.\n'
 
-// Threads' controls in the band: a pill per thread, then `view`. They take the room the
-// band has left and give way first; nothing the pointer shows takes room.
+// Threads' controls in the band: a pill per thread. They take the room the band has left
+// and give way first; nothing the pointer shows takes room.
 async function drawThreadControls(
   $: EngineInterface,
   e: Parameters<EngineInterface['ui']['resolve']>[0],
@@ -1766,69 +1764,52 @@ async function drawThreadControls(
   // With one thread alone picked, messages with no heading go to it.
   const picked = list.filter(t => t.isSelected)
   const sendTarget = picked.length === 1 ? picked[0] : undefined
-  // After the threads, a short button that opens the thread view: a Button, not a
-  // Client, on every surface.
-  const { Button } = $.ui.resolve(e)
-  const viewButton =
-    list.length === 0 ? undefined : <Button key={VIEW} label="view" variant="secondary" dimColor onPress={() => openView($)} />
 
   if (e.surface === 'desktop') {
     // A pill per thread, lit under the pointer. Pills past the room clip at its end (their
-    // hit areas with them); the thread view holds every thread. The tip is a card the
-    // desktop lifts over the band.
+    // hit areas with them); the thread view holds every thread.
     const desktop = $.ui.resolve(e)
     const { Box, Text } = desktop
     return (
-      <Box flexDirection="row" columnGap={1} alignItems="center" flexGrow={1} flexShrink={1} minWidth={0}>
-        <Box flexDirection="row" columnGap={1} alignItems="center" flexShrink={1} minWidth={0} overflow="hidden">
-          {list.length === 0 && (
-            <Text dimColor wrap="truncate-end">
-              start a thread with # name
-            </Text>
-          )}
-          {list.map(t => {
-            const isSelected = t.isSelected === true
-            const isSendTarget = isSelected && sendTarget === t
-            return drawPillSwitch(
-              desktop,
-              `chip:${keyOf(t.name)}`,
-              `thread:${keyOf(t.name)}`,
-              isSelected,
-              isSendTarget ? `${t.name}: messages with no heading go here` : t.name,
-              isHot => chipPicture(t.name, t.color, isSelected, isFiltering && !isSelected, isSendTarget, undefined, isHot),
-              { flexShrink: 0 },
-            )
-          })}
-        </Box>
-        {viewButton && (
-          <Box key="thread-view-tip" flexShrink={0}>
-            {viewButton}
-            {drawTip($, e, 'Thread view: the picked threads alone, in a pane')}
-          </Box>
+      <Box flexDirection="row" columnGap={1} alignItems="center" flexGrow={1} flexShrink={1} minWidth={0} overflow="hidden">
+        {list.length === 0 && (
+          <Text dimColor wrap="truncate-end">
+            start a thread with # name
+          </Text>
         )}
+        {list.map(t => {
+          const isSelected = t.isSelected === true
+          const isSendTarget = isSelected && sendTarget === t
+          return drawPillSwitch(
+            desktop,
+            `chip:${keyOf(t.name)}`,
+            `thread:${keyOf(t.name)}`,
+            isSelected,
+            isSendTarget ? `${t.name}: messages with no heading go here` : t.name,
+            isHot => chipPicture(t.name, t.color, isSelected, isFiltering && !isSelected, isSendTarget, undefined, isHot),
+            { flexShrink: 0 },
+          )
+        })}
       </Box>
     )
   }
   // The terminal wraps the pills in their part of the row rather than lose any.
-  const { Box, Text } = $.ui.resolve(e)
+  const { Box, Text, Button } = $.ui.resolve(e)
   return (
-    <Box flexDirection="row" columnGap={1} alignItems="center" flexGrow={1} flexShrink={1} minWidth={0}>
-      <Box flexDirection="row" flexWrap="wrap" columnGap={1} alignItems="center" flexShrink={1} minWidth={0}>
-        {list.length === 0 && <Text dimColor>start a thread with # name</Text>}
-        {list.map(t => (
-          <Box flexDirection="row" flexShrink={0}>
-            <Text color={t.color}>●</Text>
-            <Button
-              key={`thread:${keyOf(t.name)}`}
-              label={sendTarget === t ? `${t.name} ➤` : t.name}
-              variant={t.isSelected ? 'primary' : 'secondary'}
-              dimColor={isFiltering && !t.isSelected}
-              onPress={() => toggleThread($, keyOf(t.name))}
-            />
-          </Box>
-        ))}
-      </Box>
-      {viewButton && <Box flexShrink={0}>{viewButton}</Box>}
+    <Box flexDirection="row" flexWrap="wrap" columnGap={1} alignItems="center" flexGrow={1} flexShrink={1} minWidth={0}>
+      {list.length === 0 && <Text dimColor>start a thread with # name</Text>}
+      {list.map(t => (
+        <Box flexDirection="row" flexShrink={0}>
+          <Text color={t.color}>●</Text>
+          <Button
+            key={`thread:${keyOf(t.name)}`}
+            label={sendTarget === t ? `${t.name} ➤` : t.name}
+            variant={t.isSelected ? 'primary' : 'secondary'}
+            dimColor={isFiltering && !t.isSelected}
+            onPress={() => toggleThread($, keyOf(t.name))}
+          />
+        </Box>
+      ))}
     </Box>
   )
 }
@@ -2436,9 +2417,9 @@ export const register: Register = on => {
   })
 
   // The band above the prompt: thread-chat's menu, then, while threads are on, their
-  // pills and `view`, taking the room left and giving way first. They sit before what
-  // other mods draw there, which keeps its width. The mobile app draws no menu:
-  // /threads is there.
+  // pills, taking the room left and giving way first. They sit before what other mods
+  // draw there, which keeps its width. The mobile app draws no menu: /threads and
+  // /thread-view are there.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const below = await next(e)
     if (e.props.hasSurvey) return below
