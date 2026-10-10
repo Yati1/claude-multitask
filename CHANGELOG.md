@@ -4,6 +4,10 @@ Notable changes to the thread-chat, multitask and react mods. The format is base
 
 ## Unreleased
 
+### Changed
+
+- Changed multitask's thoughts to take four main colours in turn, dimming an ended thought's when reused.
+
 ### Fixed
 
 - Fixed issue where thread-chat left a reply quote unthreaded when a thread heading followed it.
