@@ -19,7 +19,7 @@ function engine(on: On) {
   on('ui.render', ($, e) => {
     if (e.component !== 'UserMessage') return { type: 'engine', ref: 0 }
     const { Box, Text } = $.ui.resolve(e)
-    const mark = Box({ position: 'absolute', right: 0, bottom: 1, children: [Text({ children: ['👍'] })] })
+    const mark = Box({ position: 'absolute', right: 1, bottom: 1, children: [Text({ children: ['👍'] })] })
     return Box({ flexDirection: 'column', children: [Text({ children: [e.props.text] }), mark] })
   })
   on('ui.message', () => ({}))
@@ -56,7 +56,7 @@ test("a mark a mod beneath floats over the person's message stays with it, threa
     expect({ text, message: message?.type, mark: mark?.props }).toEqual({
       text,
       message: 'Text',
-      mark: { position: 'absolute', right: 0, bottom: 1 },
+      mark: { position: 'absolute', right: 1, bottom: 1 },
     })
     // thread-chat's row (tags, or the room for "+ thread") is the one row above it
     expect({ text, rowsAbove: parts.length - 1 }).toEqual({ text, rowsAbove: 1 })
