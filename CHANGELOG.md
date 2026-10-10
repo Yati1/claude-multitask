@@ -4,24 +4,24 @@ Notable changes to the thread-chat, multitask and react mods. The format is base
 
 ## Unreleased
 
+## 0.3.0 - 2026-10-10
+
 ### Added
 
-- Added a coloured thread picker above the prompt to thread-chat for unheaded messages, set by headings.
 - Added thread tag switches, outlined when on, to thread-chat's thread view to show only those, or all.
 - Added react's reactions to your messages in thread-chat's thread view, as the chat shows them.
 - Added a dot per running thought above the prompt to multitask, pulsing at each note and fading as it ends.
-- Added `/react default` to react to set whether reactions are on in new chats.
 
 ### Changed
 
-- Changed thread-chat's menu to a cog after the thread picker, and to also start, merge, archive or delete threads.
-- Changed thread-chat's menu to space its rows as the desktop's dropdowns do.
+- Changed thread-chat's pills above the prompt to a thread picker for unheaded messages, set by headings.
+- Changed thread-chat's `Threads` menu to a cog after the picker, to also start and manage threads.
 - Changed thread-chat's `Filter the chat` to filter to the thread picked above the prompt, off at first.
 - Changed multitask's thoughts to take four main colours in turn, dimming an ended thought's when reused.
 - Changed a done thought's mark in multitask's Thoughts pane to a solid dot in its colour.
 - Changed multitask's Thoughts pane to list the 16 latest ended thoughts, the rest behind `N more`.
 - Changed react's desktop reaction to sit on your message's corner, or under it with `/react place`.
-- Changed react's reactions to be on by default; `/react` turns them off in a chat.
+- Changed react's reactions to be on by default, with `/react default` to change it for new chats.
 
 ### Fixed
 
@@ -31,7 +31,6 @@ Notable changes to the thread-chat, multitask and react mods. The format is base
 
 ### Removed
 
-- Removed thread-chat's filter pills from above the prompt.
 - Removed the count of queued messages from multitask's `thoughts` button.
 
 ## 0.2.0 - 2026-10-10
