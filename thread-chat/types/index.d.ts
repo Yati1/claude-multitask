@@ -85,6 +85,9 @@ declare module 'claude-code' {
       // how many of the thread view's pictures have been read from their files: each
       // one read draws the view again
       picturesRead: number
+      // the first of the thread view's sections it draws, by its place among them; null
+      // while it draws the newest (as opened, or another pick of threads)
+      viewFrom: number | null
       // whether the band's menu shows its switches, on a surface where a press opens it
       menuOpen: boolean
     }
