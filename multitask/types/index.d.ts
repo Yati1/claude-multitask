@@ -73,6 +73,9 @@ declare module 'claude-code' {
       openReports: string[]
       // counts the minutes the Thoughts pane has stood open, so its ages are drawn afresh
       paneTick: number
+      // counts the band's timed redraws: a thought's dot fading out as its turn ends, a pulse
+      // on the terminal ending, the ages in the dots' hover cards each minute
+      bandTick: number
       // the thought whose card in the Thoughts pane has its field open to tell it something; '' none
       tellingTo: string
       // whether the Thoughts pane lists every thought that is not running, not only the

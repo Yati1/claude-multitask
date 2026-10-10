@@ -8,6 +8,7 @@ Notable changes to the thread-chat, multitask and react mods. The format is base
 
 - Added a coloured thread picker above the prompt to thread-chat for unheaded messages, set by headings.
 - Added thread tag switches, outlined when on, to thread-chat's thread view to show only those, or all.
+- Added a dot per running thought above the prompt to multitask, pulsing at each note and fading as it ends.
 
 ### Changed
 
