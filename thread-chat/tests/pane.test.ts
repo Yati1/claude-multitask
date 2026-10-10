@@ -229,8 +229,11 @@ async function sectionsOf(pane: Drawing) {
 }
 
 // The view's filter as drawn: each thread's name, starred where it is picked. A Button's
-// label is picked at full strength, not dim; on the desktop, a Text is picked bold.
+// label is the name in capitals, picked in brackets at full strength, else between spaces
+// and dim; on the desktop, the tag's picture (named "<name>: on" or "off") is picked in a
+// border of a colour, else in one drawn clear. One drawn half picked is marked "?".
 const FILTER_BOX = 'thread-view-filter-box:'
+const CLEAR = '#00000000'
 async function filterOf(pane: Drawing) {
   const names: string[] = []
   const walk = (node: unknown) => {
@@ -240,9 +243,16 @@ async function filterOf(pane: Drawing) {
       for (const child of children) walk(child)
       return
     }
-    const name = children.map(child => child as Drawn).find(child => child.type === 'Button' || child.type === 'Text')
-    if (name?.type === 'Button') names.push(`${String(name.props?.label)}${name.props?.dimColor === true ? '' : ' *'}`)
-    else names.push(`${shownIn(name)}${name?.props?.bold === true ? ' *' : ''}`)
+    const mark = (isPicked: boolean, isMarkedPicked: boolean) => (isPicked !== isMarkedPicked ? ' ?' : isPicked ? ' *' : '')
+    const name = children.map(child => child as Drawn).find(child => child.type === 'Button' || child.type === 'Svg')
+    if (name?.type === 'Button') {
+      const label = String(name.props?.label)
+      const isPicked = label.startsWith('[')
+      names.push(`${label.replace(/[[\]]/g, '').trim().toLowerCase()}${mark(isPicked, name.props?.dimColor !== true)}`)
+    } else {
+      const [shown, state] = String(name?.props?.alt).split(': ')
+      names.push(`${shown}${mark(props.borderColor !== CLEAR, state === 'on')}`)
+    }
   }
   walk(await pane.drawn())
   return names
@@ -299,24 +309,31 @@ test('the thread view shows the threads its own filter picks, earlier replies to
     ]
     expect(await sectionsOf(pane)).toEqual(everything)
     expect(await pane.findAll({ text: /file contents|Read/ })).toEqual([])
-    // its filter: a switch for each thread, none picked; dim, and in the thread's full colour
-    // and bold under the pointer; no label before them, no "All", no "No thread". On the
-    // desktop the name is in its colour at rest, a hit area over it; elsewhere a plain Button
+    // its filter: a switch for each thread, none picked; no label before them, no "All", no
+    // "No thread". On the desktop each is the thread's tag, the picture the chat draws, in a
+    // round border drawn clear, the thread's colour faint under the pointer, a hit area over
+    // it; elsewhere a plain Button, the name in capitals between spaces, dim, in the
+    // thread's colour under the pointer
     expect(await filterOf(pane)).toEqual(['design', 'perf'])
     const designSwitch = keyedIn(await pane.drawn(), `${FILTER_THREAD_KEY}design`)
+    const designBox = keyedIn(await pane.drawn(), `${FILTER_BOX}design`)
     if (surface === 'desktop') {
       expect(designSwitch?.type).toBe('Client')
       expect(String(designSwitch?.props?.module)).toEndWith('switch.tsx')
       expect(designSwitch?.props).toMatchObject({ props: { isOn: false }, width: '100%', height: '100%' })
-      const [name, over] = (keyedIn(await pane.drawn(), `${FILTER_BOX}design`)?.children ?? []) as (Drawn & { hover?: unknown })[]
-      expect(name?.type).toBe('Text')
-      expect(name?.props).toMatchObject({ color: '#4fa3e0', dimColor: true })
-      expect(name?.hover).toEqual({ color: '#4fa3e0', bold: true, dimColor: false })
+      const [tag, over] = (designBox?.children ?? []) as Drawn[]
+      expect(tag?.type).toBe('Svg')
+      expect(tag?.props?.alt).toBe('design: off')
+      const partTag = (await pane.findAll({ type: 'Svg' })).find(
+        p => p.props.alt === 'design' && String(p.props.source).includes('text-anchor="start"'),
+      )
+      expect(tag?.props).toMatchObject({ source: partTag?.props.source, width: partTag?.props.width, height: partTag?.props.height })
       expect(over?.props).toMatchObject({ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%' })
-      expect(keyedIn(await pane.drawn(), `${FILTER_BOX}design`)?.props?.flexShrink).toBe(0)
+      expect(designBox?.props).toMatchObject({ flexShrink: 0, borderStyle: 'round', borderColor: CLEAR })
+      expect(designBox?.hover).toEqual({ borderColor: '#4fa3e073' })
     } else {
-      expect(designSwitch?.props).toMatchObject({ plain: true, dimColor: true })
-      expect(designSwitch?.hover).toEqual({ color: '#4fa3e0', bold: true })
+      expect(designSwitch?.props).toMatchObject({ label: ' DESIGN ', plain: true, dimColor: true })
+      expect(designSwitch?.hover).toEqual({ color: '#4fa3e0' })
     }
     expect(await pane.find({ type: 'Text', text: 'Show' })).toBeUndefined()
 
@@ -332,9 +349,25 @@ test('the thread view shows the threads its own filter picks, earlier replies to
     expect(await sectionsOf(pane)).toEqual(['you: hello', 'Claude: use a queue', 'you: what now?', 'Claude: next step'])
     expect(await filterOf(pane)).toEqual(['design *', 'perf'])
     expect((await band.find({ key: 'thread-picker' }))?.props.value).toBe('thread:perf')
+    // picked, its switch takes the same room: on the desktop the border takes the thread's
+    // colour, nothing else of it changes; elsewhere brackets take the spaces' place
+    const pickedBox = keyedIn(await pane.drawn(), `${FILTER_BOX}design`)
+    if (surface === 'desktop') {
+      expect({ ...pickedBox?.props, borderColor: '#4fa3e0' }).toEqual({ ...designBox?.props, borderColor: '#4fa3e0' })
+      expect(pickedBox?.props?.borderColor).toBe('#4fa3e0')
+      expect(pickedBox?.hover).toBeUndefined()
+      const [was, now] = [designBox, pickedBox].map(box => (box?.children?.[0] as Drawn | undefined)?.props)
+      expect({ ...now, alt: '' }).toEqual({ ...was, alt: '' })
+      expect(now?.alt).toBe('design: on')
+    } else {
+      const label = keyedIn(await pane.drawn(), `${FILTER_THREAD_KEY}design`)?.props?.label
+      expect(label).toBe('[DESIGN]')
+      expect(String(label).length).toBe(String(designSwitch?.props?.label).length)
+    }
 
     // each section's tag; the person's section a bubble in the surface's fill, and each
-    // reply part in its thread's border, as the chat draws them; nothing filled in it
+    // reply part in its thread's border, as the chat draws them (on the desktop, the picked
+    // switch too); nothing filled in it
     const tags =
       surface === 'terminal'
         ? (await pane.findAll({ type: 'Text', text: 'DESIGN' })).length
@@ -347,13 +380,14 @@ test('the thread view shows the threads its own filter picks, earlier replies to
     expect(bordered.map(b => [b.props.borderStyle, b.props.borderColor])).toEqual([
       ['round', '#4fa3e0'],
       ['round', '#4fa3e0'],
+      ...(surface === 'desktop' ? [['round', '#4fa3e0']] : []),
     ])
     // no Client but the filter's hit areas, one per thread: every overlay on the desktop
     // shares their one frame
     const clients = (await pane.findAll({ type: 'Client' })).map(c => c.key)
     expect(clients).toEqual(surface === 'desktop' ? [`${FILTER_THREAD_KEY}design`, `${FILTER_THREAD_KEY}perf`] : [])
 
-    // perf picked too: both threads' sections, each picked at full strength
+    // perf picked too: both threads' sections, each picked
     await pressFilter(pane, 'perf')
     expect(await sectionsOf(pane)).toEqual([
       'you: hello',
