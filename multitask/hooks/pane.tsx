@@ -7,7 +7,8 @@ import { oneLine } from './prompts'
 // rest one line each, the one most recently ended first, until opened. A card sets
 // each kind of line apart by a label at its left: the task, the progress notes (the
 // latest at full strength with its age, in the warning colour once the thought has
-// been quiet a while), the report, and the messages queued for its turn's end.
+// been quiet a while), the report, and the messages queued for its turn's end. A card's
+// `tell` opens a field at its foot to send the thought a message of the person's own.
 //
 // It is drawn as the thread view is (thread-chat's pane.tsx): plain functions here,
 // every hook and every call on `$` in register.tsx, which hands them what they draw
@@ -36,6 +37,9 @@ const REPORT_MAX = 10_000
 
 // Cells the labels at a card's left take, the gap after them included.
 const LABEL_COLUMNS = 7
+
+// The key of a card's field to tell its thought something: this, then the thought's id.
+export const TELL_FIELD = 'tell-field:'
 
 // A card's padding inside its border, as the thread view pads a reply's thread part: on
 // the desktop on every side (a bordered Box there is padded 8px above and below unless
@@ -106,6 +110,19 @@ export type ThoughtsDrawing = {
   toggleReport: (id: string) => void
   stop: (id: string) => void
   unqueue: (id: string, index: number) => void
+  // the thought whose card has its field open ('' none), what opens or closes it, and
+  // what Enter there sends, should the pane's ui.input hook not take it first
+  tellingTo: string
+  toggleTell: (id: string) => void
+  tell: (id: string, text: string) => void
+}
+
+// The field a card's thought is told something in, where the surface draws one (the
+// mobile app draws none yet, though its table may hand one over) while Multitask is on:
+// off, a thought whose turn ended cannot be resumed.
+function tellFieldOf(draw: ThoughtsDrawing) {
+  if (!draw.isOn || draw.surface === 'mobile' || !('Input' in draw.ui)) return undefined
+  return draw.ui.Input
 }
 
 // The pane's body: a line of how many thoughts there are, by status, then each one.
@@ -196,6 +213,8 @@ function drawSection(draw: ThoughtsDrawing, label: string, lines: RenderElement[
 // report and its queue, each kind under its label.
 function drawCard(draw: ThoughtsDrawing, t: Thought): RenderElement {
   const { Box, Text, Button, Markdown } = draw.ui
+  const Input = t.status === 'stopped' ? undefined : tellFieldOf(draw)
+  const isTelling = Input !== undefined && draw.tellingTo === t.id
   const isPage = draw.surface !== 'terminal'
   // half a line between kinds on a page; none on the terminal, where the labels part them
   const gap = isPage ? 1 : 0
@@ -315,6 +334,11 @@ function drawCard(draw: ThoughtsDrawing, t: Thought): RenderElement {
             <Button key={`collapse:${t.id}`} {...control} label="hide" onPress={() => draw.toggleExpanded(t.id)} />
           </Box>
         )}
+        {Input !== undefined && (
+          <Box flexShrink={0}>
+            <Button key={`tell:${t.id}`} {...control} label={isTelling ? 'cancel' : 'tell'} onPress={() => draw.toggleTell(t.id)} />
+          </Box>
+        )}
         {t.status !== 'stopped' && (
           <Box flexShrink={0}>
             <Button key={`stop:${t.id}`} {...control} label="stop" onPress={() => draw.stop(t.id)} />
@@ -334,6 +358,22 @@ function drawCard(draw: ThoughtsDrawing, t: Thought): RenderElement {
       {noteLines.length > 0 && drawSection(draw, 'notes', noteLines, gap)}
       {report !== false && drawSection(draw, 'report', [report], gap, t.color)}
       {queued.length > 0 && drawSection(draw, 'queued', queued, gap)}
+      {isTelling &&
+        drawSection(
+          draw,
+          'tell',
+          [
+            <Input
+              key={`${TELL_FIELD}${t.id}`}
+              placeholder={`a message for ${t.name}`}
+              submitLabel="send"
+              autoFocus
+              onSubmit={(value: string) => draw.tell(t.id, value)}
+            />,
+          ],
+          gap,
+          t.color,
+        )}
     </Box>
   )
 }

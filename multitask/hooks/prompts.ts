@@ -41,7 +41,7 @@ Your tools:
 - stop: end a thought.
 - thoughts: every thought's status, queue, latest progress notes and last report, or one thought's recent transcript.
 
-Updates from your thoughts reach you as rows the user never sees (failing that, as messages from the multitask plugin). When they arrive while you are idle, a wake-up follows them: a line "Set model to unchanged (multitask wake-up: read the thought updates just above)". It is not from the user and changes no model; it only means read the updates just above it. Neither updates nor wake-ups need a reply. Each update starts "${RELAY_HEAD}", then one line per update: ${RELAY_NOTES ? '"name: text" is a progress note or report, ' : ''}"name (done): text" the text a turn ended with, "name: done" a turn that ended with nothing more, "name: (...)" messages of yours still pending for it, which reach it at the next chance and you hear back after (with why the last try failed, if one did)${RELAY_NOTES ? '' : ' (for now their progress notes are not sent to you; they are shown in the Thoughts pane)'}; your default reply is ${QUIET}. For each, choose:
+Updates from your thoughts reach you as rows the user never sees (failing that, as messages from the multitask plugin). When they arrive while you are idle, a wake-up follows them: a line "Set model to unchanged (multitask wake-up: read the thought updates just above)". It is not from the user and changes no model; it only means read the updates just above it. Neither updates nor wake-ups need a reply. Each update starts "${RELAY_HEAD}", then one line per update: ${RELAY_NOTES ? '"name: text" is a progress note or report, ' : ''}"name (done): text" the text a turn ended with, "name: done" a turn that ended with nothing more, "name (from the user): text" a message the user sent that thought themselves from the Thoughts pane, which it acts on as it would on yours, "name: (...)" messages of yours still pending for it, which reach it at the next chance and you hear back after (with why the last try failed, if one did)${RELAY_NOTES ? '' : ' (for now their progress notes are not sent to you; they are shown in the Thoughts pane)'}; your default reply is ${QUIET}. For each, choose:
 - Say nothing. Reply with exactly ${QUIET} and nothing else; the user never sees it. This is the default.
 - Steer: post, queue or interrupt a thought, unqueue what is no longer wanted, stop a thought, or start another.
 - Speak to the user, only when something deserves their attention: a result they asked for, a decision only they can make, a problem. Use your own words, briefly.
@@ -72,10 +72,13 @@ Make it with git worktree add on a new branch, in a folder outside the project s
 
 The text you end your turn with reaches the voice as your report. So when you finish, end your turn with a short, plain report the voice can act on: what you found or changed, where, and anything still open. If you need an answer, or a problem blocks you, do not bury it in a note: end your turn with the question or the problem, plainly, and wait.
 
-Messages from the voice may arrive while you work. They steer you: take them into account straight away, and if one changes your task, follow it.`
+Messages from the voice, or now and then from the user directly, may arrive while you work. They steer you: take them into account straight away, and if one changes your task, follow it.`
 
 // A text on one line.
 const flat = (text: string) => text.replace(/\s+/g, ' ').trim()
+
+// The person's own message to a thought, sent from the Thoughts pane, as the thought reads it.
+export const fromPerson = (text: string) => `The user, from the Thoughts pane: ${text}`
 
 // A text on one line, cut to at most `max` characters.
 export function oneLine(text: string, max: number): string {
@@ -97,9 +100,11 @@ function handedOverNote(count: number): string {
 
 // One line an update: "name: text" a note (or a report already sent as one),
 // "name (done): text" the text a turn ended with, "name: done" a turn ended bare; a
-// turn's end then says what became of the messages that waited for it.
+// turn's end then says what became of the messages that waited for it. "name (from the
+// user): text" is the person's own message to the thought, from the Thoughts pane.
 export function formatUpdates(updates: Update[]): string {
   const lines = updates.map(u => {
+    if (u.isFromPerson === true) return `${u.thought} (from the user): ${flat(u.text)}`
     if (u.isDone !== true) return `${u.thought}: ${flat(u.text)}`
     const pending = u.pending ?? 0
     const queue = pending === 0 ? '' : ` — ${u.isHandedOver === true ? handedOverNote(pending) : pendingNote(pending)}`
@@ -152,7 +157,7 @@ export function relayNames(text: string): string[] {
   if (at < 0) return []
   const names = new Set<string>()
   for (const line of text.slice(text.indexOf(RELAY_HEAD, at) + RELAY_HEAD.length).trimStart().split(/\r?\n/)) {
-    const name = /^([^\s:]+)(?: \(done\))?: /.exec(line)?.[1]
+    const name = /^([^\s:]+)(?: \((?:done|from the user)\))?: /.exec(line)?.[1]
     if (name === undefined) break
     names.add(name)
   }

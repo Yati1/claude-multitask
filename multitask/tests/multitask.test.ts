@@ -191,6 +191,10 @@ test('quiet is exact and updates are one line each under a short header', async 
   ])
   expect(text).toBe('Thought updates:\nauth: Checking the token\ndocs (done): Found it: - in a.ts - in b.ts\nauth: done')
   expect(relayNames(text)).toEqual(['auth', 'docs'])
+  // the person's own message to a thought, from the Thoughts pane
+  const told = formatUpdates([{ thought: 'ui', text: 'use the\nsame colours', isFromPerson: true }])
+  expect(told).toBe('Thought updates:\nui (from the user): use the same colours')
+  expect(relayNames(told)).toEqual(['ui'])
 })
 
 test('a quiet reply draws as nothing on every surface while Multitask is on, and as the engine draws it while off', async ($, on) => {
@@ -1172,6 +1176,7 @@ test("the Thoughts pane draws running thoughts first with their task's first lin
   expect(keys).toEqual([
     'expand:busy',
     'more:busy',
+    'tell:busy',
     'stop:busy',
     'expand:broke',
     'stop:broke',
@@ -1364,6 +1369,51 @@ test("a card says how long its thought has run and since its latest note, in the
   await clock.settle()
   await clock.advance(3 * 60_000)
   expect(await status()).toBe('done 3m ago')
+})
+
+test("the person tells a thought something from its card: it gets it, resuming if its turn ended, and the voice hears of it", async ($, on) => {
+  const seen = engine($, on)
+  const clock = mock.clock(on)
+  await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
+  await $.command.run({ command: 'multitask', args: '', origin: { kind: 'composer' }, presentation: {} as never })
+  await $.tool.call({ tool: 'mcp__multitask__think', tool_use_id: 'c1', name: 'auth bug', task: 'Find why login fails' })
+  const pane = await $.ui.mount({
+    plugin: 'multitask',
+    surface: 'desktop',
+    component: 'Pane',
+    requestId: 'multitask-thoughts',
+    props: { title: 'Thoughts', isFocused: false, bodyColumns: 80, placement: 'dock', scroll: { offset: 0, bodyRows: 40 }, view: {} },
+  })
+  const field = 'tell-field:agent-1'
+  seen.isAutoMode = true
+
+  // `tell` opens a field at the foot of its card; Enter sends what is typed there, as the
+  // person's own words, from the event the engine raises to the mod (in auto mode, a send
+  // from anywhere else is refused).
+  expect(await pane.find({ key: field })).toBeUndefined()
+  await pane.press({ key: 'tell:agent-1' })
+  expect(await pane.find({ key: field })).toBeDefined()
+  expect((await pane.find({ key: 'tell:agent-1' }))?.text).toBe('cancel')
+  await raised(seen, () => pane.input({ key: field, text: '  check refresh too ' }))
+  expect(seen.sends.map(s => s.text)).toEqual(['The user, from the Thoughts pane: check refresh too'])
+  expect(await pane.find({ key: field })).toBeUndefined()
+
+  // The voice hears of it with the thought's next update, before it.
+  await $.turn.complete({ ...finished('agent-1'), answer: 'Refresh is fine too.' })
+  await clock.advance(2500)
+  expect(seen.prompts.at(-1)).toBe('Thought updates:\nauth-bug (from the user): check refresh too\nauth-bug (done): Refresh is fine too.')
+
+  // A thought whose turn ended, opened, takes a message too, and resumes with it.
+  await pane.press({ key: 'expand:agent-1' })
+  await pane.press({ key: 'tell:agent-1' })
+  await raised(seen, () => pane.input({ key: field, text: 'and logout?' }))
+  expect(seen.sends.at(-1)?.text).toBe('The user, from the Thoughts pane: and logout?')
+  expect((await pane.find({ type: 'Text', text: /^(running|done)/ }))?.text).toMatch(/^running/)
+
+  // With Multitask off, no card offers it.
+  await $.command.run({ command: 'multitask', args: '', origin: { kind: 'composer' }, presentation: {} as never })
+  await pane.redraw()
+  expect(await pane.find({ key: 'tell:agent-1' })).toBeUndefined()
 })
 
 test('the band shares one row with another mod: its controls keep their width, nothing wraps or shows on hover', async ($, on) => {

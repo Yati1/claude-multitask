@@ -24,6 +24,7 @@ import {
   describeThoughts,
   formatNews,
   formatUpdates,
+  fromPerson,
   heardOf,
   isQuiet,
   isRelayText,
@@ -34,7 +35,7 @@ import {
   pendingNote,
   relayNames,
 } from './prompts'
-import { drawThoughts } from './pane'
+import { TELL_FIELD, drawThoughts } from './pane'
 
 const isOn = atom({ plugin: 'multitask', key: 'isOn' } as const, false)
 const thoughts = atom({ plugin: 'multitask', key: 'thoughts' } as const, [])
@@ -45,6 +46,7 @@ const expanded = atom({ plugin: 'multitask', key: 'expanded' } as const, [])
 const openReports = atom({ plugin: 'multitask', key: 'openReports' } as const, [])
 const heard = atom({ plugin: 'multitask', key: 'heard' } as const, {})
 const paneTick = atom({ plugin: 'multitask', key: 'paneTick' } as const, 0)
+const tellingTo = atom({ plugin: 'multitask', key: 'tellingTo' } as const, '')
 
 const PANE = 'multitask-thoughts'
 // Multitask's dropdown in the band. Its face is the mode the chat is in, Multitask or
@@ -275,6 +277,11 @@ async function toggleReport($: EngineInterface, id: string) {
   await update($, openReports, ids => (ids.includes(id) ? ids.filter(one => one !== id) : [...ids, id]))
 }
 
+// Opens the field in a thought's card in the Thoughts pane to tell it something, or closes it.
+async function toggleTell($: EngineInterface, id: string) {
+  await update($, tellingTo, was => (was === id ? '' : id))
+}
+
 // The voice's tools are the model's from Multitask first coming on: a session that
 // never switches it on has no tool of this mod's. Registered again, each is replaced.
 async function offerVoiceTools($: EngineInterface) {
@@ -409,7 +416,7 @@ async function relayDone($: EngineInterface, t: Thought, report: string, isFaile
     for (let i = kept.length - 1; i >= 0; i--) {
       const u = kept[i] as Update
       if (u.thought !== t.name) continue
-      if (u.isDone === true || !report.includes(u.text)) break
+      if (u.isDone === true || u.isFromPerson === true || !report.includes(u.text)) break
       kept.splice(i, 1)
       isWaiting = true
     }
@@ -439,6 +446,44 @@ async function deliver($: EngineInterface, t: Thought, text: string): Promise<Se
   const sent = byId.isDelivered || !(await send(t.name)).isDelivered ? byId : { isDelivered: true as const }
   if (!sent.isDelivered) await patchThought($, t.id, one => (one.status === 'running' ? { ...one, status: was } : one))
   return sent
+}
+
+// Posts a thought a message, as tell's post does: one running reads it at its next step;
+// one whose turn has ended gets it once its run has ended (it may still be winding down),
+// after the messages still pending for it, and resumes. What the send answered, and how
+// many pending messages went before it.
+async function post(
+  $: EngineInterface,
+  t: Thought,
+  text: string,
+  isRunning: boolean,
+): Promise<{ sent: SessionSendResult; pending: number }> {
+  if (!isRunning) await runEnded($, t.id)
+  const pending = !isRunning && isDue(t) ? t.queued.length : 0
+  const sent = (pending > 0 ? await handOver($, t.id, text) : undefined) ?? (await deliver($, t, text))
+  return { sent, pending }
+}
+
+// The person's own message to a thought, typed in its card in the Thoughts pane: posted as
+// tell posts the voice's, then put before the voice with the thoughts' next updates, so it
+// knows what the thought was asked. Sent from the pane's ui.input hook (below), as auto
+// mode allows only a send made from an event the engine raised to this mod (handOverDue).
+// A message that did not arrive is told in a toast, the field left open.
+async function tellFromPane($: EngineInterface, id: string, text: string) {
+  const message = text.trim()
+  const t = (await read($, thoughts)).find(one => one.id === id)
+  if (message === '' || t === undefined || t.status === 'stopped') return
+  if (!(await read($, isOn))) {
+    $.ui.toast('Multitask is off: turn it on to tell a thought something.')
+    return
+  }
+  const { sent } = await post($, t, fromPerson(message), t.status === 'running')
+  if (!sent.isDelivered) {
+    $.ui.toast(`${t.name} did not get your message: ${sent.reason}`)
+    return
+  }
+  await update($, tellingTo, was => (was === id ? '' : was))
+  await update($, inbox, list => [...list, { thought: t.name, text: message, isFromPerson: true }])
 }
 
 // Queues a message for the end of a thought's turn, if it has a turn running that will
@@ -915,9 +960,7 @@ export const register: Register = (on, options) => {
     if (how === 'interrupt' && isRunning) return interrupt($, t, message)
     // With no turn running, its last run may still be winding down: the message goes once it
     // has ended, after what is still pending for it.
-    if (!isRunning) await runEnded($, t.id)
-    const pending = !isRunning && isDue(t) ? t.queued.length : 0
-    const sent = (pending > 0 ? await handOver($, t.id, message) : undefined) ?? (await deliver($, t, message))
+    const { sent, pending } = await post($, t, message, isRunning)
     if (!sent.isDelivered) return notDelivered(t, sent.reason)
     const after = pending === 0 ? '' : `, after the ${pending === 1 ? 'message' : `${pending} messages`} still pending for it,`
     return {
@@ -1241,8 +1284,20 @@ export const register: Register = (on, options) => {
         toggleReport: id => void toggleReport($, id),
         stop: id => void stopThought($, id),
         unqueue: (id, index) => void unqueue($, id, index),
+        tellingTo: await read($, tellingTo),
+        toggleTell: id => void toggleTell($, id),
+        tell: (id, text) => void tellFromPane($, id, text),
       },
       list,
     )
+  })
+
+  // Enter in a card's field in the Thoughts pane tells its thought the text, from here: an
+  // event the engine raises to this mod, where auto mode allows the send (handOverDue says
+  // why), which the field's own handler, run beneath every hook, may not be.
+  on('ui.input', { component: 'Pane', requestId: PANE }, async ($, e, next) => {
+    if (e.kind !== 'submit' || !e.element.startsWith(TELL_FIELD)) return next(e)
+    await tellFromPane($, e.element.slice(TELL_FIELD.length), e.value)
+    return { element: e.element, value: e.value }
   })
 }
