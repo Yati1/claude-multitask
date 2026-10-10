@@ -1,6 +1,6 @@
 # claude-multitask
 
-Two Claude Code mods, each a plugin in its own folder: `thread-chat` and `multitask`. The repository root is their plugin marketplace (`.claude-plugin/marketplace.json`). `README.md` has the install and test commands.
+Three Claude Code mods, each a plugin in its own folder: `thread-chat`, `multitask` and `react`. The repository root is their plugin marketplace (`.claude-plugin/marketplace.json`). `README.md` has the install and test commands.
 
 ## Editing the mods
 
@@ -25,6 +25,7 @@ What works: run each mod's tests with the session's own engine and GrowthBook of
 ```
 DISABLE_GROWTHBOOK=1 "$CLAUDE_CODE_EXECPATH" plugin test multitask
 DISABLE_GROWTHBOOK=1 "$CLAUDE_CODE_EXECPATH" plugin test thread-chat
+DISABLE_GROWTHBOOK=1 "$CLAUDE_CODE_EXECPATH" plugin test react
 ```
 
 In PowerShell: `$env:DISABLE_GROWTHBOOK='1'; & $env:CLAUDE_CODE_EXECPATH plugin test multitask`.

@@ -8,7 +8,7 @@ import { execFileSync } from 'node:child_process'
 import { copyFileSync, existsSync, readFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 
-const MODS = ['thread-chat', 'multitask']
+const MODS = ['thread-chat', 'multitask', 'react']
 const git = (...args) => execFileSync('git', args, { encoding: 'utf8' }).trim()
 const here = git('rev-parse', '--show-toplevel')
 const main = dirname(git('rev-parse', '--path-format=absolute', '--git-common-dir'))

@@ -4,37 +4,33 @@ Notable changes to the thread-chat, multitask and react mods. The format is base
 
 ## Unreleased
 
+## 0.2.0 - 2026-10-10
+
 ### Added
 
-- Added a react mod (`/react`) so the agent can acknowledge a message with an emoji reaction, not a reply.
-- Added a `Threads` menu above the prompt to thread-chat with a switch that turns threads on or off.
+- Added a react mod (`/react`) so the agent can acknowledge a message with just an emoji reaction.
+- Added a `Threads` menu above the prompt to thread-chat with its switches and `Open thread view`.
 - Added `Filter the chat` to thread-chat's `Threads` menu to pick threads without hiding the rest.
-- Added `/thread-view trace` to thread-chat to show how the thread view was last opened and drawn.
 - Added ages to multitask's Thoughts pane, in the warning colour once a running thought goes quiet.
 - Added `tell` to each card in multitask's Thoughts pane to send that thought your own message.
 
 ### Changed
 
 - Changed thread-chat's agent to pick the right threads for its reply, even for unheaded messages.
-- Changed thread-chat's agent-threads switch and `view` button to sit in its `Threads` menu.
 - Changed multitask's switch to a dropdown above the prompt that reads `Multitask` or `Focus`.
-- Changed thread-chat's thread view to match the chat, with its bubbles, image thumbnails, thread tags and borders.
-- Changed thread-chat's thread view to show only your messages and each turn's final reply.
-- Changed thread-chat's thread view to open at the bottom and keep your place across tabs and new messages.
-- Changed thread-chat's thread view to load earlier messages as you scroll up or press its top line.
+- Changed thread-chat's thread view to look like the chat, with only your messages and final replies.
+- Changed thread-chat's thread view to open at the bottom, keep your place and load more on scroll.
 - Changed multitask's Thoughts pane to label each card's task, notes, report and queued messages.
-- Changed multitask's Thoughts pane to list failed thoughts first and show a report's start on each folded line.
+- Changed multitask's Thoughts pane to list ended thoughts failed first, with each report's start.
 
 ### Fixed
 
 - Fixed issue where a finished multitask thought could still show a "Message from subagent" row.
 - Fixed issue where multitask's voice could post a message to a thought it meant to queue or interrupt.
 - Fixed issue where multitask's `tell` showed as a success when its message did not reach the thought.
-- Fixed issue where multitask's messages to thoughts were never delivered in auto mode.
+- Fixed issue where multitask's messages to thoughts, queued ones too, never arrived in auto mode.
 - Fixed issue where multitask's messages to a thought were refused once it had finished its turn.
-- Fixed issue where multitask's queued messages never reached a finished thought in auto mode.
 - Fixed issue where thread-chat's thread view went blank, without saying why, when it failed to draw.
-- Fixed issue where thread-chat's thread view drew nothing once it held a dozen or so pasted pictures.
 - Fixed issue where multitask's Thoughts pane showed only the end of a long report when opened.
 - Fixed issue where thread-chat's `Agent may start threads` switch turned off when a chat restarted.
 

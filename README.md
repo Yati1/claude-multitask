@@ -1,6 +1,6 @@
 # claude-multitask
 
-Talk to Claude while it works, and keep every topic in its own thread. Two Claude Code mods: **multitask** and **thread-chat**.
+Talk to Claude while it works, keep every topic in its own thread, and get a quick emoji when a reply would be overkill. Three Claude Code mods: **multitask**, **thread-chat** and **react**.
 
 ## Why
 
@@ -8,6 +8,7 @@ Talk to Claude while it works, and keep every topic in its own thread. Two Claud
 - **No waiting, nothing held back.** Ask something new, add a detail or change your mind whenever it occurs to you. The voice passes it to the right piece of work.
 - **Questions come straight away.** Your message isn't queued behind work in progress, so clarifying questions come at once and the right work starts sooner.
 - **Topics stay apart.** With thread-chat, a `# heading` puts a message in its topic's thread: colour-coded, filterable and easy to find later.
+- **A nod, not a speech.** With react, a quick "thanks" or "got it" can get an emoji on your message instead of a reply.
 
 Examples: [docs/why.md](docs/why.md).
 
@@ -19,13 +20,14 @@ Requires Claude Code 2.1.290 or later. Made for the Code tab in the Claude deskt
 claude plugin marketplace add othrayte/claude-multitask
 claude plugin install multitask@claude-multitask
 claude plugin install thread-chat@claude-multitask
+claude plugin install react@claude-multitask
 ```
 
-Install either or both.
+Install any or all of them.
 
 ## Use
 
-Multitask has a dropdown, and thread-chat a `Threads` menu, in the band above the prompt with their switches for the chat. The mobile app shows neither: use the commands there.
+Multitask has a dropdown, and thread-chat a `Threads` menu, in the band above the prompt with their switches for the chat. The mobile app shows neither: use the commands there. React has no control in the band: `/react` is its switch.
 
 ### Multitask
 
@@ -45,3 +47,8 @@ Multitask has a dropdown, and thread-chat a `Threads` menu, in the band above th
 - `/thread-view`, or `Open thread view` in the `Threads` menu, opens the thread view: the picked threads' messages on their own, in a pane (all threads when none is picked).
 - `/merge-threads <thread> into <thread>` merges two threads.
 - `Agent may start threads`, in the `Threads` menu while threads are on, lets the agent start threads itself. It is per chat, and kept when the chat is restarted.
+
+### Reactions
+
+- `/react` turns reactions on in a chat (again to turn them off). It is per chat, and kept when the chat is restarted.
+- While they are on, a reply of a single emoji shows as a reaction on your message, not as a reply.
