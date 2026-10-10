@@ -203,12 +203,25 @@ function keyedIn(node: unknown, key: string): (Drawn & { hover?: unknown }) | un
   return undefined
 }
 
+// The element of a drawing with a child that passes `isChild`.
+function parentIn(node: unknown, isChild: (child: Drawn) => boolean): Drawn | undefined {
+  if (typeof node !== 'object' || node === null) return undefined
+  const children = (node as Drawn).children ?? []
+  if (children.some(child => typeof child === 'object' && child !== null && isChild(child as Drawn))) return node as Drawn
+  for (const child of children) {
+    const found = parentIn(child, isChild)
+    if (found !== undefined) return found
+  }
+  return undefined
+}
+
 // The strings an element shows, its own and its children's, in order.
 const shownIn = (node: unknown): string =>
   typeof node === 'string' ? node : ((node as Drawn | undefined)?.children ?? []).map(shownIn).join('')
 
 // What the view shows, in order: who wrote each section, and its text. The person's
 // sections are filled bubbles, their words the last Text in them; Claude's are markdown.
+// (On a page the divider above the filter is filled too, but holds nothing.)
 async function sectionsOf(pane: Drawing) {
   const sections: string[] = []
   const walk = (node: unknown) => {
@@ -218,7 +231,7 @@ async function sectionsOf(pane: Drawing) {
       sections.push(`Claude: ${String(props.text)}`)
       return
     }
-    if (type === 'Box' && props.backgroundColor !== undefined) {
+    if (type === 'Box' && props.backgroundColor !== undefined && children.length > 0) {
       const words = children.filter(child => (child as Drawn).type === 'Text').at(-1)
       sections.push(`you: ${shownIn(words)}`)
       return
@@ -337,6 +350,26 @@ test('the thread view shows the threads its own filter picks, earlier replies to
       expect(designSwitch?.hover).toEqual({ color: '#4fa3e0' })
     }
     expect(await pane.find({ type: 'Text', text: 'Show' })).toBeUndefined()
+    // a faint line between the newest section and the filter: on the desktop a hairline
+    // across the pane, a row either side; on the terminal a dim run of `─` cut to one row,
+    // the filter right under it
+    const tree = await pane.drawn()
+    const switches = parentIn(tree, child => String(child.props?.key).startsWith(FILTER_BOX))
+    const filterBlock = parentIn(tree, child => child === switches)
+    expect(switches?.props?.flexWrap).toBe('wrap')
+    const [divider, below] = (filterBlock?.children ?? []) as Drawn[]
+    expect(below).toBe(switches)
+    if (surface === 'desktop') {
+      expect(filterBlock?.props?.rowGap).toBe(1)
+      expect(divider).toMatchObject({ type: 'Box', props: { height: 0.1, backgroundColor: '#8888884d' } })
+      expect(divider?.children ?? []).toEqual([])
+    } else {
+      expect(filterBlock?.props?.rowGap).toBe(0)
+      expect(divider).toMatchObject({ type: 'Box', props: { height: 1, overflow: 'hidden' } })
+      const [line] = (divider?.children ?? []) as Drawn[]
+      expect(line?.props?.dimColor).toBe(true)
+      expect(shownIn(line)).toMatch(/^─{200,}$/)
+    }
 
     // a thread picked above the prompt, where messages go, leaves the view as it was
     const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...BAND })
@@ -368,7 +401,7 @@ test('the thread view shows the threads its own filter picks, earlier replies to
 
     // each section's tag; the person's section a bubble in the surface's fill, and each
     // reply part in its thread's border, as the chat draws them (on the desktop, the picked
-    // switch too); nothing filled in it
+    // switch too); nothing filled in it, but on the desktop the divider
     const tags =
       surface === 'terminal'
         ? (await pane.findAll({ type: 'Text', text: 'DESIGN' })).length
@@ -376,7 +409,7 @@ test('the thread view shows the threads its own filter picks, earlier replies to
     expect(tags).toBe(3)
     const filled = (await pane.findAll({ type: 'Box' })).filter(b => b.props.backgroundColor !== undefined)
     const fill = surface === 'terminal' ? 'userMessageBackground' : '#8888881a'
-    expect(filled.map(b => b.props.backgroundColor)).toEqual([fill, fill])
+    expect(filled.map(b => b.props.backgroundColor)).toEqual(surface === 'terminal' ? [fill, fill] : [fill, fill, '#8888884d'])
     const bordered = (await pane.findAll({ type: 'Box' })).filter(b => PALETTE.some(color => b.props.borderColor === color))
     expect(bordered.map(b => [b.props.borderStyle, b.props.borderColor])).toEqual([
       ['round', '#4fa3e0'],

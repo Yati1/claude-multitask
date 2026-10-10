@@ -1098,26 +1098,50 @@ function drawFilterChoice(draw: ViewDrawing, thread: Thread, isPicked: boolean):
   )
 }
 
+// The line between the view's sections and its filter, faint as the transcript's own
+// separators. On a page a hairline across the pane: a tenth of a row (about 1px) of grey
+// about 30% opaque, as a thumbnail's border, which shows on a light page and a dark. On
+// the terminal a dim line of `─` across the pane: a run longer than any pane is wide,
+// wrapped and cut to its first row (a Box has no border on one side alone, and a Text
+// cut short ends in an ellipsis).
+const DIVIDER_HEIGHT = 0.1
+const DIVIDER_FILL = '#8888884d'
+const DIVIDER_CHARS = 500
+
+function drawDivider(draw: ViewDrawing, isPage: boolean): RenderElement {
+  const { Box, Text } = draw.ui
+  if (isPage) return <Box height={DIVIDER_HEIGHT} backgroundColor={DIVIDER_FILL} />
+  return (
+    <Box height={1} overflow="hidden">
+      <Text dimColor>{'─'.repeat(DIVIDER_CHARS)}</Text>
+    </Box>
+  )
+}
+
 // The view's filter, below its newest section, where the view opens and keeps to as
-// messages come (a pane has no row that stays as it scrolls): a switch for each thread
-// it offers, in one row while they fit.
-function drawFilter(draw: ViewDrawing, offered: readonly Thread[], picks: ReadonlySet<string>): RenderElement {
+// messages come (a pane has no row that stays as it scrolls): under the divider, a switch
+// for each thread it offers, in one row while they fit. On a page the divider has a row
+// either side; on the terminal the filter sits right under it.
+function drawFilter(draw: ViewDrawing, isPage: boolean, offered: readonly Thread[], picks: ReadonlySet<string>): RenderElement {
   const { Box } = draw.ui
   return (
-    <Box
-      flexDirection="row"
-      flexWrap="wrap"
-      alignItems="center"
-      columnGap={1}
-      rowGap={draw.filterHit !== undefined ? FILTER_ROW_GAP : 0}
-    >
-      {offered.map(t => drawFilterChoice(draw, t, picks.has(keyOf(t.name))))}
+    <Box flexDirection="column" rowGap={isPage ? 1 : 0}>
+      {drawDivider(draw, isPage)}
+      <Box
+        flexDirection="row"
+        flexWrap="wrap"
+        alignItems="center"
+        columnGap={1}
+        rowGap={draw.filterHit !== undefined ? FILTER_ROW_GAP : 0}
+      >
+        {offered.map(t => drawFilterChoice(draw, t, picks.has(keyOf(t.name))))}
+      </Box>
     </Box>
   )
 }
 
 // The pane's body: the sections of the threads its filter picked, oldest first, the newest
-// at the bottom, and the filter below them while there are threads to pick; the sections
+// at the bottom, and below a line the filter while there are threads to pick; the sections
 // from `draw.from` on, under a line saying how many messages come before them, which
 // draws some of them when pressed. With the sections it drew.
 export function drawView(draw: ViewDrawing, inputs: ViewInputs, deps: ViewDeps): { tree: RenderElement; span: ViewSpan } {
@@ -1159,7 +1183,7 @@ export function drawView(draw: ViewDrawing, inputs: ViewInputs, deps: ViewDeps):
       )}
       {shown.length === 0 && <Text dimColor>{picks.size === 0 ? 'Nothing here yet.' : 'Nothing in the threads shown yet.'}</Text>}
       {shown.length > 0 && <Box flexDirection="column">{shown.map((entry, i) => drawEntry(draw, isPage, entry, drawn, gapBefore(entry, i)))}</Box>}
-      {offered.length > 0 && drawFilter(draw, offered, picks)}
+      {offered.length > 0 && drawFilter(draw, isPage, offered, picks)}
     </Box>
   )
   return { tree, span: { from, count: entries.length } }
