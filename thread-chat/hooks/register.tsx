@@ -1267,8 +1267,11 @@ async function returnView($: EngineInterface, row: number) {
 
 // Puts the thread view's window back where the person left it when a surface draws the
 // view afresh, at its top: the desktop does on opening it and on coming back to its tab.
-function settleView($: EngineInterface, offset: number) {
-  const move = viewMoveOf(viewPlace, viewReturn, offset)
+// Not just after the window was kept off earlier sections drawn above it: a drawing at
+// the top then is one the surface made before it took that move.
+function settleView($: EngineInterface, offset: number, bodyRows: number) {
+  if (viewReturn === undefined && Date.now() - viewKeptAt < VIEW_REDRAW_MS) return
+  const move = viewMoveOf(viewPlace, viewReturn, offset, bodyRows)
   if (move === undefined) return
   if (move.to !== 'end') viewReturn = undefined
   const moves = personMoves
@@ -1289,6 +1292,7 @@ async function placeViewAtEnd($: EngineInterface) {
   viewPlace = 'end'
   viewReturn = undefined
   viewGrowth = undefined
+  viewKeptAt = 0
   try {
     await update($, viewFrom, () => null)
   } catch {
@@ -1305,6 +1309,8 @@ type Growth = ViewGrowth & { from: number; isDrawn: boolean; at: number; tries: 
 let viewGrowth: Growth | undefined
 // Whether this plugin's move to the window's top is one keeping it off them (keepViewPlace).
 let viewKeeping = false
+// When the window was last kept off them, by that move or the person's carried down by them.
+let viewKeptAt = 0
 // How many moves try to keep the window off them, VIEW_SETTLE_MS apart, before it is left
 // be; and how long they hold off more earlier sections.
 const KEEP_TRIES = 6
@@ -2057,9 +2063,11 @@ export const register: Register = on => {
     }
     const result = await next(move)
     if (result.deny === undefined) {
+      const isKept = (kept !== undefined && kept.nudge === 0) || grown !== undefined
       if (kept !== undefined && kept.nudge !== 0 && growth !== undefined) growth.nudge += kept.nudge
       else viewPlace = viewPlaceOf(move)
-      if (viewGrowth === growth && ((kept !== undefined && kept.nudge === 0) || grown !== undefined)) viewGrowth = undefined
+      if (isKept) viewKeptAt = Date.now()
+      if (viewGrowth === growth && isKept) viewGrowth = undefined
     }
     if (growth !== undefined && (kept !== undefined || grown !== undefined)) {
       const how = kept === undefined ? 'kept on the person\'s move' : kept.nudge === 0 ? 'kept' : 'nudged'
@@ -2102,7 +2110,7 @@ export const register: Register = on => {
   on('ui.render', { component: 'Pane', requestId: VIEW }, async ($, e) => {
     const { step, end } = traceView(`began: ${e.surface}, window at ${e.props.scroll?.offset} of ${e.props.scroll?.bodyRows} rows`)
     try {
-      settleView($, e.props.scroll.offset)
+      settleView($, e.props.scroll.offset, e.props.scroll.bodyRows)
       // drawn again as the pictures it waits for are read
       const read_ = await read($, picturesRead)
       step(`pictures read so far: ${read_}`)
