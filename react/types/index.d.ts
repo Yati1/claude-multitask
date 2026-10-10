@@ -11,6 +11,10 @@ export type Reaction = {
 // The person's message the main conversation's current turn answers.
 export type Answering = { id: string; mark: string }
 
+// Where the desktop draws a reaction on the person's message: on the bubble's
+// bottom-right corner, or under it, where the desktop shows the message's time and copy.
+export type Place = 'corner' | 'under'
+
 declare module 'claude-code' {
   interface PluginState {
     react: {
@@ -25,6 +29,9 @@ declare module 'claude-code' {
       // the person's message the turn running now answers; null when the turn came
       // from anything else (a notification, a plugin's prompt)
       answering: Answering | null
+      // where the desktop draws a reaction, as the person last chose with /react place
+      // (kept for every session); the corner until they choose
+      place: Place
     }
   }
 }

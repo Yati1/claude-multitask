@@ -54,3 +54,4 @@ Multitask has a dropdown, and thread-chat a `Threads` menu, in the band above th
 
 - `/react` turns reactions on in a chat (again to turn them off). It is per chat, and kept when the chat is restarted.
 - While they are on, a reply of a single emoji shows as a reaction on your message, not as a reply.
+- On the desktop the reaction sits on your message's bottom-right corner. `/react place under` moves it under the message, where its time and copy buttons show; `/react place corner` moves it back. The choice applies to every chat.
