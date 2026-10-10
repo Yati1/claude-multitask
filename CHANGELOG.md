@@ -7,6 +7,7 @@ Notable changes to the thread-chat, multitask and react mods. The format is base
 ### Changed
 
 - Changed multitask's thoughts to take four main colours in turn, dimming an ended thought's when reused.
+- Changed react's desktop reaction to sit on your message's corner, or under it with `/react place`.
 
 ### Fixed
 

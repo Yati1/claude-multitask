@@ -15,8 +15,9 @@ type Seen = {
 
 // The test stands in for the engine beneath the plugin, and records each prompt that
 // reached it with the notes beside it. `store` seeds the mod store; `null` leaves it
-// to the test. A person's message reading "hidden by a plugin" is drawn as nothing, as
-// another mod beneath may draw a row.
+// to the test. A person's message reading "hidden by a plugin" is drawn as nothing, and
+// one reading "tagged by a plugin" with a row of tags above it, as another mod beneath
+// may draw a row (thread-chat its thread tags).
 function engine(on: On, store: Record<string, unknown> | null = {}): Seen {
   const seen: Seen = { prompts: [], rows: [] }
   if (store !== null) mock.store(on, store)
@@ -27,6 +28,11 @@ function engine(on: On, store: Record<string, unknown> | null = {}): Seen {
     if (e.component === 'UserMessage' && e.props.text === 'hidden by a plugin') {
       const { Box } = $.ui.resolve(e)
       return Box({ display: 'none' })
+    }
+    if (e.component === 'UserMessage' && e.props.text === 'tagged by a plugin') {
+      const { Box, Text } = $.ui.resolve(e)
+      const tags = Box({ flexDirection: 'row', justifyContent: 'flex-end', children: [Text({ children: ['DESIGN'] })] })
+      return Box({ flexDirection: 'column', children: [tags, { type: 'engine', ref: 0 }] })
     }
     return { type: 'engine', ref: 0 }
   })
@@ -53,6 +59,9 @@ function engine(on: On, store: Record<string, unknown> | null = {}): Seen {
 
 const start = ($: Engine) => $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
 const flip = ($: Engine) => $.command.run({ command: 'react', args: '', origin: { kind: 'composer' }, presentation: {} as never })
+// The person's `/react place …`: what it answers.
+const placeReactions = async ($: Engine, args: string) =>
+  ((await $.command.run({ command: 'react', args, origin: { kind: 'composer' }, presentation: {} as never })) as { text?: string }).text
 const say = ($: Engine, text: string) => $.prompt.submit({ text, origin: { kind: 'composer' }, wait: false })
 
 // A row of the main conversation as the engine stores it: a person's message (or, by
@@ -111,8 +120,14 @@ async function badgeOf($: Engine, surface: 'terminal' | 'desktop', requestId: st
   }
 }
 
+// The props the engine refuses on any box that holds its own drawing of a message: such a
+// drawing is refused whole and the engine's drawn alone.
+const CONCEALING = ['display', 'overflow', 'position', 'width', 'height', 'minWidth', 'minHeight', 'top', 'left', 'right', 'bottom']
+
 // Where a person's message's reaction sits by it, read from the drawing: the way the box
-// holding both runs, their order, and the edge the reaction keeps to in its own row.
+// holding both runs, their order, and the edge the reaction keeps to in its own row, or
+// where it floats over the message's row. Any prop the engine refuses on a box round its
+// message is named after.
 async function placeOf($: Engine, surface: 'terminal' | 'desktop', requestId: string, said: string) {
   const row = await $.ui.mount({
     plugin: 'react',
@@ -122,18 +137,23 @@ async function placeOf($: Engine, surface: 'terminal' | 'desktop', requestId: st
     requestId,
   })
   try {
-    type Drawn = { type: string; props?: { flexDirection?: string; justifyContent?: string }; children?: unknown[] }
+    type Drawn = { type: string; props?: Record<string, unknown>; children?: unknown[] }
     const tree = (await row.drawn()) as Drawn
-    const holdsEngine = (node: unknown): boolean =>
-      typeof node === 'object' && node !== null && ((node as Drawn).type === 'engine' || ((node as Drawn).children ?? []).some(holdsEngine))
-    const parts = (tree.children ?? [])
-      .filter((child): child is Drawn => typeof child === 'object' && child !== null)
-      .map(child => {
-        if (holdsEngine(child)) return 'message'
-        const edge = child.props?.justifyContent
-        return edge === undefined ? 'reaction' : `reaction at ${edge}`
-      })
-    return `${tree.props?.flexDirection ?? 'row'}: ${parts.join(', ')}`
+    const isDrawn = (node: unknown): node is Drawn => typeof node === 'object' && node !== null
+    const holdsEngine = (node: unknown): boolean => isDrawn(node) && (node.type === 'engine' || (node.children ?? []).some(holdsEngine))
+    // The refused props on the boxes from the root down to the engine's drawing.
+    const round = (node: unknown): string[] =>
+      isDrawn(node) && holdsEngine(node) && node.type !== 'engine'
+        ? [...CONCEALING.filter(prop => node.props?.[prop] !== undefined), ...(node.children ?? []).flatMap(round)]
+        : []
+    const parts = (tree.children ?? []).filter(isDrawn).map(child => {
+      if (holdsEngine(child)) return 'message'
+      if (child.props?.position === 'absolute') return `reaction floating at bottom ${child.props.bottom}, right ${child.props.right}`
+      const edge = child.props?.justifyContent
+      return edge === undefined ? 'reaction' : `reaction at ${edge}`
+    })
+    const refused = round(tree)
+    return `${tree.props?.flexDirection ?? 'row'}: ${parts.join(', ')}${refused.length > 0 ? `; message under ${refused.join(', ')}` : ''}`
   } finally {
     await row.unmount()
   }
@@ -205,9 +225,10 @@ test("a reply of one emoji goes on as \"No response requested.\" and draws as a 
       badge: surface === 'desktop' ? 'Reaction: 👍🏽' : '(👍🏽)',
     })
   }
-  // On the desktop it sits on the line above the bubble, at the right as the bubble is;
-  // on the terminal it is the line under the message.
-  expect(await placeOf($, 'desktop', 'p1', 'thanks, that fixed the build')).toBe('column: reaction at flex-end, message')
+  // On the desktop it floats on the bubble's bottom-right corner, a line up from the room
+  // kept under the bubble for its time and copy buttons, nothing round the message; on the
+  // terminal it is the line under the message.
+  expect(await placeOf($, 'desktop', 'p1', 'thanks, that fixed the build')).toBe('column: message, reaction floating at bottom 1, right 0')
   expect(await placeOf($, 'terminal', 'p1', 'thanks, that fixed the build')).toBe('column: message, reaction')
   // A message with no reaction is the engine's drawing alone; one drawn under another id
   // is known by its text, where that is long enough to tell it from others.
@@ -266,6 +287,65 @@ test('a reply that became a reaction draws as nothing while on, and a message dr
   await storePrompt($, 'p1', 'hidden by a plugin')
   await step($, seen, [text('👍'), stop])
   expect(await badgeOf($, 'desktop', 'p1', 'hidden by a plugin')).toBe('hidden')
+})
+
+test('/react place moves the desktop\'s reaction between the bubble\'s corner and under it, for every session', async ($, on) => {
+  const store: Record<string, unknown> = {}
+  on('store.get', ($, e) => ({ value: store[e.key] }))
+  on('store.set', ($, e) => {
+    store[e.key] = e.value
+    return { value: undefined }
+  })
+  on('store.keys', () => ({ value: Object.keys(store) }))
+  const seen = engine(on, null)
+  await start($)
+  await flip($)
+  await storePrompt($, 'p1', 'thanks, that fixed the build')
+  await step($, seen, [text('👍'), stop])
+  const said = 'thanks, that fixed the build'
+
+  // On the corner until the person chooses; `/react place` says where.
+  expect(await placeReactions($, 'place')).toContain("on your message's bottom-right corner")
+  expect(await placeOf($, 'desktop', 'p1', said)).toBe('column: message, reaction floating at bottom 1, right 0')
+
+  // Under it, in the room the desktop keeps for the time and copy buttons, kept for later sessions.
+  expect(await placeReactions($, 'place under')).toBe('On the desktop, reactions now sit under your message, where its time and copy buttons show.')
+  expect(await placeOf($, 'desktop', 'p1', said)).toBe('column: message, reaction floating at bottom 0, right 0')
+  expect(store.place).toBe('under')
+  // The terminal's reaction stays on the line under the message.
+  expect(await placeOf($, 'terminal', 'p1', said)).toBe('column: message, reaction')
+
+  // A place it does not know changes nothing; back on the corner.
+  expect(await placeReactions($, 'place sideways')).toBe('"sideways" is not a place for reactions. Use `/react place corner` or `/react place under`.')
+  expect(store.place).toBe('under')
+  expect(await placeReactions($, 'Place Corner')).toBe("On the desktop, reactions now sit on your message's bottom-right corner.")
+  expect(await placeOf($, 'desktop', 'p1', said)).toBe('column: message, reaction floating at bottom 1, right 0')
+  expect(store.place).toBe('corner')
+
+  // Choosing a place leaves reactions on; a bare `/react` still turns them off.
+  expect(await badgeOf($, 'desktop', 'p1', said)).toBe('Reaction: 👍')
+  await flip($)
+  expect(await badgeOf($, 'desktop', 'p1', said)).toBe('none')
+})
+
+test('a new session draws reactions where the person last chose', async ($, on) => {
+  const seen = engine(on, { place: 'under' })
+  await start($)
+  await flip($)
+  await storePrompt($, 'p1', 'can you rerun the deploy')
+  await step($, seen, [text('✅'), stop])
+  expect(await placeOf($, 'desktop', 'p1', 'can you rerun the deploy')).toBe('column: message, reaction floating at bottom 0, right 0')
+})
+
+test('with a row a mod beneath draws above the message (thread tags), the reaction floats on the corner, adding no row', async ($, on) => {
+  const seen = engine(on)
+  await start($)
+  await flip($)
+  await storePrompt($, 'p1', 'tagged by a plugin')
+  await step($, seen, [text('👍'), stop])
+  // The mod's drawing, its tag row with the message, is the one thing in the flow; the
+  // reaction floats over the row's bottom-right corner, round nothing.
+  expect(await placeOf($, 'desktop', 'p1', 'tagged by a plugin')).toBe('column: message, reaction floating at bottom 1, right 0')
 })
 
 // A conversation's messages as the engine lists them, and the record a session kept.
