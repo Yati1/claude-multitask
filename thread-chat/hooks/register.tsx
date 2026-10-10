@@ -1172,6 +1172,10 @@ const FIELD_FILL = 'rgba(255,255,255,0.05)'
 // The Select's 6px either side of its text and caret, from its outer edge: 5px inside
 // the Box's 1px border, in the band's ch.
 const FIELD_PADDING = 0.7
+// The gap between the rows of the menu's card, in the desktop's half lines: a quarter of
+// the band's line, about 5px, so a row (one line, about 19px, or a 20px slide switch)
+// comes about 24px after the last, as the options of the desktop's Select do.
+const MENU_ROW_GAP = 0.5
 
 // The band's "Threads" menu: its switches, then, while threads are on, the thread actions
 // (opening the thread view, starting a thread, managing the threads), which take the
@@ -1206,7 +1210,7 @@ async function drawMenu($: EngineInterface, e: Parameters<EngineInterface['ui'][
       >
         <Text color="text">Threads</Text>
         <Svg source={CARET_PICTURE} alt="menu" width={CARET_GAP + CARET_SIZE} height={CARET_SIZE} />
-        <Box position="absolute" display="none" hover={{ display: 'flex' }} flexDirection="column" rowGap={2}>
+        <Box position="absolute" display="none" hover={{ display: 'flex' }} flexDirection="column" rowGap={MENU_ROW_GAP}>
           {switches.map(s => drawMenuRow($, desktop, s))}
           {actions}
         </Box>
