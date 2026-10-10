@@ -674,6 +674,110 @@ test('while filtering, rows of no thread show only since the last message', asyn
   expect(await isHidden(oldTool)).toBe(false)
 })
 
+// The menu's switch for whether picking threads filters the chat.
+const FILTER_SWITCH = 'filter-chat'
+
+test("with the menu's filter off, a pick leaves every row in the chat and still says where unheaded messages go", async ($, on) => {
+  const prompts = engine(on)
+  await flipThreads($)
+  await $.prompt.submit(say('# design\nhello\n# perf\nfast?'))
+
+  const model = { kind: 'model', model: 'test' } as const
+  const stored = (uuid: string, door: 'prompt' | 'response', content: { type: string; [field: string]: unknown }[]) =>
+    $.session.append({
+      message: door === 'prompt' ? { type: 'user', role: 'user', content } : { type: 'assistant', role: 'assistant', content },
+      door,
+      origin: door === 'prompt' ? { kind: 'composer' } : model,
+      uuid,
+    })
+  // an earlier exchange, then the latest message
+  await stored('p1', 'prompt', [{ type: 'text', text: '# design\nhello\n# perf\nfast?' }])
+  await stored('a1', 'response', [{ type: 'text', text: 'just chatting' }])
+  await stored('a2', 'response', [{ type: 'tool_use', id: 'toolu_old', name: 'Read', input: {} }])
+  await stored('a3', 'response', [{ type: 'text', text: 'top line\n# design\nuse a queue\n# perf\nit is fine' }])
+  await stored('p2', 'prompt', [{ type: 'text', text: 'what now?' }])
+
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const mount = <T extends object>(target: T) => $.ui.mount({ plugin: 'thread-chat', surface, ...target } as never)
+    const oldChat = await mount({ ...assistantRow('just chatting'), requestId: 'a1' })
+    const oldTool = await mount(toolRow('toolu_old'))
+    const reply = await mount({ ...assistantRow('top line\n# design\nuse a queue\n# perf\nit is fine'), requestId: 'a3' })
+    const mine = await mount({ ...userRow('# perf\nmine'), requestId: 'p1' })
+    const band = await $.ui.mount({ plugin: 'thread-chat', surface, ...BAND })
+    // A chip or slide switch on the desktop is clicked; a Button on the terminal is pressed.
+    const pick = async (name: string) => {
+      if (surface === 'desktop') await band.pointer({ type: 'down', x: 1, y: 0, button: 'left', in: `thread:${name}` })
+      else await band.press({ key: `thread:${name}` })
+    }
+    const flipFilter = async () => {
+      if (surface === 'desktop') await band.pointer({ type: 'down', x: 1, y: 0, button: 'left', in: `switch:${FILTER_SWITCH}` })
+      else await flipSwitch(band, FILTER_SWITCH)
+    }
+    // Whether every row of the chat shows: none hidden, every section of the reply drawn.
+    const isWhole = async () =>
+      (await oldChat.find({ text: /just chatting/ })) !== undefined &&
+      !(await isHidden(oldTool)) &&
+      (await reply.find({ text: /top line/ })) !== undefined &&
+      (await tagOf(reply, 'perf')) !== undefined &&
+      (await mine.find({ text: /mine/ })) !== undefined
+    // How the design pill is drawn: picked, as where unheaded messages go; and whether
+    // the perf pill, not picked, is faded.
+    const pills = async () => {
+      if (surface === 'terminal') {
+        const design = await band.find({ key: 'thread:design' })
+        const perf = await band.find({ key: 'thread:perf' })
+        return { design: String(design?.props.label), isPicked: design?.props.variant === 'primary', isPerfFaded: perf?.props.dimColor === true }
+      }
+      const drawn = await band.drawn()
+      const hit = await band.find({ key: 'thread:design' })
+      return {
+        design: String(pillPictures(drawn, 'chip:design').rest?.alt),
+        isPicked: (hit?.props.props as { isOn?: boolean } | undefined)?.isOn === true,
+        isPerfFaded: /\sopacity="/.test(String(pillPictures(drawn, 'chip:perf').rest?.source)),
+      }
+    }
+    const target = surface === 'terminal' ? 'design ➤' : 'design: messages with no heading go here'
+
+    // the filter on, as at first: a pick hides the rows of other threads and of none
+    expect(await switchOf(band, FILTER_SWITCH)).toBe(surface === 'terminal' ? undefined : 'on')
+    await pick('design')
+    for (const row of [oldChat, oldTool, reply, mine]) await row.redraw()
+    expect(await oldChat.find({ text: /just chatting/ })).toBeUndefined()
+    expect(await isHidden(oldTool)).toBe(true)
+    expect(await tagOf(reply, 'perf')).toBeUndefined()
+    expect(await mine.find({ text: /mine/ })).toBeUndefined()
+    expect(await pills()).toEqual({ design: target, isPicked: true, isPerfFaded: true })
+
+    // off, every row shows again at once (no redraw asked for), the pick standing
+    await flipFilter()
+    expect(await switchOf(band, FILTER_SWITCH)).toBe('off')
+    expect(await isWhole()).toBe(true)
+    expect(await pills()).toEqual({ design: target, isPicked: true, isPerfFaded: false })
+
+    // another pick changes nothing in the chat
+    await pick('perf')
+    for (const row of [oldChat, oldTool, reply, mine]) await row.redraw()
+    expect(await isWhole()).toBe(true)
+    await pick('perf')
+
+    // a message with no heading still goes to the one picked thread
+    await $.prompt.submit(say('and the cache?'))
+    expect(prompts.at(-1)).toContain('This message belongs to the thread "design": the user wrote it with that thread picked')
+
+    // on again, the pick filters the chat again
+    await flipFilter()
+    expect(await switchOf(band, FILTER_SWITCH)).toBe('on')
+    expect(await oldChat.find({ text: /just chatting/ })).toBeUndefined()
+    expect(await isHidden(oldTool)).toBe(true)
+    expect(await tagOf(reply, 'perf')).toBeUndefined()
+    await $.prompt.submit(say('and the queue?'))
+    expect(prompts.at(-1)).toContain('the user wrote it while viewing that thread alone')
+
+    await pick('design')
+    for (const site of [oldChat, oldTool, reply, mine, band]) await site.unmount()
+  }
+})
+
 test('with one thread picked, a message with no heading goes to that thread', async ($, on) => {
   const prompts = engine(on)
   await flipThreads($)
@@ -1326,9 +1430,9 @@ test('a long desktop transcript draws Clients only in the band and the one open 
   }
   expect(await clientsInRows()).toBe(0)
 
-  // the band: one per thread, and one per switch in its menu (threads on, the agent's)
+  // the band: one per thread, and one per switch in its menu (threads on, the agent's, the filter's)
   const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...BAND })
-  expect(await band.findAll({ type: 'Client' })).toHaveLength(threadCount + 2)
+  expect(await band.findAll({ type: 'Client' })).toHaveLength(threadCount + 3)
 
   // an open picker adds its pills, at most one per thread and "none"; opening another closes it
   await rows[1]?.press({ key: 'tag:design' })
@@ -1409,7 +1513,7 @@ test('the band keeps one row with 12 threads beside another mod, and nothing the
       const menu = menuPath?.at(-1)
       const card = (menu?.children ?? []).find(n => reveals.includes(n as Drawn)) as Drawn | undefined
       expect(card !== undefined && isPlaced(card)).toBe(true)
-      expect((card?.children ?? []).flatMap(picturesIn)).toEqual(['On in this chat: on', 'Agent may start threads: off'])
+      expect((card?.children ?? []).flatMap(picturesIn)).toEqual(['On in this chat: on', 'Agent may start threads: off', 'Filter the chat: on'])
       expect(elementsOf(card).filter(n => n.props?.key === 'thread-view').map(n => n.type)).toEqual(['Button'])
       const lit = reveals.filter(n => n !== card)
       expect(lit.map(picturesShown)).toEqual(Array(12).fill(1))

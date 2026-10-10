@@ -285,6 +285,37 @@ test('the thread view shows the picked threads alone, earlier replies too, and n
   expect((await sectionsOf(pane)).at(-1)).toBe('Claude: later still')
 })
 
+test("the Threads menu's filter, turned off for the chat, leaves the view to the picked threads", async ($, on) => {
+  engine(on)
+  await flipThreads($)
+  await $.prompt.submit(say('# design\nhello\n# perf\nfast?'))
+  const store = (uuid: string, door: 'prompt' | 'response', content: Block[]) =>
+    $.session
+      .append({
+        message:
+          door === 'response' ? { type: 'assistant', role: 'assistant', content } : { type: 'user', role: 'user', content },
+        door,
+        origin: door === 'prompt' ? { kind: 'composer' } : model,
+        uuid,
+      })
+      .catch(() => undefined)
+  await store('p1', 'prompt', [{ type: 'text', text: '# design\nhello\n# perf\nfast?' }])
+  await store('a1', 'response', [{ type: 'text', text: 'the plan\n# design\nuse a queue\n# perf\nit is fine' }])
+
+  const pane = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...PANE })
+  const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...BAND })
+  await band.press({ key: 'thread:design' })
+  const designAlone = ['you: hello', 'Claude: use a queue']
+  expect(await sectionsOf(pane)).toEqual(designAlone)
+
+  // the menu's filter off: the view still shows the picked thread alone
+  await band.press({ key: 'threads' })
+  await band.press({ key: 'filter-chat' })
+  expect((await band.find({ key: 'filter-chat' }))?.props.label).toBe('(● )')
+  await pane.redraw()
+  expect(await sectionsOf(pane)).toEqual(designAlone)
+})
+
 test('the view puts a message sent to the one picked thread, and a moved part, where the chat does', async ($, on) => {
   engine(on)
   await flipThreads($)
