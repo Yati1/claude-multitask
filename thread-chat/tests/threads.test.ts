@@ -137,7 +137,7 @@ async function pickIn(band: { select: (target: { key: string; value: string }) =
 // Opens the band's menu where a press opens it (the terminal), at its first rows; the
 // desktop's card is drawn whether or not it shows.
 async function openMenu(band: Band) {
-  if ((await band.find({ key: MENU }))?.props.label !== 'Threads ▾') return
+  if ((await band.find({ key: MENU }))?.props.label !== '⚙ ▾') return
   await band.press({ key: MENU })
   await band.redraw()
 }
@@ -475,7 +475,7 @@ test('until /threads turns threads on, a session is left as it is: its rows, its
   expect(prompts.at(-1)).toBe('# design\na')
   // its band holds only the menu, threads off in it, and the model starts no thread
   const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...BAND })
-  expect((await band.findAll({ type: 'Svg' })).map(p => p.props.alt)).toEqual(['menu', 'On in this chat: off'])
+  expect((await band.findAll({ type: 'Svg' })).map(p => p.props.alt)).toEqual(['Threads menu', 'menu', 'On in this chat: off'])
   expect(await band.find({ text: /start a thread/ })).toBeUndefined()
   expect(await band.find({ key: MENU })).toBeDefined()
   expect(await switchOf(band, THREADS_SWITCH)).toBe('off')
@@ -1760,17 +1760,18 @@ test('the band keeps one row with 12 threads beside another mod, and nothing the
     expect(await choiceKeys(band)).toEqual(names)
     const picker = pathTo(tree, isPicker)
     const other = pathTo(tree, isOther)
-    // the menu before the picker, the thread view's row in it: on the desktop the menu is
+    // the menu after the picker, the thread view's row in it: on the desktop the menu is
     // the keyed Box its card hangs from, elsewhere a Button
     const menuPath = pathTo(tree, n => n.props?.key === MENU)
     expect(menuPath?.at(-1)?.type).toBe(surface === 'desktop' ? 'Box' : 'Button')
+    expect(all.indexOf(menuPath?.at(-1) as Drawn)).toBeGreaterThan(all.indexOf(picker?.at(-1) as Drawn))
     const inMenu = elementsOf(menuPath?.at(-1))
     expect(all.filter(n => n.props?.key === 'thread-view' && !inMenu.includes(n))).toEqual([])
 
     // the other mod shares the row and keeps its width; the threads' controls give way
     expect(shareOf(picker, other)).toMatchObject({ a: { flexShrink: 1, minWidth: 0 }, b: { flexShrink: 0 } })
     expect(shareOf(picker, other)?.row?.flexWrap).toBeUndefined()
-    // so does the menu, before the picker, which keeps its own width beside its dot
+    // so does the menu, after the picker, which keeps its own width beside its dot
     expect(shareOf(picker, menuPath)).toMatchObject({ a: { flexShrink: 1, minWidth: 0 }, b: { flexShrink: 0 } })
     expect(picker?.at(-2)?.props?.flexShrink).toBe(0)
     // nothing wraps

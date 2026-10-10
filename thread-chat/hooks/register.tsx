@@ -723,6 +723,19 @@ const CARET_PICTURE = [
   '</svg>',
 ].join('')
 
+// The menu button's settings cog, 14px square in the theme's text colour: the desktop
+// draws an Svg as an image, so it takes no colour from the text around it.
+const COG_PICTURE = [
+  `<svg xmlns="http://www.w3.org/2000/svg" width="${CARET_SIZE}" height="${CARET_SIZE}" viewBox="0 0 16 16">`,
+  '<style>.g{fill:#faf9f5}@media (prefers-color-scheme: light){.g{fill:#141413}}</style>',
+  '<path class="g" fill-rule="evenodd" d="M6.81 2.84L6.86 0.79L9.14 0.79L9.19 2.84A5.3 5.3 0 0 1 10.81 3.51L12.29 2.09',
+  'L13.91 3.71L12.49 5.19A5.3 5.3 0 0 1 13.16 6.81L15.21 6.86L15.21 9.14L13.16 9.19A5.3 5.3 0 0 1 12.49 10.81L13.91 12.29',
+  'L12.29 13.91L10.81 12.49A5.3 5.3 0 0 1 9.19 13.16L9.14 15.21L6.86 15.21L6.81 13.16A5.3 5.3 0 0 1 5.19 12.49L3.71 13.91',
+  'L2.09 12.29L3.51 10.81A5.3 5.3 0 0 1 2.84 9.19L0.79 9.14L0.79 6.86L2.84 6.81A5.3 5.3 0 0 1 3.51 5.19L2.09 3.71L3.71 2.09',
+  'L5.19 3.51A5.3 5.3 0 0 1 6.81 2.84ZM5.7 8a2.3 2.3 0 1 0 4.6 0a2.3 2.3 0 1 0 -4.6 0Z"/>',
+  '</svg>',
+].join('')
+
 const CHIP_HEIGHT = 20
 
 const escapeXml = (text: string) =>
@@ -1177,14 +1190,14 @@ const FIELD_PADDING = 0.7
 // comes about 24px after the last, as the options of the desktop's Select do.
 const MENU_ROW_GAP = 0.5
 
-// The band's "Threads" menu: its switches, then, while threads are on, the thread actions
-// (opening the thread view, starting a thread, managing the threads), which take the
-// switches' place past their first rows. On the desktop, a button drawn as the desktop
-// draws a Select (as the thread picker and Multitask's dropdown beside it): the field's
-// fill and its ring, stronger under the pointer, the radius, the padding, one line high,
-// the caret. The keyed Box it is holds them in a card the desktop lifts over the band
-// while the pointer is on the button or the card, or the focus is in them. Elsewhere, a
-// Button that shows or hides them beside it.
+// The band's threads menu, a settings cog: its switches, then, while threads are on,
+// the thread actions (opening the thread view, starting a thread, managing the threads),
+// which take the switches' place past their first rows. On the desktop, a button drawn
+// as the desktop draws a Select (as the thread picker and Multitask's dropdown beside
+// it): the field's fill and its ring, stronger under the pointer, the radius, the
+// padding, one line high, the cog, the caret. The keyed Box it is holds them in a card
+// the desktop lifts over the band while the pointer is on the button or the card, or the
+// focus is in them. Elsewhere, a Button that shows or hides them beside it.
 async function drawMenu($: EngineInterface, e: Parameters<EngineInterface['ui']['resolve']>[0]): Promise<RenderElement> {
   const isThreadsOn = await read($, isOn)
   // past its first rows (a new thread's name, managing the threads), the thread actions alone
@@ -1195,7 +1208,7 @@ async function drawMenu($: EngineInterface, e: Parameters<EngineInterface['ui'][
   const actions = isThreadsOn ? drawThreadActions($, menuUi, e.surface, await read($, threads), mode) : []
   if (e.surface === 'desktop') {
     const desktop = $.ui.resolve(e)
-    const { Box, Text, Svg } = desktop
+    const { Box, Svg } = desktop
     return (
       <Box
         key={MENU}
@@ -1208,7 +1221,7 @@ async function drawMenu($: EngineInterface, e: Parameters<EngineInterface['ui'][
         backgroundColor={FIELD_FILL}
         hover={{ borderColor: 'promptBorder' }}
       >
-        <Text color="text">Threads</Text>
+        <Svg source={COG_PICTURE} alt="Threads menu" width={CARET_SIZE} height={CARET_SIZE} />
         <Svg source={CARET_PICTURE} alt="menu" width={CARET_GAP + CARET_SIZE} height={CARET_SIZE} />
         <Box position="absolute" display="none" hover={{ display: 'flex' }} flexDirection="column" rowGap={MENU_ROW_GAP}>
           {switches.map(s => drawMenuRow($, desktop, s))}
@@ -1223,7 +1236,7 @@ async function drawMenu($: EngineInterface, e: Parameters<EngineInterface['ui'][
     <Box flexDirection="row" alignItems="center" columnGap={2}>
       <Button
         key={MENU}
-        label={isOpen ? 'Threads ▴' : 'Threads ▾'}
+        label={isOpen ? '⚙ ▴' : '⚙ ▾'}
         variant="secondary"
         onPress={() => toggleMenu($)}
       />
@@ -2249,8 +2262,7 @@ const pickerMarkPicture = (color: string | undefined) =>
   '</svg>'
 
 // Threads' controls in the band: the thread picker after a mark of the picked thread's
-// colour, or, with no threads to post to, how to start one. They take the room the band
-// has left and give way first.
+// colour, or, with no threads to post to, how to start one. They give way first.
 async function drawThreadControls(
   $: EngineInterface,
   e: Parameters<EngineInterface['ui']['resolve']>[0],
@@ -2265,7 +2277,7 @@ async function drawThreadControls(
 
   if (active.length === 0) {
     return (
-      <Box flexDirection="row" alignItems="center" flexGrow={1} flexShrink={1} minWidth={0}>
+      <Box flexDirection="row" alignItems="center" flexShrink={1} minWidth={0}>
         <Text dimColor wrap="truncate-end">
           start a thread with # name
         </Text>
@@ -2296,7 +2308,7 @@ async function drawThreadControls(
       mark = picked !== undefined ? <Text backgroundColor={picked.color}> </Text> : dot(picked)
     }
     return (
-      <Box flexDirection="row" alignItems="center" flexGrow={1} flexShrink={1} minWidth={0}>
+      <Box flexDirection="row" alignItems="center" flexShrink={1} minWidth={0}>
         <Box flexDirection="row" alignItems="center" columnGap={1} flexShrink={0} {...tint}>
           {mark}
           <Select
@@ -2963,9 +2975,9 @@ export const register: Register = on => {
     return <Box display="none" />
   })
 
-  // The band above the prompt: thread-chat's menu, then, while threads are on, the thread
-  // picker, taking the room left and giving way first. They sit before what other mods
-  // draw there, which keeps its width. The mobile app draws no menu: /threads and
+  // The band above the prompt: while threads are on, the thread picker, giving way first,
+  // then thread-chat's menu right after it. They sit before what other mods draw there,
+  // which keeps its width. The mobile app draws no menu: /threads and
   // /thread-view are there.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const below = await next(e)
@@ -2978,8 +2990,8 @@ export const register: Register = on => {
 
     const mine = (
       <Box flexDirection="row" alignItems="center" columnGap={1} flexGrow={1} flexShrink={1} minWidth={0}>
-        {menu !== undefined && <Box flexShrink={0}>{menu}</Box>}
         {on_ && (await drawThreadControls($, e))}
+        {menu !== undefined && <Box flexShrink={0}>{menu}</Box>}
       </Box>
     )
     if (below.type === 'engine') return mine

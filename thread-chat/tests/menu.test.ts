@@ -68,21 +68,21 @@ function picturesIn(node: unknown): string[] {
 }
 
 // The desktop menu's switches as drawn: each one's slide switch, by its picture's alt,
-// in the menu after its caret.
+// in the menu after its cog and caret.
 const switchesOf = async (band: { drawn: () => Promise<unknown> }) =>
-  picturesIn(keyedIn(await band.drawn(), MENU)).filter(alt => alt !== 'menu')
+  picturesIn(keyedIn(await band.drawn(), MENU)).filter(alt => alt !== 'Threads menu' && alt !== 'menu')
 
 // A press on a slide switch's hit area, as a click on it.
 const clickSwitch = (band: { pointer: (p: never) => Promise<unknown> }, key: string) =>
   band.pointer({ type: 'down', x: 1, y: 0, button: 'left', in: `switch:${key}` } as never)
 
-test('the desktop draws a Threads button like its Select, its switches in a card the pointer reveals; nothing below the input', async ($, on) => {
+test('the desktop draws a cog button like its Select, its switches in a card the pointer reveals; nothing below the input', async ($, on) => {
   engine(on)
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
   const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...BAND })
 
   // the button: a keyed Box, one line high, with the Select's ring (stronger under the
-  // pointer), fill, padding and caret, reading Threads
+  // pointer), fill, padding and caret, its label a settings cog
   const button = keyedIn(await band.drawn(), MENU)
   expect(button?.type).toBe('Box')
   expect(button?.props).toMatchObject({
@@ -93,8 +93,10 @@ test('the desktop draws a Threads button like its Select, its switches in a card
     backgroundColor: 'rgba(255,255,255,0.05)',
   })
   expect(button?.hover).toEqual({ borderColor: 'promptBorder' })
-  expect(await band.find({ type: 'Text', text: 'Threads' })).toBeDefined()
-  const caret = await band.find({ type: 'Svg' })
+  expect(await band.find({ type: 'Text', text: 'Threads' })).toBeUndefined()
+  const [cog, caret] = await band.findAll({ type: 'Svg' })
+  expect(cog?.props).toMatchObject({ alt: 'Threads menu', width: 14, height: 14 })
+  expect(String(cog?.props.source)).toContain('fill-rule="evenodd"')
   expect(caret?.props).toMatchObject({ alt: 'menu', width: 20, height: 14 })
   expect(String(caret?.props.source)).toContain('d="M4 6l4 4 4-4"')
 
@@ -160,20 +162,20 @@ test("the desktop menu's labels and slide switches flip threads, the agent switc
   expect(reply.text).toBe('Threads are off in this chat; /threads turns them on.')
 })
 
-test('the terminal opens and shuts the menu with a press on Threads, its switches beside it', async ($, on) => {
+test('the terminal opens and shuts the menu with a press on its cog, its switches beside it', async ($, on) => {
   engine(on)
   await $.session.start({ cwd: '.', surface: 'terminal', isInteractive: true })
   const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...BAND })
   const labelOf = async (key: string) => (await band.find({ key }))?.props.label
 
   // shut, the button alone
-  expect(await band.find({ key: MENU })).toMatchObject({ type: 'Button', props: { label: 'Threads ▾' } })
+  expect(await band.find({ key: MENU })).toMatchObject({ type: 'Button', props: { label: '⚙ ▾' } })
   expect(await band.find({ key: THREADS_SWITCH })).toBeUndefined()
 
   // open, a switch per row beside it, off
   await band.press({ key: MENU })
   await band.redraw()
-  expect(await labelOf(MENU)).toBe('Threads ▴')
+  expect(await labelOf(MENU)).toBe('⚙ ▴')
   expect(await band.find({ text: 'On in this chat' })).toBeDefined()
   expect(await labelOf(THREADS_SWITCH)).toBe('(● )')
   expect(await band.find({ key: VIEW })).toBeUndefined()
@@ -195,10 +197,10 @@ test('the terminal opens and shuts the menu with a press on Threads, its switche
   expect(await labelOf(AGENT_SWITCH)).toBe('( ●)')
   expect((await $.tool.call({ tool: TOOL, tool_use_id: 't1', name: 'ideas' })).deny).toBeUndefined()
 
-  // Threads again shuts it
+  // the cog again shuts it
   await band.press({ key: MENU })
   await band.redraw()
-  expect(await labelOf(MENU)).toBe('Threads ▾')
+  expect(await labelOf(MENU)).toBe('⚙ ▾')
   expect(await band.find({ key: THREADS_SWITCH })).toBeUndefined()
   expect(await band.find({ key: FILTER_SWITCH })).toBeUndefined()
   expect(await band.find({ key: VIEW })).toBeUndefined()
