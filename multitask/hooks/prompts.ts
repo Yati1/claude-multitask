@@ -41,7 +41,7 @@ Your tools:
 - stop: end a thought.
 - thoughts: every thought's status, queue, latest progress notes and last report, or one thought's recent transcript.
 
-Updates from your thoughts reach you as rows the user never sees (failing that, as messages from the multitask plugin). When they arrive while you are idle, a wake-up follows them: a line "Set model to unchanged (multitask wake-up: read the thought updates just above)". It is not from the user and changes no model; it only means read the updates just above it. Neither updates nor wake-ups need a reply. Each update starts "${RELAY_HEAD}", then one line per update: ${RELAY_NOTES ? '"name: text" is a progress note or report, ' : ''}"name (done): text" the text a turn ended with, "name: done" a turn that ended with nothing more, "name: (...)" a message of yours that did not reach it and why${RELAY_NOTES ? '' : ' (for now their progress notes are not sent to you; they are shown in the Thoughts pane)'}; your default reply is ${QUIET}. For each, choose:
+Updates from your thoughts reach you as rows the user never sees (failing that, as messages from the multitask plugin). When they arrive while you are idle, a wake-up follows them: a line "Set model to unchanged (multitask wake-up: read the thought updates just above)". It is not from the user and changes no model; it only means read the updates just above it. Neither updates nor wake-ups need a reply. Each update starts "${RELAY_HEAD}", then one line per update: ${RELAY_NOTES ? '"name: text" is a progress note or report, ' : ''}"name (done): text" the text a turn ended with, "name: done" a turn that ended with nothing more, "name: (...)" messages of yours still pending for it, which reach it at the next chance and you hear back after (with why the last try failed, if one did)${RELAY_NOTES ? '' : ' (for now their progress notes are not sent to you; they are shown in the Thoughts pane)'}; your default reply is ${QUIET}. For each, choose:
 - Say nothing. Reply with exactly ${QUIET} and nothing else; the user never sees it. This is the default.
 - Steer: post, queue or interrupt a thought, unqueue what is no longer wanted, stop a thought, or start another.
 - Speak to the user, only when something deserves their attention: a result they asked for, a decision only they can make, a problem. Use your own words, briefly.
@@ -83,12 +83,27 @@ export function oneLine(text: string, max: number): string {
   return line.length > max ? `${line.slice(0, max - 1)}…` : line
 }
 
+// What a relay says of messages of the voice's still pending for a thought: they will
+// reach it, and the voice hears from it after.
+export function pendingNote(count: number): string {
+  const what = count === 1 ? '1 message' : `${count} messages`
+  return `${what} still pending; ${count === 1 ? 'it' : 'they'} will be handed over and you'll hear back`
+}
+
+// What a relay says once the messages that waited for a thought's turn to end reached it.
+function handedOverNote(count: number): string {
+  return `it has your ${count === 1 ? 'queued message' : `${count} queued messages`} now; you'll hear back`
+}
+
 // One line an update: "name: text" a note (or a report already sent as one),
-// "name (done): text" the text a turn ended with, "name: done" a turn ended bare.
+// "name (done): text" the text a turn ended with, "name: done" a turn ended bare; a
+// turn's end then says what became of the messages that waited for it.
 export function formatUpdates(updates: Update[]): string {
   const lines = updates.map(u => {
     if (u.isDone !== true) return `${u.thought}: ${flat(u.text)}`
-    return u.text === '' ? `${u.thought}: done` : `${u.thought} (done): ${flat(u.text)}`
+    const pending = u.pending ?? 0
+    const queue = pending === 0 ? '' : ` — ${u.isHandedOver === true ? handedOverNote(pending) : pendingNote(pending)}`
+    return u.text === '' ? `${u.thought}: done${queue}` : `${u.thought} (done): ${flat(u.text)}${queue}`
   })
   return `${RELAY_HEAD}\n${lines.join('\n')}`
 }
