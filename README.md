@@ -2,6 +2,8 @@
 
 Talk to Claude while it works, keep every topic in its own thread, and get a quick emoji when a reply would be overkill. Three Claude Code mods: **multitask**, **thread-chat** and **react**.
 
+![Demo: replies sorted into colour-coded threads, the thread view filtered to one thread, a background task running as a dot while the chat carries on, and an emoji reaction](docs/demo.gif)
+
 ## Why
 
 - **Talk while it works.** With multitask you talk to one **voice**, and its **thoughts** (background agents) do the work. The voice is always free to talk.

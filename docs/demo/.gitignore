@@ -1,0 +1,6 @@
+node_modules/
+# rendered frames and stills
+frames/
+snaps/
+# the Claude desktop app's font, copied by fonts.js; not ours to publish
+fonts/

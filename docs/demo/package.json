@@ -1,0 +1,17 @@
+{
+  "name": "claude-multitask-demo",
+  "private": true,
+  "description": "Renders docs/demo.gif, the README's animation of the thread-chat, multitask and react mods",
+  "scripts": {
+    "fonts": "node fonts.js",
+    "frames": "node render.js",
+    "encode": "node encode.js",
+    "snap": "node render.js snap",
+    "build": "node fonts.js && node render.js && node encode.js"
+  },
+  "dependencies": {
+    "gifenc": "1.0.3",
+    "puppeteer-core": "25.13.0",
+    "sharp": "0.35.5"
+  }
+}
