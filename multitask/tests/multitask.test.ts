@@ -449,7 +449,7 @@ test('the voice is refused work, and its thoughts relay, queue and unqueue', asy
   await $.tool.call({ tool: 'mcp__multitask__tell', tool_use_id: 'c3', thought: 'auth-bug', message: 'keep', how: 'queue' })
   await $.tool.call({ tool: 'mcp__multitask__tell', tool_use_id: 'c4', thought: 'auth-bug', message: 'drop', how: 'queue' })
   await band.redraw()
-  expect((await band.find({ key: 'open-thoughts' }))?.props.label).toBe('thoughts 1 · 2 queued')
+  expect((await band.find({ key: 'open-thoughts' }))?.props.label).toBe('thoughts 1')
   await $.tool.call({ tool: 'mcp__multitask__unqueue', tool_use_id: 'c5', thought: 'auth-bug', index: 2 })
   expect(seen.sends).toHaveLength(0)
 

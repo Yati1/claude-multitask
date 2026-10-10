@@ -28,6 +28,7 @@ Notable changes to the thread-chat, multitask and react mods. The format is base
 ### Removed
 
 - Removed thread-chat's filter pills from above the prompt.
+- Removed the count of queued messages from multitask's `thoughts` button.
 
 ## 0.2.0 - 2026-10-10
 
