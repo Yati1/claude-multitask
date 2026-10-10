@@ -36,6 +36,7 @@ import {
   relayNames,
 } from './prompts'
 import { TELL_FIELD, drawThoughts } from './pane'
+import { FADE_MS, drawDots } from './band'
 
 const isOn = atom({ plugin: 'multitask', key: 'isOn' } as const, false)
 const thoughts = atom({ plugin: 'multitask', key: 'thoughts' } as const, [])
@@ -46,6 +47,7 @@ const expanded = atom({ plugin: 'multitask', key: 'expanded' } as const, [])
 const openReports = atom({ plugin: 'multitask', key: 'openReports' } as const, [])
 const heard = atom({ plugin: 'multitask', key: 'heard' } as const, {})
 const paneTick = atom({ plugin: 'multitask', key: 'paneTick' } as const, 0)
+const bandTick = atom({ plugin: 'multitask', key: 'bandTick' } as const, 0)
 const tellingTo = atom({ plugin: 'multitask', key: 'tellingTo' } as const, '')
 const colorTurn = atom({ plugin: 'multitask', key: 'colorTurn' } as const, 0)
 const showsAllEnded = atom({ plugin: 'multitask', key: 'showsAllEnded' } as const, false)
@@ -130,6 +132,11 @@ let keepTimer: Timer | undefined
 // What draws the Thoughts pane's ages afresh, AGE_TICK_MS after it was last drawn.
 let ageTick: Timer | undefined
 const AGE_TICK_MS = 60_000
+// What draws the band afresh when its dots next change (band.tsx), and when each running
+// thought's turn was last seen to end or it was stopped, by thought id, for its dot to
+// fade out by: kept here, as `settling` is, and set before the change it goes with.
+let bandTimer: Timer | undefined
+const endings = new Map<string, number>()
 // The settling of each thought's latest turn end, by thought id, with its name, which the
 // engine's notice or hand-back of that end waits for. Kept here, not in state: what one
 // dispatch reads of state stands still while it runs, so a wait for it would never see it.
@@ -814,8 +821,17 @@ async function handOver($: EngineInterface, id: string, also?: string): Promise<
   }
 }
 
+// A running thought's turn ended, or it was stopped, at `now`: its dot in the band fades
+// out from then. Ends from FADE_MS ago or more are forgotten.
+function noteEnding(id: string, now: number | undefined) {
+  if (now === undefined) return
+  for (const [one, at] of endings) if (now - at >= FADE_MS) endings.delete(one)
+  endings.set(id, now)
+}
+
 async function stopThought($: EngineInterface, id: string) {
   const now = await timeNow($)
+  if ((await read($, thoughts)).find(t => t.id === id)?.status === 'running') noteEnding(id, now)
   await patchThought($, id, t => ({ ...t, status: 'stopped', queued: [], interruptWith: null, isHandOverDue: false, endedAt: now }))
   forgetDue(id)
   try {
@@ -925,6 +941,8 @@ async function settleThought($: EngineInterface, id: string, reason: TurnComplet
   const status: ThoughtStatus = isFailed ? 'failed' : 'idle'
   let pending = 0
   const now = await timeNow($)
+  // A cut turn's thought goes on with the message it was cut for: its dot does not fade.
+  if (!isCut && t.status === 'running') noteEnding(id, now)
   await patchThought($, id, one => {
     if (one.status === 'stopped') return one
     const queued = withInterruption(one)
@@ -1417,15 +1435,22 @@ export const register: Register = (on, options) => {
     return <Text dimColor>◦ thought update{names.length > 0 ? `: ${names.join(', ')}` : ''}</Text>
   })
 
-  // The band above the prompt: Multitask's dropdown and, while Multitask is on or has
-  // thoughts left, `thoughts`. They sit after what other mods draw there, keeping their
-  // width while the others give way. The mobile app draws no dropdown: /multitask is there.
+  // The band above the prompt: a dot for each running thought (band.tsx), Multitask's
+  // dropdown and, while Multitask is on or has thoughts left, `thoughts`. They sit after
+  // what other mods draw there, keeping their width while the others give way. The mobile
+  // app draws no dropdown: /multitask is there. The dots' timed changes draw the band
+  // afresh by a write of `bandTick`, which it alone reads.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const below = await next(e)
     if (e.props.hasSurvey) return below
 
     const on_ = await read($, isOn)
-    const live = (await read($, thoughts)).filter(t => t.status !== 'stopped')
+    const all = await read($, thoughts)
+    await read($, bandTick)
+    const { dots, redrawIn } = drawDots({ surface: e.surface, ui: $.ui.resolve(e), now: await timeNow($), endings }, all)
+    bandTimer?.cancel()
+    bandTimer = redrawIn === undefined ? undefined : $.clock.after(redrawIn, () => void update($, bandTick, n => n + 1))
+    const live = all.filter(t => t.status !== 'stopped')
     // The count is of the thoughts running now; an idle or failed one only keeps the button up.
     const running = live.filter(t => t.status === 'running').length
     const thoughtsLabel = running > 0 ? `thoughts ${running}` : 'thoughts'
@@ -1451,6 +1476,7 @@ export const register: Register = (on, options) => {
 
     const mine = (
       <Box flexDirection="row" alignItems="center" columnGap={1} flexShrink={0}>
+        {dots}
         {dropdown}
         {showsThoughts && (
           <Button key="open-thoughts" label={thoughtsLabel} onPress={() => void $.ui.open({ id: PANE, title: 'Thoughts' })} />
