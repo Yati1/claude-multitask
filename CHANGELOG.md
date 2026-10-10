@@ -10,6 +10,8 @@ Notable changes to the thread-chat, multitask and react mods. The format is base
 - Added a `Threads` menu above the prompt to thread-chat to turn threads on or off, and start and manage them.
 - Added a thread picker above the prompt to thread-chat to choose the thread unheaded messages go to.
 - Added `/thread-view trace` to thread-chat to show how the thread view was last opened and drawn.
+- Added ages to multitask's Thoughts pane, in the warning colour once a running thought goes quiet.
+- Added `tell` to each card in multitask's Thoughts pane to send that thought your own message.
 
 ### Changed
 
@@ -21,6 +23,8 @@ Notable changes to the thread-chat, multitask and react mods. The format is base
 - Changed thread-chat's thread view to show only your messages and each turn's final reply.
 - Changed thread-chat's thread view to open at the bottom and keep your place across tabs and new messages.
 - Changed thread-chat's thread view to load earlier messages as you scroll up or press its top line.
+- Changed multitask's Thoughts pane to label each card's task, notes, report and queued messages.
+- Changed multitask's Thoughts pane to list failed thoughts first and show a report's start on each folded line.
 
 ### Fixed
 
@@ -32,6 +36,7 @@ Notable changes to the thread-chat, multitask and react mods. The format is base
 - Fixed issue where multitask's queued messages never reached a finished thought in auto mode.
 - Fixed issue where thread-chat's thread view went blank, without saying why, when it failed to draw.
 - Fixed issue where thread-chat's thread view drew nothing once it held a dozen or so pasted pictures.
+- Fixed issue where multitask's Thoughts pane showed only the end of a long report when opened.
 
 ### Removed
 

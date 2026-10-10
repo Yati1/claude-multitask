@@ -22,12 +22,19 @@ export type Thought = {
   // whether its queue waits no longer for a turn to end: the turn it waited for ended, and
   // it goes to the thought at the next chance
   isHandOverDue?: boolean
+  // when it was started, or its latest turn began; when it wrote its latest note; when its
+  // latest turn ended or it was stopped (ms, by $.clock). Absent for a thought kept before
+  // they were noted.
+  startedAt?: number
+  notedAt?: number
+  endedAt?: number
 }
 
 // What a thought said, waiting to reach the voice: a progress note, or the end of a
 // turn (isDone), with the text it ended on or none. A turn's end tells how many of the
 // voice's messages waited for it (pending), and whether they have reached the thought
 // since; a note about such messages still pending is isPending, dropped once they reach it.
+// isFromPerson: not the thought's but the person's own message to it, from the Thoughts pane.
 export type Update = {
   thought: string
   text: string
@@ -35,6 +42,7 @@ export type Update = {
   pending?: number
   isHandedOver?: boolean
   isPending?: boolean
+  isFromPerson?: boolean
 }
 
 // What the voice was last told of a thought, by a relay or a what's-new note: its status,
@@ -59,6 +67,10 @@ declare module 'claude-code' {
       // thoughts whose last report the person opened in the Thoughts pane to read whole,
       // instead of its first line; a thought leaves it when it starts new work
       openReports: string[]
+      // counts the minutes the Thoughts pane has stood open, so its ages are drawn afresh
+      paneTick: number
+      // the thought whose card in the Thoughts pane has its field open to tell it something; '' none
+      tellingTo: string
     }
   }
 }
