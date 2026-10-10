@@ -463,6 +463,52 @@ test("the person's messages draw as the chat's bubbles: their words as typed, a 
   }
 })
 
+test("a bubble keeps the person's quotes and words in the order they typed them", async ($, on) => {
+  engine(on)
+  await flipThreads($)
+  // three replies to selections in one message, each quote followed by words on it
+  const typed = [
+    '<!-- reply 3 -->',
+    '> quoted A',
+    '',
+    'Text A',
+    '',
+    '<!-- reply -->',
+    '> quoted',
+    '> B',
+    'Text B',
+    '<!-- reply -->',
+    '> quoted C',
+    'Text C',
+  ].join('\r\n')
+  await $.session
+    .append({
+      message: { type: 'user', role: 'user', content: [{ type: 'text', text: typed }] },
+      door: 'prompt',
+      origin: { kind: 'composer' },
+      uuid: 'p1',
+    })
+    .catch(() => undefined)
+
+  // The filled bubble's parts in order: a quote's row as `> ` and its dim line, words
+  // as typed, each with the rows above it.
+  const partsOf = (node: unknown): string[] => {
+    if (typeof node !== 'object' || node === null) return []
+    const { type, props = {}, children = [] } = node as Drawn
+    if (type !== 'Box' || props.backgroundColor === undefined) return children.flatMap(partsOf)
+    return children.map(child => {
+      const { type: kind, props: row = {}, children: inner = [] } = child as Drawn
+      if (kind === 'Text') return shownIn(child)
+      return `${'\n'.repeat(Number(row.marginTop ?? 0))}> ${shownIn(inner.at(-1))}`
+    })
+  }
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const pane = await $.ui.mount({ plugin: 'thread-chat', surface, ...PANE })
+    expect(partsOf(await pane.drawn())).toEqual(['> quoted A', 'Text A', '\n> quoted B', 'Text B', '\n> quoted C', 'Text C'])
+    await pane.unmount()
+  }
+})
+
 test('the view files a quoted selection opening a message under the thread heading right after it', async ($, on) => {
   engine(on)
   await flipThreads($)

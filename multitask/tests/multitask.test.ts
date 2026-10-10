@@ -13,6 +13,7 @@ import {
   marksOf,
   relayNames,
 } from '../hooks/prompts'
+import type { KeptThoughts, Thought, ThoughtStatus } from '../types'
 
 type Seen = {
   prompts: string[]
@@ -80,6 +81,7 @@ function engine(
   if (store !== null) mock.store(on, store)
   on('session.id', () => ({ value: 'session-1' }))
   on('session.start', ($, e) => ({ cwd: e.cwd }))
+  on('session.end', ($, e) => ({ sessionId: e.sessionId }))
   on('agent.register', () => ({ value: { agent: 'multitask:thought' } }))
   on('tool.register', ($, e) => {
     seen.registered.push(e.name)
@@ -578,6 +580,183 @@ test('of sessions that know as much of a rewound one, it takes up the switch of 
   const seen = engine($, on, undefined, { 'session:old': kept(true, 1, SAID), 'session:later': kept(false, 2, SAID) })
   on('session.messages', () => ({ value: listed(SAID) }))
   expect(await isOnAtStart($, seen)).toBe(false)
+})
+
+// The store as the test reads it, from `entries`: what the mod kept, by key.
+function liveStore(on: On, entries: Record<string, unknown> = {}): Record<string, unknown> {
+  const store = { ...entries }
+  on('store.get', ($, e) => ({ value: store[e.key] }))
+  on('store.set', ($, e) => {
+    store[e.key] = e.value
+    return { value: undefined }
+  })
+  on('store.delete', ($, e) => {
+    delete store[e.key]
+    return { value: undefined }
+  })
+  on('store.keys', () => ({ value: Object.keys(store) }))
+  return store
+}
+
+// A thought as the store keeps it, its agent's id its name; one that ended has a report.
+const keptThought = (id: string, status: ThoughtStatus, endedAt?: number, color = '#4fa3e0'): Thought => ({
+  id,
+  name: id,
+  task: `the brief for ${id}`,
+  color,
+  status,
+  queued: [],
+  lastText: status === 'running' ? '' : `The report of ${id}.`,
+  notes: [],
+  turnId: status === 'running' ? `turn-${id}` : null,
+  interruptWith: null,
+  ...(endedAt !== undefined && { endedAt }),
+})
+
+// The Thoughts pane, mounted as the person opens it.
+const PANE = {
+  plugin: 'multitask',
+  surface: 'terminal',
+  component: 'Pane',
+  requestId: 'multitask-thoughts',
+  props: { title: 'Thoughts', isFocused: false, bodyColumns: 80, placement: 'dock', scroll: { offset: 0, bodyRows: 200 }, view: {} },
+} as const
+
+const END = { reason: 'prompt_input_exit', sessionId: 'session-1', resume: { id: 'session-1' } } as const
+
+test('a session keeps its thoughts for its next run a moment after they change, and its notes as it ends', async ($, on) => {
+  const store = liveStore(on)
+  const clock = mock.clock(on, { now: 1000 })
+  engine($, on, undefined, null)
+  await $.session.start({ cwd: '.', surface: 'terminal', isInteractive: true })
+  await $.command.run({ command: 'multitask', args: '', origin: { kind: 'composer' }, presentation: {} as never })
+  await $.tool.call({ tool: 'mcp__multitask__think', tool_use_id: 'c1', name: 'auth bug', task: 'Find why login fails' })
+  const says = (uuid: string, text: string) =>
+    $.session.append({
+      message: { type: 'assistant', role: 'assistant', content: [{ type: 'text', text }] },
+      door: 'response',
+      origin: { kind: 'model', model: 'test' },
+      uuid,
+      agentId: 'agent-1',
+    })
+  const kept = () => store['thoughts:session-1'] as KeptThoughts | undefined
+
+  // Kept a moment after it started, not at once.
+  expect(kept()).toBeUndefined()
+  await clock.advance(2000)
+  expect(kept()).toMatchObject({
+    at: 3000,
+    thoughts: [{ id: 'agent-1', name: 'auth-bug', task: 'Find why login fails', status: 'running', notes: [] }],
+  })
+
+  // A note alone is not kept straight away; it goes with the next change.
+  await says('u1', 'Checking the token')
+  await clock.advance(2000)
+  expect(kept()?.thoughts[0]?.notes).toEqual([])
+  await $.turn.complete({ ...finished('agent-1'), answer: 'The token expires early.' })
+  await clock.advance(2000)
+  expect(kept()?.thoughts[0]).toMatchObject({ status: 'idle', lastText: 'The token expires early.', notes: ['Checking the token'] })
+
+  // Or as the session ends.
+  await says('u2', 'One more thing about the token')
+  await clock.advance(2000)
+  expect(kept()?.thoughts[0]?.notes).toEqual(['Checking the token'])
+  await $.session.end(END)
+  expect(kept()?.thoughts[0]?.notes).toEqual(['Checking the token', 'One more thing about the token'])
+})
+
+test("the store keeps a session's running thoughts and its most recently ended, 200 in all, each task cut short", async ($, on) => {
+  const ended = Array.from({ length: 205 }, (_, i) => keptThought(`t${i}`, 'idle', 1000 + i))
+  const long = { ...keptThought('long', 'running'), task: 'x'.repeat(5000) }
+  const store = liveStore(on, { 'session:session-1': kept(true, 1, []), 'thoughts:session-1': { at: 9000, thoughts: [long, ...ended] } })
+  engine($, on, [{ id: 'long', description: 'long', type: 'multitask:thought', status: 'running' }], null)
+  await $.session.start({ cwd: '.', surface: 'terminal', isInteractive: true })
+  await $.session.end(END)
+  const kept_ = store['thoughts:session-1'] as KeptThoughts
+  expect(kept_.thoughts.map(t => t.id)).toEqual(['long', ...ended.slice(6).map(t => t.id)])
+  expect(kept_.thoughts[0]?.task).toHaveLength(4000)
+})
+
+test('a restarted session takes up the thoughts it kept: one whose agent is gone reads done, what waited for it falls due', async ($, on) => {
+  const cut = { ...keptThought('cut', 'running', undefined, '#d9636a'), queued: ['and logout'], notes: ['Checking the token'] }
+  const seen = engine($, on, [{ id: 'busy', description: 'busy', type: 'multitask:thought', status: 'running' }], {
+    'session:session-1': kept(true, 1, []),
+    'thoughts:session-1': {
+      at: 300_000,
+      thoughts: [keptThought('busy', 'running'), cut, keptThought('done', 'idle', 240_000, '#58b36b'), keptThought('gone', 'stopped', 180_000)],
+    },
+  })
+  mock.clock(on, { now: 600_000 })
+  await $.session.start({ cwd: '.', surface: 'terminal', isInteractive: true })
+  const pane = await $.ui.mount(PANE)
+
+  // Its agent running still, `busy` runs on; `cut`, whose agent went with the last run, is
+  // done, as of when the store last kept it.
+  expect((await pane.find({ type: 'Text', text: /^Multitask is on/ }))?.text).toBe('Multitask is on · 1 running · 2 done · 1 stopped')
+  expect((await pane.findAll({ type: 'Button' })).map(b => b.key)).toEqual([
+    'expand:busy',
+    'tell:busy',
+    'stop:busy',
+    'expand:cut',
+    'stop:cut',
+    'expand:done',
+    'stop:done',
+    'expand:gone',
+  ])
+  expect((await pane.findAll({ type: 'Text', text: /^done / })).map(t => t.text)).toEqual(['done 5m ago', 'done 6m ago'])
+  // A done thought's glyph is a solid dot in its colour.
+  expect((await pane.findAll({ type: 'Text', text: '●' })).map(dot => dot.props.color)).toEqual(['#d9636a', '#58b36b'])
+
+  // The voice has heard of them all as they are: it is told nothing new of them.
+  await $.prompt.submit({ text: 'hello', origin: { kind: 'composer' }, wait: false })
+  expect(seen.prompts.at(-1)?.split('\n--\n').some(note => note.startsWith("What's new"))).toBe(false)
+  // What waited for `cut`'s turn to end goes to it at the next chance, resuming it.
+  await $.turn.start({ text: '', turnId: 'voice-1' })
+  expect(seen.sends.map(s => s.text)).toEqual(['and logout'])
+})
+
+test('a rewound or forked session, under a new id, takes up the thoughts of the session it came from and keeps them as its own', async ($, on) => {
+  const store = liveStore(on, {
+    'session:old': kept(true, 1, [...SAID, 'and a later message the rewind left behind']),
+    'thoughts:old': { at: 5000, thoughts: [keptThought('done', 'idle', 4000)] },
+    'session:unrelated': kept(false, 2, ['a different conversation altogether', 'with nothing in common at all']),
+    'thoughts:unrelated': { at: 6000, thoughts: [keptThought('other', 'idle', 5000)] },
+  })
+  engine($, on, [], null)
+  on('session.messages', () => ({ value: listed(SAID) }))
+  await $.session.start({ cwd: '.', surface: 'terminal', isInteractive: true })
+  const pane = await $.ui.mount(PANE)
+  expect((await pane.findAll({ type: 'Button' })).map(b => b.key)).toEqual(['expand:done', 'stop:done'])
+  expect((store['thoughts:session-1'] as KeptThoughts | undefined)?.thoughts.map(t => t.id)).toEqual(['done'])
+})
+
+test('the Thoughts pane lists the 16 most recently ended thoughts, the rest behind `N more`, and running ones always', async ($, on) => {
+  // Twenty done, the latest last, and one that failed before them all.
+  const done = Array.from({ length: 20 }, (_, i) => keptThought(`d${i + 1}`, 'idle', 1000 * (i + 1)))
+  engine($, on, [{ id: 'busy', description: 'busy', type: 'multitask:thought', status: 'running' }], {
+    'session:session-1': kept(true, 1, []),
+    'thoughts:session-1': { at: 30_000, thoughts: [keptThought('broke', 'failed', 500), ...done, keptThought('busy', 'running')] },
+  })
+  await $.session.start({ cwd: '.', surface: 'terminal', isInteractive: true })
+  const pane = await $.ui.mount(PANE)
+  const shown = async () => {
+    await pane.redraw()
+    return (await pane.findAll({ type: 'Button' })).flatMap(b => (b.key?.startsWith('expand:') === true ? [b.key.slice('expand:'.length)] : []))
+  }
+  const toggle = async () => {
+    const last = (await pane.findAll({ type: 'Button' })).at(-1)
+    return { key: last?.key, label: last?.text }
+  }
+  const latest = done.slice(4).reverse().map(t => t.id)
+
+  // The failed one ended before the sixteen most recent: it waits behind `5 more` with the oldest.
+  expect(await shown()).toEqual(['busy', ...latest])
+  expect(await toggle()).toEqual({ key: 'more-ended', label: '5 more' })
+  await $.ui.press({ plugin: 'multitask', key: 'more-ended' })
+  expect(await shown()).toEqual(['busy', 'broke', ...done.slice().reverse().map(t => t.id)])
+  expect(await toggle()).toEqual({ key: 'more-ended', label: 'less' })
+  await $.ui.press({ plugin: 'multitask', key: 'more-ended' })
+  expect(await shown()).toEqual(['busy', ...latest])
 })
 
 test("what is new from the thoughts goes beside the person's messages and after a relay, each thing once", async ($, on) => {

@@ -14,10 +14,14 @@ Notable changes to the thread-chat, multitask and react mods. The format is base
 - Changed thread-chat's `Threads` menu to also start threads, and merge, archive or delete them.
 - Changed thread-chat's `Filter the chat` to filter to the thread picked above the prompt, off at first.
 - Changed multitask's thoughts to take four main colours in turn, dimming an ended thought's when reused.
+- Changed a done thought's mark in multitask's Thoughts pane to a solid dot in its colour.
+- Changed multitask's Thoughts pane to list the 16 latest ended thoughts, the rest behind `N more`.
 
 ### Fixed
 
 - Fixed issue where thread-chat left a reply quote unthreaded when a thread heading followed it.
+- Fixed issue where thread-chat's thread view grouped several reply quotes above all your words.
+- Fixed issue where multitask's Thoughts pane lost its thoughts when the chat was restarted.
 
 ### Removed
 
