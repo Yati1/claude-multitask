@@ -10,11 +10,13 @@ import {
   holdsQuote,
   isOthersPrompt,
   keyOf,
+  leadingQuoteOf,
   nameOf,
   replyQuotesOf,
   rewriteHeadings,
   splitRunOns,
   splitSections,
+  withOpeningQuote,
 } from './parse'
 import type { RunOn, Section } from './parse'
 import {
@@ -216,7 +218,8 @@ function runOnOf(
 }
 
 // A person's message in sections, each heading typed with its first line on the
-// same line split from it first.
+// same line split from it first. A quoted selection that opens it, right before its
+// first thread heading, goes in that heading's section, whichever thread it came from.
 function personSectionsOf(
   text: string,
   list: Thread[],
@@ -224,7 +227,8 @@ function personSectionsOf(
   merged: Record<string, string>,
 ): Section[] {
   const links = { ...snapped, ...merged }
-  return splitSections(splitRunOns(text, typed => runOnOf(typed, list, links, merged)), () => true)
+  const typed = splitSections(splitRunOns(text, typed => runOnOf(typed, list, links, merged)), () => true)
+  return withOpeningQuote(typed, name => personThreadOf(name, list, links) !== undefined)
 }
 
 type Meaning = { typed: string; meant: string; isRunOn?: boolean }
@@ -518,7 +522,7 @@ function meaningNote(m: Meaning): string {
 function protocol(list: Thread[], merged: Record<string, string>, mayCreate: boolean): string {
   return [
     '# Conversation threads',
-    'This conversation can hold several threads at once. The user starts or replies to a thread with a level-1 heading in their message: `# name` or `#name` (with or without the space). Text before the first heading is the unthreaded conversation. A heading may be abbreviated or mistyped, or written `#+name` to start a new thread; a note beside the message then says which thread each heading means.',
+    'This conversation can hold several threads at once. The user starts or replies to a thread with a level-1 heading in their message: `# name` or `#name` (with or without the space). Text before the first heading is the unthreaded conversation, except a quote of part of your message (a `<!-- reply -->` line and its `>` lines) right before a heading, which belongs to that heading\'s thread. A heading may be abbreviated or mistyped, or written `#+name` to start a new thread; a note beside the message then says which thread each heading means.',
     'Reply the same way, under whichever thread or threads your reply\'s content belongs to: each part under a level-1 heading carrying that thread\'s exact name, one section per thread. The thread the user wrote in, or was viewing, is usually the right one. A message with no heading may just be missing one: if it clearly continues an existing thread, reply under that thread\'s heading. Keep only material that fits no thread unthreaded, before any thread heading. Use `##` or deeper for structure inside a section: a level-1 heading that is not a thread name drops back into the unthreaded conversation.',
     'This holds for the rest of the conversation; a note beside a later message says when threads are merged or your leave to start them changes.',
     threadState(list, merged, mayCreate),
@@ -1212,11 +1216,16 @@ function isShown(
 // The text the person's bubble shows: a known thread's heading line goes, as the
 // tags above name the threads; where several sections share the bubble, a plain
 // `▸ name` line still marks where each thread's part starts. A heading that
-// names no thread stays as typed.
+// names no thread stays as typed. A quoted selection opening the first thread's part
+// stays at the top, above its `▸ name`, where the desktop wrote it.
 function bubbleText(shown: Section[], resolve: (name: string) => Thread | undefined): string {
   const only = shown.length === 1 ? shown[0] : undefined
   if (only !== undefined && only.thread !== null && resolve(only.thread) !== undefined) return only.text
-  return shown
+  const [first, ...later] = shown
+  const isThreaded = first !== undefined && first.thread !== null && resolve(first.thread) !== undefined
+  const opening = isThreaded && first !== undefined ? leadingQuoteOf(first.text) : undefined
+  const parts = opening === undefined || first === undefined ? shown : [{ ...first, text: opening.rest }, ...later]
+  const text = parts
     .map(s => {
       if (s.thread === null) return s.text
       const thread = resolve(s.thread)
@@ -1224,6 +1233,7 @@ function bubbleText(shown: Section[], resolve: (name: string) => Thread | undefi
       return s.text === '' ? marker : `${marker}\n${s.text}`
     })
     .join('\n\n')
+  return opening === undefined ? text : `${opening.quote}\n\n${text}`
 }
 
 // The thread view (pane.tsx) places a section by the rules the chat draws it by.
