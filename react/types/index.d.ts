@@ -21,9 +21,15 @@ export type Place = 'corner' | 'under'
 declare module 'claude-code' {
   interface PluginState {
     react: {
-      // whether reactions are on in the session: the person turns them on and off with
-      // /react; off, the mod leaves the session be
+      // whether reactions are on in the session: as the person last chose there with
+      // /react, else as the default; off, the mod leaves the session be
       isOn: boolean
+      // the person's own choice in the session with /react, kept over the default; null
+      // until they make one
+      choice: boolean | null
+      // whether reactions are on in a session with no choice of its own, as the person
+      // last set with /react default (kept for every session); on until they set it
+      isOnByDefault: boolean
       // whether the model was last told, beside the person's message, that reactions
       // are on; false again after a compaction while on, so it is told again
       isBriefed: boolean

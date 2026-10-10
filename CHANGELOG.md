@@ -10,6 +10,7 @@ Notable changes to the thread-chat, multitask and react mods. The format is base
 - Added thread tag switches, outlined when on, to thread-chat's thread view to show only those, or all.
 - Added react's reactions to your messages in thread-chat's thread view, as the chat shows them.
 - Added a dot per running thought above the prompt to multitask, pulsing at each note and fading as it ends.
+- Added `/react default` to react to set whether reactions are on in new chats.
 
 ### Changed
 
@@ -20,6 +21,7 @@ Notable changes to the thread-chat, multitask and react mods. The format is base
 - Changed a done thought's mark in multitask's Thoughts pane to a solid dot in its colour.
 - Changed multitask's Thoughts pane to list the 16 latest ended thoughts, the rest behind `N more`.
 - Changed react's desktop reaction to sit on your message's corner, or under it with `/react place`.
+- Changed react's reactions to be on by default; `/react` turns them off in a chat.
 
 ### Fixed
 

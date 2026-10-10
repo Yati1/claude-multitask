@@ -57,11 +57,24 @@ function engine(on: On, store: Record<string, unknown> | null = {}): Seen {
   return seen
 }
 
+// The mod store as a plain record the test reads, for `engine(on, null)`.
+function memoryStore(on: On): Record<string, unknown> {
+  const store: Record<string, unknown> = {}
+  on('store.get', ($, e) => ({ value: store[e.key] }))
+  on('store.set', ($, e) => {
+    store[e.key] = e.value
+    return { value: undefined }
+  })
+  on('store.keys', () => ({ value: Object.keys(store) }))
+  return store
+}
+
 const start = ($: Engine) => $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
-const flip = ($: Engine) => $.command.run({ command: 'react', args: '', origin: { kind: 'composer' }, presentation: {} as never })
-// The person's `/react place …`: what it answers.
-const placeReactions = async ($: Engine, args: string) =>
+// The person's `/react …`: what it answers.
+const runReact = async ($: Engine, args: string) =>
   ((await $.command.run({ command: 'react', args, origin: { kind: 'composer' }, presentation: {} as never })) as { text?: string }).text
+const flip = ($: Engine) => runReact($, '')
+const placeReactions = runReact
 const say = ($: Engine, text: string) => $.prompt.submit({ text, origin: { kind: 'composer' }, wait: false })
 
 // A row of the main conversation as the engine stores it: a person's message (or, by
@@ -186,8 +199,8 @@ test('a reply of one emoji, spacing round it aside, is a reaction; anything more
   for (const passed of ['On it', '👍 t', 'Done.']) expect({ passed, could: couldBeEmoji(passed) }).toEqual({ passed, could: false })
 })
 
-test('a chat that never turns reactions on is left as it is: no notes, replies as they come, no badges', async ($, on) => {
-  const seen = engine(on)
+test('a chat with reactions off is left as it is: no notes, replies as they come, no badges', async ($, on) => {
+  const seen = engine(on, { isOnByDefault: false })
   await start($)
   await say($, 'thanks for the fix')
   expect(seen.prompts).toEqual(['thanks for the fix'])
@@ -196,10 +209,9 @@ test('a chat that never turns reactions on is left as it is: no notes, replies a
   expect(await badgeOf($, 'desktop', 'p1', 'thanks for the fix')).toBe('none')
 })
 
-test('the model is told how reactions work once they come on, again after a compaction, and once that they went off', async ($, on) => {
+test('the model is told how reactions work in a new chat, again after a compaction, and once that they went off', async ($, on) => {
   const seen = engine(on)
   await start($)
-  await flip($)
   await say($, 'hello')
   expect(seen.prompts.at(-1)).toBe(`hello\n--\n${BRIEF}`)
   await say($, 'and again')
@@ -211,13 +223,13 @@ test('the model is told how reactions work once they come on, again after a comp
   await say($, 'go on')
   expect(seen.prompts.at(-1)).toBe('go on')
 
-  await flip($)
+  expect(await flip($)).toBe('Reactions are off in this chat.')
   await say($, 'words please')
   expect(seen.prompts.at(-1)).toBe(`words please\n--\n${OFF_NOTE}`)
   await say($, 'plain')
   expect(seen.prompts.at(-1)).toBe('plain')
   // another party's prompt gets no note
-  await flip($)
+  expect(await flip($)).toContain('Reactions are on in this chat')
   await $.prompt.submit({ text: 'a task finished', origin: { kind: 'task-notification' }, wait: false })
   expect(seen.prompts.at(-1)).toBe('a task finished')
 })
@@ -225,7 +237,6 @@ test('the model is told how reactions work once they come on, again after a comp
 test("a reply of one emoji goes on as \"No response requested.\" and draws as a reaction on the person's message", async ($, on) => {
   const seen = engine(on)
   await start($)
-  await flip($)
   await storePrompt($, 'p1', 'thanks, that fixed the build')
 
   // Held back while it could be one emoji, then passed on as NO_RESPONSE in its place.
@@ -270,7 +281,6 @@ test("a reply of one emoji goes on as \"No response requested.\" and draws as a 
 test('a reply of one emoji that reaches the transcript as it came is stored as "No response requested."', async ($, on) => {
   const seen = engine(on)
   await start($)
-  await flip($)
   await storePrompt($, 'p1', 'can you rerun the deploy')
   await storeReply($, 'a1', '✅')
   expect(seen.rows.find(row => row.uuid === 'a1')?.content).toEqual([{ type: 'text', text: NO_RESPONSE }])
@@ -289,7 +299,6 @@ test("the switch and reactions are kept as thread-chat's thread view reads them,
     return next(e)
   })
   await start($)
-  await flip($)
   await storePrompt($, 'p1', 'thanks, that fixed the build')
   await step($, seen, [text('👍'), stop])
   expect(written.isOn).toBe(true)
@@ -299,7 +308,7 @@ test("the switch and reactions are kept as thread-chat's thread view reads them,
 })
 
 test('a reply that became a reaction draws as nothing while on, and a message drawn as nothing gets no badge', async ($, on) => {
-  const seen = engine(on)
+  const seen = engine(on, { isOnByDefault: false })
   await start($)
   const reply = async (surface: 'terminal' | 'desktop') => {
     const row = await $.ui.mount({
@@ -322,16 +331,9 @@ test('a reply that became a reaction draws as nothing while on, and a message dr
 })
 
 test('/react place moves the desktop\'s reaction between the bubble\'s corner and under it, for every session', async ($, on) => {
-  const store: Record<string, unknown> = {}
-  on('store.get', ($, e) => ({ value: store[e.key] }))
-  on('store.set', ($, e) => {
-    store[e.key] = e.value
-    return { value: undefined }
-  })
-  on('store.keys', () => ({ value: Object.keys(store) }))
+  const store = memoryStore(on)
   const seen = engine(on, null)
   await start($)
-  await flip($)
   await storePrompt($, 'p1', 'thanks, that fixed the build')
   await step($, seen, [text('👍'), stop])
   const said = 'thanks, that fixed the build'
@@ -363,7 +365,6 @@ test('/react place moves the desktop\'s reaction between the bubble\'s corner an
 test('a new session draws reactions where the person last chose', async ($, on) => {
   const seen = engine(on, { place: 'under' })
   await start($)
-  await flip($)
   await storePrompt($, 'p1', 'can you rerun the deploy')
   await step($, seen, [text('✅'), stop])
   expect(await placeOf($, 'desktop', 'p1', 'can you rerun the deploy')).toBe('column: message, solid reaction floating at bottom 0, right 1')
@@ -372,7 +373,6 @@ test('a new session draws reactions where the person last chose', async ($, on) 
 test('with a row a mod beneath draws above the message (thread tags), the reaction floats on the corner, adding no row', async ($, on) => {
   const seen = engine(on)
   await start($)
-  await flip($)
   await storePrompt($, 'p1', 'tagged by a plugin')
   await step($, seen, [text('👍'), stop])
   // The mod's drawing, its tag row with the message, is the one thing in the flow; the
@@ -383,43 +383,72 @@ test('with a row a mod beneath draws above the message (thread tags), the reacti
 // A conversation's messages as the engine lists them, and the record a session kept.
 const SAID = ['why does the band wrap onto two rows?', 'Both mods share one row, so it wraps.', 'can it stay on one row instead?']
 const listed = (texts: string[]) => texts.map((said, i) => ({ role: i % 2 === 0 ? ('user' as const) : ('assistant' as const), text: said, toolUses: [] }))
-const record = (isOn: boolean, at: number, texts: string[], reactions: { id: string; mark: string; emoji: string }[] = []) => ({
-  isOn,
+// `choice` is the person's own in the session, null if never made: then it was on, by
+// the default.
+const record = (choice: boolean | null, at: number, texts: string[], reactions: { id: string; mark: string; emoji: string }[] = []) => ({
+  isOn: choice ?? true,
+  choice,
   at,
-  isBriefed: isOn,
+  isBriefed: choice ?? true,
   reactions,
   marks: marksOf(listed(texts)),
 })
 
-test('a session keeps its switch and reactions for its next run, with its messages\' marks once it has been on', async ($, on) => {
-  const store: Record<string, unknown> = {}
-  on('store.get', ($, e) => ({ value: store[e.key] }))
-  on('store.set', ($, e) => {
-    store[e.key] = e.value
-    return { value: undefined }
-  })
-  on('store.keys', () => ({ value: Object.keys(store) }))
+test("a session keeps its switch, the person's choice and its reactions for its next run, with its messages' marks once it has been on", async ($, on) => {
+  const store = memoryStore(on)
   mock.clock(on, { now: 1000 })
   const seen = engine(on, null)
   on('session.messages', () => ({ value: listed(SAID) }))
+  const marks = marksOf(listed(SAID))
 
   await start($)
-  expect(store['session:session-1']).toEqual({ isOn: false, at: 1000, isBriefed: false, reactions: [], marks: [] })
-  await flip($)
+  expect(store['session:session-1']).toEqual({ isOn: true, choice: null, at: 1000, isBriefed: false, reactions: [], marks })
   await storePrompt($, 'p1', SAID[0] as string)
   await step($, seen, [text('👍'), stop])
   await $.turn.complete({ answer: NO_RESPONSE, durationMs: 10, isAborted: false, turnId: 't', reason: 'answer' })
-  expect(store['session:session-1']).toEqual({
-    isOn: true,
-    at: 1000,
-    isBriefed: false,
-    reactions: [{ id: 'p1', mark: markOf(SAID[0] as string), emoji: '👍' }],
-    marks: marksOf(listed(SAID)),
-  })
+  const reactions = [{ id: 'p1', mark: markOf(SAID[0] as string), emoji: '👍' }]
+  expect(store['session:session-1']).toEqual({ isOn: true, choice: null, at: 1000, isBriefed: false, reactions, marks })
+  await flip($)
+  expect(store['session:session-1']).toEqual({ isOn: false, choice: false, at: 1000, isBriefed: false, reactions, marks })
 })
 
-test('a restarted session takes up its switch and reactions, and the model is not told again', async ($, on) => {
+test('a session never on keeps no marks', async ($, on) => {
+  const store = memoryStore(on)
+  store.isOnByDefault = false
+  mock.clock(on, { now: 1000 })
+  engine(on, null)
+  on('session.messages', () => ({ value: listed(SAID) }))
+  await start($)
+  expect(store['session:session-1']).toEqual({ isOn: false, choice: null, at: 1000, isBriefed: false, reactions: [], marks: [] })
+})
+
+test('/react default flips whether reactions are on in new chats, kept for every session, and says what it is now', async ($, on) => {
+  const store = memoryStore(on)
+  const seen = engine(on, null)
+  await start($)
+  const where = 'in new chats and in chats where you have not used `/react`.'
+
+  // This chat, never switched with /react, follows the default.
+  expect(await runReact($, 'default')).toBe(`Reactions are now off by default, ${where}`)
+  expect(store.isOnByDefault).toBe(false)
+  await say($, 'hello')
+  expect(seen.prompts.at(-1)).toBe('hello')
+
+  // Switched with /react, it keeps its own choice whatever the default.
+  expect(await flip($)).toContain('Reactions are on in this chat')
+  expect(await runReact($, 'Default')).toBe(`Reactions are now on by default, ${where}`)
+  expect(store.isOnByDefault).toBe(true)
+  expect(await runReact($, 'default')).toBe(`Reactions are now off by default, ${where} This chat keeps them on; \`/react\` turns them off here.`)
+  expect(store.isOnByDefault).toBe(false)
+  await say($, 'still on here')
+  expect(seen.prompts.at(-1)).toBe(`still on here\n--\n${BRIEF}`)
+  await storePrompt($, 'p1', 'thanks, that fixed the build')
+  expect((await step($, seen, [text('👍'), stop])).answer).toBe(NO_RESPONSE)
+})
+
+test('a restarted session takes up its choice of on over a default of off, and its reactions, and the model is not told again', async ($, on) => {
   const seen = engine(on, {
+    isOnByDefault: false,
     'session:session-1': record(true, 1, [], [{ id: 'p1', mark: markOf('thanks, that fixed the build'), emoji: '🙏' }]),
   })
   await start($)
@@ -428,7 +457,29 @@ test('a restarted session takes up its switch and reactions, and the model is no
   expect(seen.prompts.at(-1)).toBe('next thing')
 })
 
-test('a rewound or forked session, under a new id, takes up the switch and the reactions still in it from the session it came from', async ($, on) => {
+test('a restarted session keeps its choice of off over a default of on', async ($, on) => {
+  const seen = engine(on, { 'session:session-1': record(false, 1, []) })
+  await start($)
+  await say($, 'next thing')
+  expect(seen.prompts.at(-1)).toBe('next thing')
+  expect(await step($, seen, [text('👍'), stop])).toEqual({ out: [text('👍'), stop], answer: '👍' })
+})
+
+test('a restarted session never switched follows the default as it is now, and the model is told they went off', async ($, on) => {
+  const seen = engine(on, { isOnByDefault: false, 'session:session-1': record(null, 1, []) })
+  await start($)
+  await say($, 'next thing')
+  expect(seen.prompts.at(-1)).toBe(`next thing\n--\n${OFF_NOTE}`)
+})
+
+test('a session kept off before the default was on follows the default', async ($, on) => {
+  const seen = engine(on, { 'session:session-1': { isOn: false, at: 1, isBriefed: false, reactions: [], marks: [] } })
+  await start($)
+  await say($, 'next thing')
+  expect(seen.prompts.at(-1)).toBe(`next thing\n--\n${BRIEF}`)
+})
+
+test('a rewound or forked session, under a new id, takes up the choice and the reactions still in it from the session it came from', async ($, on) => {
   const left = 'and a later message the rewind left behind'
   const seen = engine(on, {
     'session:old': record(true, 1, [...SAID, left], [
@@ -444,4 +495,13 @@ test('a rewound or forked session, under a new id, takes up the switch and the r
   // its history may not hold the note, so the model is told again
   await say($, 'go on')
   expect(seen.prompts.at(-1)).toBe(`go on\n--\n${BRIEF}`)
+})
+
+test('a rewound or forked session takes up the choice of off from the session it came from', async ($, on) => {
+  const seen = engine(on, { 'session:old': record(false, 1, SAID) })
+  on('session.messages', () => ({ value: listed(SAID) }))
+  await start($)
+  await say($, 'go on')
+  expect(seen.prompts.at(-1)).toBe('go on')
+  expect(await step($, seen, [text('👍'), stop])).toEqual({ out: [text('👍'), stop], answer: '👍' })
 })
