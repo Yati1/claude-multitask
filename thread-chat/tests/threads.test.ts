@@ -1374,19 +1374,19 @@ test('the band keeps one row with 12 threads beside another mod, and nothing the
     expect(all.filter(isPill)).toHaveLength(12)
     const pill = pathTo(tree, isPill)
     const other = pathTo(tree, isOther)
-    // the menu before the threads and `view` after them: on the desktop the menu is the
-    // keyed Box its card hangs from, elsewhere a Button
-    const controls = [MENU, 'thread-view'].map(key => pathTo(tree, n => n.props?.key === key))
-    expect(controls.map(c => c?.at(-1)?.type)).toEqual([surface === 'desktop' ? 'Box' : 'Button', 'Button'])
+    // the menu before the threads, and nothing of thread-chat's after them: on the desktop
+    // the menu is the keyed Box its card hangs from, elsewhere a Button
+    const menuPath = pathTo(tree, n => n.props?.key === MENU)
+    expect(menuPath?.at(-1)?.type).toBe(surface === 'desktop' ? 'Box' : 'Button')
+    const inMenu = elementsOf(menuPath?.at(-1))
+    expect(all.filter(n => n.props?.key === 'thread-view' && !inMenu.includes(n))).toEqual([])
 
     // the other mod shares the row and keeps its width; the threads give way
     expect(shareOf(pill, other)).toMatchObject({ a: { flexShrink: 1, minWidth: 0 }, b: { flexShrink: 0 } })
     expect(shareOf(pill, other)?.row?.flexWrap).toBeUndefined()
-    // so does each control, after the threads
-    for (const control of controls) {
-      expect(shareOf(pill, control)).toMatchObject({ a: { flexShrink: 1, minWidth: 0 }, b: { flexShrink: 0 } })
-      expect(shareOf(pill, control)?.row?.flexWrap).toBeUndefined()
-    }
+    // so does the menu, before the threads
+    expect(shareOf(pill, menuPath)).toMatchObject({ a: { flexShrink: 1, minWidth: 0 }, b: { flexShrink: 0 } })
+    expect(shareOf(pill, menuPath)?.row?.flexWrap).toBeUndefined()
     const wrapping = all.filter(n => n.props?.flexWrap === 'wrap' || n.props?.flexWrap === 'wrap-reverse')
     if (surface === 'desktop') {
       // nothing wraps: the pills clip where the room ends
@@ -1394,29 +1394,26 @@ test('the band keeps one row with 12 threads beside another mod, and nothing the
       expect(pill?.find(n => n.props?.overflow === 'hidden')?.props).toMatchObject({ flexShrink: 1, minWidth: 0 })
     } else {
       // the terminal wraps the pills alone, in their own part of the row
-      expect(wrapping.every(n => elementsOf(n).every(m => !isOther(m) && !controls.some(c => c?.includes(m))))).toBe(true)
+      expect(wrapping.every(n => elementsOf(n).every(m => !isOther(m) && !menuPath?.includes(m)))).toBe(true)
     }
 
     // every Box the pointer reveals is out of the flow, or in a Box that is, so showing
-    // it moves nothing: on the desktop the view's tip and the menu's card of switches,
-    // cards the desktop lifts, and each pill's lit picture, revealed in place over it
-    // and never lifted as a card
+    // it moves nothing: on the desktop the menu's card of switches and the thread view's
+    // row, a card the desktop lifts, and each pill's lit picture, revealed in place over
+    // it and never lifted as a card
     const reveals = all.filter(n => n.hover?.display === 'flex')
     const isPlaced = (n: Drawn) => n.props?.position === 'absolute'
     expect(reveals.filter(n => !pathTo(tree, m => m === n)?.some(isPlaced))).toEqual([])
     if (surface === 'desktop') {
       const picturesShown = (n: Drawn) => (n.children ?? []).flatMap(restingPictures).length
-      const menu = controls[0]?.at(-1)
+      const menu = menuPath?.at(-1)
       const card = (menu?.children ?? []).find(n => reveals.includes(n as Drawn)) as Drawn | undefined
       expect(card !== undefined && isPlaced(card)).toBe(true)
       expect((card?.children ?? []).flatMap(picturesIn)).toEqual(['On in this chat: on', 'Agent may start threads: off'])
-      const tips = reveals.filter(n => n !== card && picturesShown(n) === 0)
-      const lit = reveals.filter(n => n !== card && picturesShown(n) === 1)
-      expect(tips).toHaveLength(1)
-      expect(tips.every(isPlaced)).toBe(true)
-      expect(lit).toHaveLength(12)
+      expect(elementsOf(card).filter(n => n.props?.key === 'thread-view').map(n => n.type)).toEqual(['Button'])
+      const lit = reveals.filter(n => n !== card)
+      expect(lit.map(picturesShown)).toEqual(Array(12).fill(1))
       expect(lit.filter(isPlaced)).toEqual([])
-      expect(reveals).toHaveLength(14)
     }
     await band.unmount()
   }
