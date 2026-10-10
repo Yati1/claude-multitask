@@ -17,6 +17,8 @@ import {
 } from './reactions'
 
 const isOn = atom({ plugin: 'react', key: 'isOn' } as const, false)
+const choice = atom({ plugin: 'react', key: 'choice' } as const, null)
+const isOnByDefault = atom({ plugin: 'react', key: 'isOnByDefault' } as const, true)
 const isBriefed = atom({ plugin: 'react', key: 'isBriefed' } as const, false)
 const reactions = atom({ plugin: 'react', key: 'reactions' } as const, [])
 const answering = atom({ plugin: 'react', key: 'answering' } as const, null)
@@ -32,21 +34,61 @@ function textsOf(content: readonly Block[]): string[] {
   return content.flatMap(block => (block.type === 'text' && typeof block.text === 'string' ? [block.text] : []))
 }
 
-// Reactions are on in a session from the person's /react until they run it again. Off,
-// the mod leaves the session be: nothing beside the person's messages, replies go on as
-// they come, and messages and replies are the engine's drawing alone.
+// Reactions are on in a session as the person last chose there with /react, else as
+// the default (`/react default`), on until they choose. Off, the mod leaves the session
+// be: nothing beside the person's messages, replies go on as they come, and messages
+// and replies are the engine's drawing alone.
 async function flip($: EngineInterface): Promise<boolean> {
   let now = false
   await update($, isOn, was => (now = !was))
+  await update($, choice, () => now)
   await keep($)
   return now
 }
 
+// Sets the switch to the session's own choice, else the default.
+async function settle($: EngineInterface) {
+  const chosen = await read($, choice)
+  const now = chosen ?? (await read($, isOnByDefault))
+  await update($, isOn, () => now)
+}
+
+// Whether reactions are on in new sessions, and in those never switched with /react:
+// the person's choice for every session, kept under its own key; on until they choose.
+const DEFAULT_KEY = 'isOnByDefault'
+
+async function takeUpDefault($: EngineInterface) {
+  const chosen = await $.store.get(DEFAULT_KEY).catch(() => undefined)
+  if (typeof chosen === 'boolean') await update($, isOnByDefault, () => chosen)
+}
+
+// `/react default`: flips the default, which this session follows too unless the person
+// switched it with /react; says what the default now is.
+async function flipDefault($: EngineInterface): Promise<string> {
+  let now = true
+  await update($, isOnByDefault, was => (now = !was))
+  await $.store.set(DEFAULT_KEY, now).catch(() => undefined)
+  await settle($)
+  await keep($)
+  const word = now ? 'on' : 'off'
+  const said = `Reactions are now ${word} by default, in new chats and in chats where you have not used \`/react\`.`
+  const chosen = await read($, choice)
+  if (chosen === null || chosen === now) return said
+  return `${said} This chat keeps them ${chosen ? 'on' : 'off'}; \`/react\` turns them ${chosen ? 'off' : 'on'} here.`
+}
+
 // Where a session's switch and reactions are kept between runs of the app: whether it
-// is on, when it was kept, whether the model was told, its reactions, and, once it has
-// been on, the marks of its newest messages.
+// is on, the person's own choice there (null: never switched, so it follows the
+// default), when it was kept, whether the model was told, its reactions, and, once it
+// has been on, the marks of its newest messages.
 const recordKey = (sessionId: string) => `session:${sessionId}`
-type Kept = { isOn: boolean; at: number; isBriefed: boolean; reactions: Reaction[]; marks: string[] }
+type Kept = { isOn: boolean; choice: boolean | null; at: number; isBriefed: boolean; reactions: Reaction[]; marks: string[] }
+
+// The person's choice a session kept. One kept before choices were (off was then the
+// default) chose only if it was on.
+const choiceOf = (record: Partial<Kept>): boolean | null =>
+  record.choice !== undefined ? record.choice : record.isOn === true ? true : null
+
 const MARKS_KEPT = 200
 
 // Keeps the switch and reactions for the session's next run. A session never on keeps
@@ -61,6 +103,7 @@ async function keep($: EngineInterface) {
     const marks = isMarked ? marksOf(await $.session.messages()).slice(-MARKS_KEPT) : []
     await $.store.set(key, {
       isOn: now,
+      choice: await read($, choice),
       at: await $.clock.now(),
       isBriefed: await read($, isBriefed),
       reactions: await read($, reactions),
@@ -93,14 +136,15 @@ async function kept($: EngineInterface): Promise<{ record: Partial<Kept>; isOwn:
   return near[0] === undefined ? undefined : { record: near[0].record, isOwn: false }
 }
 
-// Takes up what the session, or the one it came from, kept: the switch (one held on, by
-// a reload, stays on), the reactions on messages it still holds, and, its own, whether
-// the model was told.
+// Takes up what the session, or the one it came from, kept: the person's choice (one
+// already made, by a reload, stays), the reactions on messages it still holds, and, its
+// own, whether the model was told.
 async function takeUp($: EngineInterface) {
   const found = await kept($).catch(() => undefined)
   if (found === undefined) return
   const { record, isOwn } = found
-  if (record.isOn === true) await update($, isOn, () => true)
+  const chosen = choiceOf(record)
+  if (chosen !== null) await update($, choice, was => was ?? chosen)
   const theirs = record.reactions ?? []
   const held = isOwn ? theirs : reactionsHeld(theirs, await $.session.messages().catch(() => []))
   if (held.length > 0) await update($, reactions, mine => joinReactions(held, mine))
@@ -314,26 +358,30 @@ export const register: Register = on => {
     await $.command.register({
       name: 'react',
       description: 'Turn emoji reactions on or off in this chat',
-      argumentHint: '[place corner|under]',
+      argumentHint: '[default | place corner|under]',
     })
-    // A restarted or resumed session takes up the switch and reactions it kept; a
-    // rewound or forked one, those of the session it came from.
+    // A restarted or resumed session takes up the choice and reactions it kept; a
+    // rewound or forked one, those of the session it came from. Never switched, it
+    // follows the default.
+    await takeUpDefault($)
     await takeUp($)
+    await settle($)
     await takeUpPlace($)
     await keep($)
     return next(e)
   })
 
-  // `/react` flips reactions on or off; `/react place …` says or moves where the desktop
-  // draws them.
+  // `/react` flips reactions on or off in this chat; `/react default` flips the default;
+  // `/react place …` says or moves where the desktop draws them.
   on('command.run', { command: 'react' }, async ($, e) => {
     const [word = '', ...rest] = e.args.trim().split(/\s+/)
     if (word.toLowerCase() === 'place') return { text: await choosePlace($, rest.join(' ').toLowerCase()) }
+    if (word.toLowerCase() === 'default') return { text: await flipDefault($) }
     const now = await flip($)
     return {
       text: now
-        ? 'Reactions are on: the agent may acknowledge a message with an emoji reaction on it instead of a reply.'
-        : 'Reactions are off.',
+        ? 'Reactions are on in this chat: the agent may acknowledge a message with an emoji reaction on it instead of a reply.'
+        : 'Reactions are off in this chat.',
     }
   })
 
