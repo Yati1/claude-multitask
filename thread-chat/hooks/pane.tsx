@@ -712,44 +712,56 @@ const drawableOf = (text: string) => text.replace(/[\u0000-\u0008\u000b-\u001f\u
 const REPLY_MARKER = /^<!-- reply(?: [1-9][0-9]?)? -->$/
 const QUOTED = /^>(?: |$)/
 
-// A person's text as their bubble shows it: each selection they replied to, on one
-// line, and their own words, without the markers.
-function bubbleOf(text: string): { quotes: string[]; words: string } {
+// A part of a person's bubble: a selection they replied to, on one line, or a run of
+// their own words between such selections.
+type BubblePart = { kind: 'quote' | 'words'; text: string }
+
+// A person's text as their bubble shows it, in the order they typed it: each
+// selection they replied to, on one line, and their own words around them, without
+// the markers.
+function bubbleOf(text: string): BubblePart[] {
   const lines = drawableOf(text).split('\n')
-  const quotes: string[] = []
-  const words: string[] = []
+  const parts: BubblePart[] = []
+  let words: string[] = []
+  const closeWords = () => {
+    const typed = words.join('\n').trim()
+    if (typed !== '') parts.push({ kind: 'words', text: typed })
+    words = []
+  }
   for (let at = 0; at < lines.length; at++) {
     const line = lines[at] ?? ''
     if (!REPLY_MARKER.test(line)) {
       words.push(line)
       continue
     }
+    closeWords()
     const quoted: string[] = []
     while (QUOTED.test(lines[at + 1] ?? '')) quoted.push((lines[++at] ?? '').replace(/^> ?/, ''))
     const quote = quoted.join(' ').replace(/\s+/g, ' ').trim()
-    if (quote !== '') quotes.push(quote)
+    if (quote !== '') parts.push({ kind: 'quote', text: quote })
   }
-  return { quotes, words: words.join('\n').trim() }
+  closeWords()
+  return parts
 }
 
 // A person's section as the chat's bubble: their words as typed (the chat draws no
-// markdown in them), under a dim line for each selection they replied to. On a
-// page it sits at the right, rounded and a shade off the page; on the terminal it
-// spans the pane in the theme's fill.
+// markdown in them), each selection they replied to a dim line where they quoted it,
+// a row below any words before it. On a page it sits at the right, rounded and a
+// shade off the page; on the terminal it spans the pane in the theme's fill.
 function drawBubble(draw: ViewDrawing, isPage: boolean, text: string): RenderElement {
   const { Box, Text } = draw.ui
-  const { quotes, words } = bubbleOf(text)
-  const body = [
-    ...quotes.map(quote => (
-      <Box flexDirection="row" columnGap={1}>
+  const body = bubbleOf(text).map((part, at, parts) =>
+    part.kind === 'words' ? (
+      <Text>{part.text}</Text>
+    ) : (
+      <Box flexDirection="row" columnGap={1} marginTop={parts[at - 1]?.kind === 'words' ? 1 : 0}>
         <Text dimColor>│</Text>
         <Text dimColor wrap="truncate-end">
-          {quote}
+          {part.text}
         </Text>
       </Box>
-    )),
-    words !== '' && <Text>{words}</Text>,
-  ]
+    ),
+  )
   if (!isPage) {
     return (
       <Box flexDirection="column" backgroundColor={TERMINAL_BUBBLE_FILL} paddingX={1}>
