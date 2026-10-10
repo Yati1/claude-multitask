@@ -440,6 +440,35 @@ test("the person's messages draw as the chat's bubbles: their words as typed, a 
   }
 })
 
+test('the view files a quoted selection opening a message under the thread heading right after it', async ($, on) => {
+  engine(on)
+  await flipThreads($)
+  await $.prompt.submit(say('# design\na\n# multitasking\nb'))
+  const typed = '<!-- reply 1 -->\r\n> due now\r\n\r\n# Multitask\r\nyes'
+  await $.prompt.submit(say(typed))
+  await $.session
+    .append({
+      message: { type: 'user', role: 'user', content: [{ type: 'text', text: typed }] },
+      door: 'prompt',
+      origin: { kind: 'composer' },
+      uuid: 'p1',
+    })
+    .catch(() => undefined)
+
+  const pane = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...PANE })
+  const dim = async () => (await pane.findAll({ type: 'Text' })).filter(t => t.props.dimColor === true).map(t => t.text)
+  // one bubble, the quote dim above the words
+  expect(await sectionsOf(pane)).toEqual(['you: yes'])
+  expect(await dim()).toContain('due now')
+  const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...BAND })
+  await band.press({ key: 'thread:multitasking' })
+  expect(await sectionsOf(pane)).toEqual(['you: yes'])
+  expect(await dim()).toContain('due now')
+  await band.press({ key: 'thread:multitasking' })
+  await band.press({ key: 'thread:design' })
+  expect(await sectionsOf(pane)).toEqual([])
+})
+
 // How a drawing marks each of a thread's tags, in order: the tag, the row it sits in
 // above a person's message, and the border round it in a reply's part.
 function tagLooksIn(tree: unknown, name: string) {

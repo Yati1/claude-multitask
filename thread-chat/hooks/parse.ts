@@ -211,6 +211,45 @@ export function replyQuotesOf(text: string): string[] {
   return quotes
 }
 
+export type LeadingQuote = { quote: string; rest: string }
+
+// The replies to selected parts a text opens with (their markers, quoted lines and the
+// blank lines between them), and the rest of it from the first other line; none where
+// it opens with no quoted selection. The lines are kept as typed, line ends and all.
+export function leadingQuoteOf(text: string): LeadingQuote | undefined {
+  const lines = text.split('\n')
+  let end = 0
+  let isQuoting = false
+  let hasQuote = false
+  for (const [at, line] of lines.entries()) {
+    const bare = line.trimEnd()
+    if (REPLY_MARKER.test(bare)) {
+      isQuoting = true
+    } else if (isQuoting && QUOTED.test(bare)) {
+      hasQuote = true
+    } else if (bare.trim() === '') {
+      isQuoting = false
+      continue
+    } else {
+      break
+    }
+    end = at + 1
+  }
+  if (!hasQuote) return undefined
+  return { quote: lines.slice(0, end).join('\n').trim(), rest: lines.slice(end).join('\n').trim() }
+}
+
+// A person's sections with a quoted selection that opens the message, right before its
+// first thread heading, in that heading's section, the quote first: they replied to it
+// there. `isThread` tells whether a heading means a thread; the opening text stays
+// unthreaded where the heading means none, or where it holds words of their own.
+export function withOpeningQuote(sections: Section[], isThread: (name: string) => boolean): Section[] {
+  const [first, next, ...rest] = sections
+  if (first === undefined || next === undefined || first.thread !== null || next.thread === null) return sections
+  if (!isThread(next.thread) || leadingQuoteOf(first.text)?.rest !== '') return sections
+  return [{ thread: next.thread, text: `${first.text}\n\n${next.text}`.trim() }, ...rest]
+}
+
 // A text in the letters and digits a reader sees of it drawn: a selection of drawn
 // Markdown lacks its marks, link targets, list numbers and fence lines, and may join
 // or split its lines.
