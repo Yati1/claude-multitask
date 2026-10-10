@@ -228,12 +228,39 @@ async function sectionsOf(pane: Drawing) {
   return sections
 }
 
-// The view's filter as drawn: each of its Buttons' label, starred where it is picked
-// (drawn at full strength, not dim).
-async function filterOf(pane: { findAll: (query: { type: string }) => Promise<{ props: Record<string, unknown> }[]> }) {
-  return (await pane.findAll({ type: 'Button' }))
-    .filter(b => String(b.props.key).startsWith('thread-view-filter:'))
-    .map(b => `${String(b.props.label)}${b.props.dimColor === true ? '' : ' *'}`)
+// The view's filter as drawn: each thread's name, starred where it is picked. A Button's
+// label is picked at full strength, not dim; on the desktop, a Text is picked bold.
+const FILTER_BOX = 'thread-view-filter-box:'
+async function filterOf(pane: Drawing) {
+  const names: string[] = []
+  const walk = (node: unknown) => {
+    if (typeof node !== 'object' || node === null) return
+    const { props = {}, children = [] } = node as Drawn
+    if (!String(props.key).startsWith(FILTER_BOX)) {
+      for (const child of children) walk(child)
+      return
+    }
+    const name = children.map(child => child as Drawn).find(child => child.type === 'Button' || child.type === 'Text')
+    if (name?.type === 'Button') names.push(`${String(name.props?.label)}${name.props?.dimColor === true ? '' : ' *'}`)
+    else names.push(`${shownIn(name)}${name?.props?.bold === true ? ' *' : ''}`)
+  }
+  walk(await pane.drawn())
+  return names
+}
+
+// A press on a thread's switch in the view's filter: its Button, or where it has one (the
+// desktop) a click on the hit area over its name.
+async function pressFilter(
+  pane: {
+    find: (query: { key: string }) => Promise<{ type: string } | undefined>
+    press: (query: { key: string }) => Promise<unknown>
+    pointer: (p: never) => Promise<unknown>
+  },
+  thread: string,
+) {
+  const key = `${FILTER_THREAD_KEY}${thread}`
+  if ((await pane.find({ key }))?.type === 'Client') await pane.pointer({ type: 'down', x: 1, y: 0, button: 'left', in: key } as never)
+  else await pane.press({ key })
 }
 
 test('the thread view shows the threads its own filter picks, earlier replies too, and no tool rows; the picker above the prompt leaves it be', async ($, on) => {
@@ -272,12 +299,25 @@ test('the thread view shows the threads its own filter picks, earlier replies to
     ]
     expect(await sectionsOf(pane)).toEqual(everything)
     expect(await pane.findAll({ text: /file contents|Read/ })).toEqual([])
-    // its filter: a switch for each thread, none picked; plain, in the thread's colour and
-    // bold under the pointer; no label before them, no "All", no "No thread"
+    // its filter: a switch for each thread, none picked; dim, and in the thread's full colour
+    // and bold under the pointer; no label before them, no "All", no "No thread". On the
+    // desktop the name is in its colour at rest, a hit area over it; elsewhere a plain Button
     expect(await filterOf(pane)).toEqual(['design', 'perf'])
     const designSwitch = keyedIn(await pane.drawn(), `${FILTER_THREAD_KEY}design`)
-    expect(designSwitch?.props).toMatchObject({ plain: true, dimColor: true })
-    expect(designSwitch?.hover).toEqual({ color: '#4fa3e0', bold: true })
+    if (surface === 'desktop') {
+      expect(designSwitch?.type).toBe('Client')
+      expect(String(designSwitch?.props?.module)).toEndWith('switch.tsx')
+      expect(designSwitch?.props).toMatchObject({ props: { isOn: false }, width: '100%', height: '100%' })
+      const [name, over] = (keyedIn(await pane.drawn(), `${FILTER_BOX}design`)?.children ?? []) as (Drawn & { hover?: unknown })[]
+      expect(name?.type).toBe('Text')
+      expect(name?.props).toMatchObject({ color: '#4fa3e0', dimColor: true })
+      expect(name?.hover).toEqual({ color: '#4fa3e0', bold: true, dimColor: false })
+      expect(over?.props).toMatchObject({ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%' })
+      expect(keyedIn(await pane.drawn(), `${FILTER_BOX}design`)?.props?.flexShrink).toBe(0)
+    } else {
+      expect(designSwitch?.props).toMatchObject({ plain: true, dimColor: true })
+      expect(designSwitch?.hover).toEqual({ color: '#4fa3e0', bold: true })
+    }
     expect(await pane.find({ type: 'Text', text: 'Show' })).toBeUndefined()
 
     // a thread picked above the prompt, where messages go, leaves the view as it was
@@ -288,7 +328,7 @@ test('the thread view shows the threads its own filter picks, earlier replies to
     // design picked in the view's filter: its sections, before the last message too, and as
     // the chat's filter shows them, those of no thread since the person's last message; the
     // picker above the prompt as it was (no redraw asked for: the pick draws the view again)
-    await pane.press({ key: `${FILTER_THREAD_KEY}design` })
+    await pressFilter(pane, 'design')
     expect(await sectionsOf(pane)).toEqual(['you: hello', 'Claude: use a queue', 'you: what now?', 'Claude: next step'])
     expect(await filterOf(pane)).toEqual(['design *', 'perf'])
     expect((await band.find({ key: 'thread-picker' }))?.props.value).toBe('thread:perf')
@@ -308,11 +348,13 @@ test('the thread view shows the threads its own filter picks, earlier replies to
       ['round', '#4fa3e0'],
       ['round', '#4fa3e0'],
     ])
-    // no Client: every overlay on the desktop shares their one frame
-    expect(await pane.findAll({ type: 'Client' })).toEqual([])
+    // no Client but the filter's hit areas, one per thread: every overlay on the desktop
+    // shares their one frame
+    const clients = (await pane.findAll({ type: 'Client' })).map(c => c.key)
+    expect(clients).toEqual(surface === 'desktop' ? [`${FILTER_THREAD_KEY}design`, `${FILTER_THREAD_KEY}perf`] : [])
 
     // perf picked too: both threads' sections, each picked at full strength
-    await pane.press({ key: `${FILTER_THREAD_KEY}perf` })
+    await pressFilter(pane, 'perf')
     expect(await sectionsOf(pane)).toEqual([
       'you: hello',
       'you: fast?',
@@ -323,9 +365,9 @@ test('the thread view shows the threads its own filter picks, earlier replies to
     ])
     expect(await filterOf(pane)).toEqual(['design *', 'perf *'])
     // each pressed again, the last leaving: every section
-    await pane.press({ key: `${FILTER_THREAD_KEY}design` })
+    await pressFilter(pane, 'design')
     expect(await sectionsOf(pane)).toEqual(['you: fast?', 'Claude: it is fine', 'you: what now?'])
-    await pane.press({ key: `${FILTER_THREAD_KEY}perf` })
+    await pressFilter(pane, 'perf')
     expect(await sectionsOf(pane)).toEqual(everything)
     expect(await filterOf(pane)).toEqual(['design', 'perf'])
     expect((await band.find({ key: 'thread-picker' }))?.props.value).toBe('thread:perf')
@@ -377,7 +419,7 @@ test('the view puts a message sent to the one picked thread, and a moved part, w
   await reply('a10', '# design\nnext step')
 
   const pane = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...PANE })
-  await pane.press({ key: `${FILTER_THREAD_KEY}perf` })
+  await pressFilter(pane, 'perf')
   expect(await sectionsOf(pane)).toEqual(['you: and the cache?'])
 
   // the person moves two reply parts from design to perf, with everything in view;
@@ -530,11 +572,11 @@ test('the view files a quoted selection opening a message under the thread headi
   expect(await sectionsOf(pane)).toEqual(['you: yes'])
   expect(await dim()).toContain('due now')
   // the view filtered to its thread, it stays; filtered to another, it goes, quote and all
-  await pane.press({ key: `${FILTER_THREAD_KEY}multitasking` })
+  await pressFilter(pane, 'multitasking')
   expect(await sectionsOf(pane)).toEqual(['you: yes'])
   expect(await dim()).toContain('due now')
-  await pane.press({ key: `${FILTER_THREAD_KEY}multitasking` })
-  await pane.press({ key: `${FILTER_THREAD_KEY}design` })
+  await pressFilter(pane, 'multitasking')
+  await pressFilter(pane, 'design')
   expect(await sectionsOf(pane)).toEqual([])
 })
 
@@ -689,7 +731,7 @@ test("the view's filter follows a merge, lets go of an archived or deleted threa
   const pane = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...PANE })
   // with no messages stored yet, it says so above the filter
   expect((await pane.find({ type: 'Text', text: /^Nothing/ }))?.text).toBe('Nothing here yet.')
-  for (const key of ['design', 'perf', 'docs']) await pane.press({ key: `${FILTER_THREAD_KEY}${key}` })
+  for (const key of ['design', 'perf', 'docs']) await pressFilter(pane, key)
   expect((await pane.find({ type: 'Text', text: /^Nothing/ }))?.text).toBe('Nothing in the threads shown yet.')
   expect(await filterOf(pane)).toEqual(['design *', 'perf *', 'docs *', 'ops'])
   expect((kept['session:session-1'] as { viewThreads?: unknown }).viewThreads).toEqual(['design', 'perf', 'docs'])
@@ -996,9 +1038,9 @@ test("the view shows messages alone: each turn's last reply, not a quiet one, no
     ])
     // design picked: its parts alone (the last message the person's /threads, after which
     // the rows of no thread came before it)
-    await pane.press({ key: `${FILTER_THREAD_KEY}design` })
+    await pressFilter(pane, 'design')
     expect(await sectionsOf(pane)).toEqual(['you: hello', 'Claude: the queue holds'])
-    await pane.press({ key: `${FILTER_THREAD_KEY}design` })
+    await pressFilter(pane, 'design')
     await pane.unmount()
   }
   // kept so for the session's next run
@@ -1187,12 +1229,12 @@ test("every change to the view's filter takes it to the newest messages, back to
   }
 
   // design picked: the shorter view's move is kept at its end
-  await pane.press({ key: `${FILTER_THREAD_KEY}design` })
+  await pressFilter(pane, 'design')
   expect(await move(25, -15, 50)).toBe(30)
   await advance()
   // the last pick let go, everything shown: the desktop's moves as it lays out the longer
   // view, down or none, go to its new end
-  await pane.press({ key: `${FILTER_THREAD_KEY}design` })
+  await pressFilter(pane, 'design')
   expect(await move(35, 5, 90)).toBe(70)
   expect(await move(70, 0, 95)).toBe(75)
   // the person's wheel meanwhile is theirs, and the desktop's moves after it too
@@ -1201,7 +1243,7 @@ test("every change to the view's filter takes it to the newest messages, back to
   await advance()
 
   // a pick from there takes it to the end again, and the desktop's move with it
-  await pane.press({ key: `${FILTER_THREAD_KEY}perf` })
+  await pressFilter(pane, 'perf')
   expect(await move(35, 2, 60)).toBe(40)
   await advance()
   // once that settles, a move up is the person's

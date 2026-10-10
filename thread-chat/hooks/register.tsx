@@ -20,6 +20,7 @@ import {
 } from './parse'
 import type { RunOn, Section } from './parse'
 import {
+  FILTER_THREAD_KEY,
   SECTIONS_MORE,
   chunksOf,
   dataFolderOf,
@@ -1148,6 +1149,16 @@ function drawMenuRow($: EngineInterface, elements: Elements['desktop'], s: MenuS
       </Box>
     </Box>
   )
+}
+
+// The thread view's filter: one thread (by its key) picked, or left out where it was.
+const toggleViewThread = ($: EngineInterface, key: string) => filterView($, (keys, list) => toggledShown(list, keys, key))
+
+// The desktop's hit area over a thread's name in the thread view's filter, as over a menu
+// switch: a click on it posts, and the post toggles the thread.
+const filterHitOf = (elements: Elements['desktop']) => (key: string, isPicked: boolean) => {
+  const { Client } = elements
+  return <Client key={FILTER_THREAD_KEY + key} module="./switch.tsx" props={{ isOn: isPicked }} width="100%" height="100%" />
 }
 
 // The menu's row that opens the thread view, as /thread-view does; only while threads are on.
@@ -2617,9 +2628,10 @@ export const register: Register = on => {
   })
 
   // The thread view: the sections of the threads its filter picked, their tags and a reply's
-  // borders drawn by the code that draws the chat's. No Client: a pane of many
-  // rows must not add to the Clients every overlay on the desktop shares. A failure to
-  // draw it says so in the pane: else the engine draws its own, an empty pane.
+  // borders drawn by the code that draws the chat's. Its only Clients are its filter's hit
+  // areas, one per thread: a pane of many rows must not add a Client per row to those every
+  // overlay on the desktop shares. A failure to draw it says so in the pane: else the
+  // engine draws its own, an empty pane.
   on('ui.render', { component: 'Pane', requestId: VIEW }, async ($, e) => {
     const { step, end } = traceView(`began: ${e.surface}, window at ${e.props.scroll?.offset} of ${e.props.scroll?.bodyRows} rows`)
     try {
@@ -2644,7 +2656,8 @@ export const register: Register = on => {
           near,
           from: from ?? undefined,
           showEarlier: () => void showEarlier($, viewContentRows),
-          toggleShown: key => void filterView($, (keys, list) => toggledShown(list, keys, key)),
+          toggleShown: key => void toggleViewThread($, key),
+          filterHit: e.surface === 'desktop' ? filterHitOf($.ui.resolve(e)) : undefined,
         },
         inputs,
         viewDeps,
@@ -2721,11 +2734,12 @@ export const register: Register = on => {
     return result
   })
 
-  // The menu's switches and the one open move picker's pills post here when clicked: the
-  // only Clients, so their count stays near the number of threads.
+  // The menu's switches, the thread view's filter and the one open move picker's pills post
+  // here when clicked: the only Clients, so their count stays a few times the threads'.
   on('ui.message', async ($, e, next) => {
     if ((e.data as { flip?: unknown } | null)?.flip !== true) return next(e)
     if (e.element.startsWith(SWITCH_HIT)) await flipMenuSwitch($, e.element.slice(SWITCH_HIT.length))
+    else if (e.element.startsWith(FILTER_THREAD_KEY)) await toggleViewThread($, e.element.slice(FILTER_THREAD_KEY.length))
     else if (await read($, isOn)) {
       if (e.element.startsWith('pick:')) await moveTo($, e.element.slice('pick:'.length))
       else if (e.element === NEW_THREAD_PILL) await setNaming($, true)

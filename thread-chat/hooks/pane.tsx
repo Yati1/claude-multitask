@@ -57,7 +57,8 @@ export const SECTIONS_FIRST = 30
 export const SECTIONS_MORE = 30
 // The key of that line, a Button.
 export const EARLIER_KEY = 'thread-view-earlier'
-// The keys of the filter's Buttons, each thread's by its key.
+// The keys of the filter's switches, each thread's by its key: a Button, or on the desktop
+// the hit area laid over its name.
 export const FILTER_THREAD_KEY = 'thread-view-filter:thread:'
 const MARK_LENGTH = 80
 
@@ -701,6 +702,9 @@ export type ViewDrawing = {
   // what a press of one of the filter's Buttons does: its thread (by its key) picked, or
   // left out where it was picked
   toggleShown: (key: string) => void
+  // where the surface has one, an invisible hit area under FILTER_THREAD_KEY and the
+  // thread's key, as wide and high as its parent, whose press does as `toggleShown` does
+  filterHit?: (key: string, isPicked: boolean) => RenderElement
 }
 
 // The most picture data one drawing of the view holds, in base64 characters. The desktop
@@ -919,20 +923,37 @@ function drawEntry(draw: ViewDrawing, isPage: boolean, entry: Entry, drawn: Draw
   )
 }
 
-// One thread of the view's filter, a switch: its name as plain text, at full strength
-// while picked and dim while not, in its colour and bold under the pointer. (A Button's
-// label takes no colour or weight at rest, and the pane draws no Client.)
+// One thread of the view's filter, a switch, its thread's name: in its colour, bold while
+// picked and dim while not, in full colour and bold under the pointer. A Button's label
+// takes no colour at rest, so where the surface has a hit area (the desktop) the name is
+// a Text with the hit area laid over it. Elsewhere it is a Button, at full strength while
+// picked and dim while not, in its colour and bold under the pointer.
 function drawFilterChoice(draw: ViewDrawing, thread: Thread, isPicked: boolean): RenderElement {
-  const { Box, Button } = draw.ui
+  const { Box, Text, Button } = draw.ui
   const key = keyOf(thread.name)
+  const boxKey = `thread-view-filter-box:${key}`
+  const hover = { color: thread.color, bold: true }
+  if (draw.filterHit !== undefined) {
+    // kept whole, as a Button is, so a long name moves to the next row rather than wrap
+    return (
+      <Box key={boxKey} flexDirection="row" flexShrink={0}>
+        <Text color={thread.color} {...(isPicked ? { bold: true } : { dimColor: true })} hover={{ ...hover, dimColor: false }}>
+          {thread.name}
+        </Text>
+        <Box position="absolute" top={0} left={0} width="100%" height="100%">
+          {draw.filterHit(key, isPicked)}
+        </Box>
+      </Box>
+    )
+  }
   return (
-    <Box key={`thread-view-filter-box:${key}`} flexDirection="row">
+    <Box key={boxKey} flexDirection="row">
       <Button
         key={FILTER_THREAD_KEY + key}
         label={thread.name}
         plain
         {...(isPicked ? {} : { dimColor: true })}
-        hover={{ color: thread.color, bold: true }}
+        hover={hover}
         onPress={() => draw.toggleShown(key)}
       />
     </Box>
