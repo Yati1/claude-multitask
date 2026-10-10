@@ -551,6 +551,18 @@ function switchPicture(isOn: boolean): string {
   return `<svg xmlns="http://www.w3.org/2000/svg" width="34" height="20" viewBox="0 0 34 20"><rect x="1" y="2" width="32" height="16" rx="8" fill="${track}"/><circle cx="${knob}" cy="10" r="6" fill="#ffffff"/></svg>`
 }
 
+// The desktop's Select caret, a chevron 14px square in the secondary text colour of
+// the theme, after a 6px gap: the picture is the gap and the caret.
+const CARET_GAP = 6
+const CARET_SIZE = 14
+const CARET_PICTURE = [
+  `<svg xmlns="http://www.w3.org/2000/svg" width="${CARET_GAP + CARET_SIZE}" height="${CARET_SIZE}"`,
+  ` viewBox="${-CARET_GAP * (16 / CARET_SIZE)} 0 ${(CARET_GAP + CARET_SIZE) * (16 / CARET_SIZE)} 16">`,
+  '<style>.c{stroke:#c3c2b7}@media (prefers-color-scheme: light){.c{stroke:#52514e}}</style>',
+  '<path class="c" d="M4 6l4 4 4-4" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>',
+  '</svg>',
+].join('')
+
 const CHIP_HEIGHT = 20
 
 const escapeXml = (text: string) =>
@@ -979,25 +991,39 @@ function drawMenuRow($: EngineInterface, elements: Elements['desktop'], s: MenuS
 // The menu's row that opens the thread view, as /thread-view does; only while threads are on.
 const VIEW_ROW = 'Open thread view'
 
-// The desktop menu's face: a plain Button, which the band draws as the desktop draws its
-// model button below the input (no ring or fill at rest, the ghost fill under the
-// pointer, its height, padding, radius and type size). A press only gives it the focus,
-// which lifts the card as the pointer does.
-const MENU_FACE = 'threads-menu'
+// The fill of the desktop's Select field: white at 5% over the band in the dark theme
+// (no theme colour names it). The light theme's is white at 50%, over a near-white band.
+const FIELD_FILL = 'rgba(255,255,255,0.05)'
+// The Select's 6px either side of its text and caret, from its outer edge: 5px inside
+// the Box's 1px border, in the band's ch.
+const FIELD_PADDING = 0.7
 
-// The band's "Threads" menu. On the desktop, the face above in a keyed Box, which holds
-// the switches, then the thread view's row, in a card the desktop lifts over the band
-// while the pointer is on the face or the card, or the focus is in them. Elsewhere, a
-// Button that shows or hides them beside it.
+// The band's "Threads" menu. On the desktop, a button drawn as the desktop draws a
+// Select (as Multitask's dropdown beside it): the field's fill and its ring, stronger
+// under the pointer, the radius, the padding, one line high, the caret. The keyed Box it
+// is holds the switches, then the thread view's row, in a card the desktop lifts over the
+// band while the pointer is on the button or the card, or the focus is in them.
+// Elsewhere, a Button that shows or hides them beside it.
 async function drawMenu($: EngineInterface, e: Parameters<EngineInterface['ui']['resolve']>[0]): Promise<RenderElement> {
   const switches = await menuSwitches($)
   const isThreadsOn = await read($, isOn)
   if (e.surface === 'desktop') {
     const desktop = $.ui.resolve(e)
-    const { Box, Button } = desktop
+    const { Box, Text, Svg, Button } = desktop
     return (
-      <Box key={MENU} flexDirection="row" alignItems="center">
-        <Button key={MENU_FACE} label="Threads" plain onPress={() => {}} />
+      <Box
+        key={MENU}
+        flexDirection="row"
+        alignItems="center"
+        height={1}
+        paddingX={FIELD_PADDING}
+        paddingY={0}
+        borderStyle="single"
+        backgroundColor={FIELD_FILL}
+        hover={{ borderColor: 'promptBorder' }}
+      >
+        <Text color="text">Threads</Text>
+        <Svg source={CARET_PICTURE} alt="menu" width={CARET_GAP + CARET_SIZE} height={CARET_SIZE} />
         <Box position="absolute" display="none" hover={{ display: 'flex' }} flexDirection="column" rowGap={2}>
           {switches.map(s => drawMenuRow($, desktop, s))}
           {isThreadsOn && (

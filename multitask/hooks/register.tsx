@@ -46,20 +46,10 @@ const heard = atom({ plugin: 'multitask', key: 'heard' } as const, {})
 
 const PANE = 'multitask-thoughts'
 // Multitask's dropdown in the band. Its face is the mode the chat is in, Multitask or
-// Focus (Multitask off); picking the other mode switches to it. On the desktop it is a
-// keyed Box: its face a plain Button, which the band draws as the desktop draws its model
-// button below the input, and a card of the modes, a row each, keyed by MODE_ROW and the
-// mode, that the desktop lifts while the pointer is on the face or the card, or the focus
-// is in them; a press on the face only gives it the focus. Elsewhere it is a Select.
+// Focus (Multitask off); picking the other mode switches to it.
 const DROPDOWN = 'multitask'
-const MODE_FACE = 'multitask-mode'
-const MODE_ROW = 'mode:'
 const MULTITASK_MODE = 'multitask'
 const FOCUS_MODE = 'focus'
-const MODES = [
-  { value: MULTITASK_MODE, label: 'Multitask' },
-  { value: FOCUS_MODE, label: 'Focus' },
-]
 const AGENT = 'multitask:thought'
 const TOOL = {
   think: 'mcp__multitask__think',
@@ -1175,26 +1165,20 @@ export const register: Register = (on, options) => {
     const thoughtsLabel =
       (running > 0 ? `thoughts ${running}` : 'thoughts') + (queued > 0 ? ` · ${queued} queued` : '')
     const { Box, Button } = $.ui.resolve(e)
-    const mode = on_ ? MULTITASK_MODE : FOCUS_MODE
     let dropdown: RenderElement | undefined
-    if (e.surface === 'desktop') {
-      const { Text } = $.ui.resolve(e)
-      dropdown = (
-        <Box key={DROPDOWN} flexDirection="row" alignItems="center">
-          <Button key={MODE_FACE} label={on_ ? 'Multitask' : 'Focus'} plain onPress={() => {}} />
-          <Box position="absolute" display="none" hover={{ display: 'flex' }} flexDirection="column">
-            {MODES.map(m => (
-              <Box flexDirection="row" alignItems="center" justifyContent="space-between" columnGap={2}>
-                <Button key={MODE_ROW + m.value} label={m.label} plain onPress={() => pickMode($, m.value)} />
-                {m.value === mode && <Text>✓</Text>}
-              </Box>
-            ))}
-          </Box>
-        </Box>
-      )
-    } else if (e.surface !== 'mobile') {
+    if (e.surface !== 'mobile') {
       const { Select } = $.ui.resolve(e)
-      dropdown = <Select key={DROPDOWN} options={MODES} value={mode} onSelect={value => pickMode($, value)} />
+      dropdown = (
+        <Select
+          key={DROPDOWN}
+          options={[
+            { value: MULTITASK_MODE, label: 'Multitask' },
+            { value: FOCUS_MODE, label: 'Focus' },
+          ]}
+          value={on_ ? MULTITASK_MODE : FOCUS_MODE}
+          onSelect={value => pickMode($, value)}
+        />
+      )
     }
     // Off with no thoughts left, the band has no `thoughts`.
     const showsThoughts = on_ || live.length > 0
