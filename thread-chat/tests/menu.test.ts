@@ -99,9 +99,10 @@ test('the desktop draws a Threads button like its Select, its switches in a card
   expect(String(caret?.props.source)).toContain('d="M4 6l4 4 4-4"')
 
   // the card: out of the flow, shown only under the pointer, so the desktop lifts it;
-  // a row per switch, its label a Button and its slide switch a picture with a hit area
+  // a row per switch, its label a Button and its slide switch a picture with a hit area,
+  // the rows a quarter line apart, so they sit as close as the Select's options
   const card = (button?.children as Drawn[]).find(n => n.type === 'Box' && n.props?.display === 'none')
-  expect(card?.props).toMatchObject({ position: 'absolute', display: 'none' })
+  expect(card?.props).toMatchObject({ position: 'absolute', display: 'none', flexDirection: 'column', rowGap: 0.5 })
   expect(card?.hover).toEqual({ display: 'flex' })
   expect((await band.find({ key: THREADS_SWITCH }))?.props).toMatchObject({ label: 'On in this chat', plain: true })
   expect(await switchesOf(band)).toEqual(['On in this chat: off'])
