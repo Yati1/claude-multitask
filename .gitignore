@@ -1,3 +1,5 @@
 # Types Claude Code writes into each mod when it loads it
 */.claude-plugin/types/
+# The copy of them the typecheck reads, made by `npm run types:refresh`
+engine-types/
 node_modules/

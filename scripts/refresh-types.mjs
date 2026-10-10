@@ -1,11 +1,12 @@
 // Copies the plugin API types Claude Code writes into each mod when it loads it
-// (<mod>/.claude-plugin/types/claude-code/index.d.ts) over the committed copy in
-// engine-types/, taking the newest version found. Older Claude Code sessions keep
-// rewriting the generated copies, so it never replaces the committed copy with an
-// older version unless run with --force. Run from the main checkout or a worktree:
-// it also reads the main checkout's mods, the only ones the engine loads.
+// (<mod>/.claude-plugin/types/claude-code/index.d.ts) into engine-types/, the local,
+// uncommitted copy the typecheck reads, taking the newest version found. Older Claude
+// Code sessions keep rewriting the generated copies, so it never replaces the copy in
+// engine-types/ with an older version unless run with --force. Run from the main
+// checkout or a worktree: it also reads the main checkout's mods, the only ones the
+// engine loads.
 import { execFileSync } from 'node:child_process'
-import { copyFileSync, existsSync, readFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 
 const MODS = ['thread-chat', 'multitask', 'react']
@@ -42,9 +43,10 @@ const name = v => v.join('.')
 if (current && compare(newest.version, current) === 0) {
   console.log(`engine-types is already at ${name(current)}.`)
 } else if (current && compare(newest.version, current) < 0 && !process.argv.includes('--force')) {
-  console.error(`The newest generated types are ${name(newest.version)}, older than the committed ${name(current)}; left as is (--force to replace).`)
+  console.error(`The newest generated types are ${name(newest.version)}, older than the ${name(current)} in engine-types; left as is (--force to replace).`)
   process.exit(1)
 } else {
+  mkdirSync(dirname(target), { recursive: true })
   copyFileSync(newest.file, target)
   console.log(`engine-types: ${current ? name(current) : 'none'} -> ${name(newest.version)}, from ${newest.file}`)
 }
