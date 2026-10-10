@@ -80,6 +80,10 @@ const viewThreads = atom({ plugin: 'thread-chat', key: 'viewThreads' } as const,
 const menuOpen = atom({ plugin: 'thread-chat', key: 'menuOpen' } as const, false)
 const pickerOpen = atom({ plugin: 'thread-chat', key: 'pickerOpen' } as const, false)
 const menuMode = atom({ plugin: 'thread-chat', key: 'menuMode' } as const, '')
+// The react mod's switch and reactions, which the thread view draws as the chat does
+// (types/react.d.ts); never written without react, so off and none.
+const reactIsOn = atom({ plugin: 'react', key: 'isOn' } as const, false)
+const reactReactions = atom({ plugin: 'react', key: 'reactions' } as const, [])
 
 const CREATE_TOOL = 'mcp__thread-chat__create_thread'
 // Thread-chat's menu in the band: a "Threads" button, and a row per switch, which a
@@ -1718,6 +1722,9 @@ async function viewInputs($: EngineInterface, step: (what: string) => void = () 
     deleted: await read($, deleted),
     known,
     messages,
+    // react's reactions while it draws them in the chat, its values read as the view draws,
+    // so a new one draws it again
+    reactions: (await read($, reactIsOn)) ? await read($, reactReactions) : [],
   }
   step(`threads read: ${inputs.list.length}, filter picked ${inputs.shown.length}`)
   return inputs

@@ -280,6 +280,24 @@ test('a reply of one emoji that reaches the transcript as it came is stored as "
   expect(seen.rows.find(row => row.uuid === 'a2')?.content).toEqual([{ type: 'text', text: 'Rerunning it now.' }])
 })
 
+test("the switch and reactions are kept as thread-chat's thread view reads them, to draw them as the chat does", async ($, on) => {
+  const seen = engine(on)
+  // what the mod writes to its values, as another plugin reads them
+  const written: Record<string, unknown> = {}
+  on('state.set', { plugin: 'react' }, ($, e, next) => {
+    written[e.key] = e.value
+    return next(e)
+  })
+  await start($)
+  await flip($)
+  await storePrompt($, 'p1', 'thanks, that fixed the build')
+  await step($, seen, [text('👍'), stop])
+  expect(written.isOn).toBe(true)
+  expect(written.reactions).toEqual([{ id: 'p1', mark: markOf('thanks, that fixed the build'), emoji: '👍' }])
+  await flip($)
+  expect(written.isOn).toBe(false)
+})
+
 test('a reply that became a reaction draws as nothing while on, and a message drawn as nothing gets no badge', async ($, on) => {
   const seen = engine(on)
   await start($)
