@@ -2,8 +2,8 @@ export type Thread = {
   name: string
   color: string
   createdBy: 'user' | 'agent'
-  // hidden from the thread picker and the move picker, but kept: its messages keep
-  // their tags, and a heading naming it brings it back
+  // hidden from the thread picker, the move picker and the thread view's filter, but
+  // kept: its messages keep their tags, and a heading naming it brings it back
   isArchived?: boolean
 }
 
@@ -59,7 +59,7 @@ declare module 'claude-code' {
       // a heading's key as typed -> the key of the thread it was decided to mean at send
       snaps: Record<string, string>
       // the key of the thread picked above the prompt ('' none): where a message with
-      // no heading goes, and what the thread view shows
+      // no heading goes. The thread view does not follow it (viewThreads).
       current: string
       // the keys of threads the person deleted: a heading that names one, or a merge or
       // an earlier send that points to one, belongs to no thread. A thread started again
@@ -88,8 +88,11 @@ declare module 'claude-code' {
       // one read draws the view again
       picturesRead: number
       // the first of the thread view's sections it draws, by its place among them; null
-      // while it draws the newest (as opened, or another pick of threads)
+      // while it draws the newest (as opened, or another pick in its filter)
       viewFrom: number | null
+      // what the thread view's own filter picked: the keys of the threads it shows, and
+      // '' for the sections of no thread; none, it shows every section
+      viewThreads: string[]
       // whether the band's menu shows its switches, on a surface where a press opens it
       menuOpen: boolean
       // what the band's menu shows of the threads: '' its first rows (the switches, opening

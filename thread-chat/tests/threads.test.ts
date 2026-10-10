@@ -119,7 +119,7 @@ async function pickerLabel(band: Picker) {
 }
 
 // Picks a thread in the band's thread picker ('' no thread): messages with no heading go
-// to it, and the thread view shows it.
+// to it.
 async function pickIn(band: { select: (target: { key: string; value: string }) => Promise<unknown> }, surface: 'terminal' | 'desktop', key: string) {
   void surface
   await band.select({ key: PICKER, value: key === '' ? 'none' : `thread:${key}` })

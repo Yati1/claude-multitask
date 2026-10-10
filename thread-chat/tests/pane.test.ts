@@ -6,6 +6,9 @@ import type { ViewImage, ViewRow } from '../types'
 import { PALETTE } from '../hooks/parse'
 import {
   EARLIER_KEY,
+  FILTER_ALL_KEY,
+  FILTER_NONE_KEY,
+  FILTER_THREAD_KEY,
   PICTURE_CHARS_DRAWN,
   chunksOf,
   dataFolderOf,
@@ -215,7 +218,15 @@ async function sectionsOf(pane: Drawing) {
   return sections
 }
 
-test('the thread view shows the picked thread alone, earlier replies too, and no tool rows', async ($, on) => {
+// The view's filter as drawn: each of its Buttons' label, starred where it is picked
+// (drawn as the main action).
+async function filterOf(pane: { findAll: (query: { type: string }) => Promise<{ props: Record<string, unknown> }[]> }) {
+  return (await pane.findAll({ type: 'Button' }))
+    .filter(b => String(b.props.key).startsWith('thread-view-filter:'))
+    .map(b => `${String(b.props.label)}${b.props.variant === 'primary' ? ' *' : ''}`)
+}
+
+test('the thread view shows the threads its own filter picks, earlier replies too, and no tool rows; the picker above the prompt leaves it be', async ($, on) => {
   engine(on)
   await flipThreads($)
   await $.prompt.submit(say('# design\nhello\n# perf\nfast?'))
@@ -240,7 +251,7 @@ test('the thread view shows the picked thread alone, earlier replies too, and no
   for (const surface of ['terminal', 'desktop'] as const) {
     const pane = await $.ui.mount({ plugin: 'thread-chat', surface, ...PANE })
     // none picked: the whole conversation, without its tool rows or the words a tool call followed
-    expect(await sectionsOf(pane)).toEqual([
+    const everything = [
       'you: hello',
       'you: fast?',
       'Claude: the plan',
@@ -248,15 +259,23 @@ test('the thread view shows the picked thread alone, earlier replies too, and no
       'Claude: it is fine',
       'you: what now?',
       'Claude: next step',
-    ])
+    ]
+    expect(await sectionsOf(pane)).toEqual(everything)
     expect(await pane.findAll({ text: /file contents|Read/ })).toEqual([])
+    // its filter: every thread, each thread, and the sections of no thread
+    expect(await filterOf(pane)).toEqual(['All *', 'design', 'perf', 'No thread'])
 
-    // design picked: its sections alone, before the last message too
+    // a thread picked above the prompt, where messages go, leaves the view as it was
     const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...BAND })
-    // (no redraw asked for: the pick draws the view again)
-    await band.select({ key: 'thread-picker', value: 'thread:design' })
+    await band.select({ key: 'thread-picker', value: 'thread:perf' })
+    expect(await sectionsOf(pane)).toEqual(everything)
+
+    // design picked in the view's filter: its sections alone, before the last message too;
+    // the picker above the prompt as it was (no redraw asked for: the pick draws the view again)
+    await pane.press({ key: `${FILTER_THREAD_KEY}design` })
     expect(await sectionsOf(pane)).toEqual(['you: hello', 'Claude: use a queue', 'Claude: next step'])
-    expect(await pane.find({ type: 'Text', text: /All threads/ })).toBeUndefined()
+    expect(await filterOf(pane)).toEqual(['All', 'design *', 'perf', 'No thread'])
+    expect((await band.find({ key: 'thread-picker' }))?.props.value).toBe('thread:perf')
 
     // each section's tag; the person's section a bubble in the surface's fill, and each
     // reply part in its thread's border, as the chat draws them; nothing filled in it
@@ -274,6 +293,22 @@ test('the thread view shows the picked thread alone, earlier replies too, and no
     ])
     // no Client: every overlay on the desktop shares their one frame
     expect(await pane.findAll({ type: 'Client' })).toEqual([])
+
+    // perf picked too: both threads' sections
+    await pane.press({ key: `${FILTER_THREAD_KEY}perf` })
+    expect(await sectionsOf(pane)).toEqual(['you: hello', 'you: fast?', 'Claude: use a queue', 'Claude: it is fine', 'Claude: next step'])
+    // each pressed again, the last leaving: every section
+    await pane.press({ key: `${FILTER_THREAD_KEY}design` })
+    expect(await sectionsOf(pane)).toEqual(['you: fast?', 'Claude: it is fine'])
+    await pane.press({ key: `${FILTER_THREAD_KEY}perf` })
+    expect(await sectionsOf(pane)).toEqual(everything)
+    // the sections of no thread alone, then every thread again
+    await pane.press({ key: FILTER_NONE_KEY })
+    expect(await sectionsOf(pane)).toEqual(['Claude: the plan', 'you: what now?'])
+    expect(await filterOf(pane)).toEqual(['All', 'design', 'perf', 'No thread *'])
+    await pane.press({ key: FILTER_ALL_KEY })
+    expect(await sectionsOf(pane)).toEqual(everything)
+    expect((await band.find({ key: 'thread-picker' }))?.props.value).toBe('thread:perf')
 
     await band.select({ key: 'thread-picker', value: 'none' })
     for (const site of [band, pane]) await site.unmount()
@@ -322,11 +357,11 @@ test('the view puts a message sent to the one picked thread, and a moved part, w
   await reply('a10', '# design\nnext step')
 
   const pane = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...PANE })
+  await pane.press({ key: `${FILTER_THREAD_KEY}perf` })
   expect(await sectionsOf(pane)).toEqual(['you: and the cache?'])
 
   // the person moves two reply parts from design to perf, with everything in view;
   // the terminal knows a reply by its row's id, the desktop by its API message's
-  await band.select({ key: 'thread-picker', value: 'thread:perf' })
   const terminal = await $.ui.mount({
     plugin: 'thread-chat',
     surface: 'terminal',
@@ -348,7 +383,6 @@ test('the view puts a message sent to the one picked thread, and a moved part, w
   await desktop.redraw()
   await desktop.pointer({ type: 'down', x: 1, y: 0, button: 'left', in: 'pick:perf' } as never)
 
-  await band.select({ key: 'thread-picker', value: 'thread:perf' })
   expect(await sectionsOf(pane)).toEqual(['you: and the cache?', 'Claude: use a queue', 'Claude: next step'])
 })
 
@@ -397,7 +431,7 @@ test("the person's messages draw as the chat's bubbles: their words as typed, a 
     expect(await pane.findAll({ type: 'Markdown' })).toEqual([])
     // the selection on one dim line beside a bar; no marker
     const dim = (await pane.findAll({ type: 'Text' })).filter(t => t.props.dimColor === true).map(t => t.text)
-    expect(dim).toEqual(['All threads. Pick a thread above the prompt to read it alone.', '│', 'use a queue'])
+    expect(dim).toEqual(['│', 'use a queue'])
     expect(await pane.findAll({ text: /<!--/ })).toEqual([])
     // on the desktop, at the right, rounded
     if (surface === 'desktop') {
@@ -550,7 +584,45 @@ test('/thread-view trace tells how the view was last opened and drawn, step by s
   const text = await trace()
   expect(text).toContain('open answered: {"isPlaced":true}')
   expect(text).toMatch(/: \d+ms returned a Box near 1\.00 of sections 0 on of 0: 0 picture cards, 0 with 0 characters of picture data/)
-  expect(text).toMatch(/\d+ms threads read: 1, picked 0/)
+  expect(text).toMatch(/\d+ms threads read: 1, filter picked 0/)
+})
+
+test("the view's filter follows a merge, lets go of an archived or deleted thread, and is kept for the next run", async ($, on) => {
+  const { kept } = engine(on)
+  await flipThreads($)
+  await $.prompt.submit(say('# design\na\n# perf\nb\n# docs\nc\n# ops\nd'))
+  const pane = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...PANE })
+  // with no messages stored yet, it says so above the filter
+  expect((await pane.find({ type: 'Text', text: /^Nothing/ }))?.text).toBe('Nothing here yet.')
+  for (const key of ['design', 'perf', 'docs']) await pane.press({ key: `${FILTER_THREAD_KEY}${key}` })
+  expect((await pane.find({ type: 'Text', text: /^Nothing/ }))?.text).toBe('Nothing in the threads shown yet.')
+  expect(await filterOf(pane)).toEqual(['All', 'design *', 'perf *', 'docs *', 'ops', 'No thread'])
+  expect((kept['session:session-1'] as { viewThreads?: unknown }).viewThreads).toEqual(['design', 'perf', 'docs'])
+
+  // perf merged into ops: ops picked in its place
+  await $.command.run({ command: 'merge-threads', args: 'perf into ops', origin: { kind: 'composer' }, presentation: {} as never })
+  expect(await filterOf(pane)).toEqual(['All', 'design *', 'docs *', 'ops *', 'No thread'])
+  // docs archived and design deleted, from the menu: they leave the filter, ops still picked
+  const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...BAND })
+  await band.press({ key: 'threads' })
+  await band.redraw()
+  await band.press({ key: 'threads:manage' })
+  await band.redraw()
+  await band.press({ key: 'threads:archive:docs' })
+  await band.redraw()
+  await band.press({ key: 'threads:delete:design' })
+  await band.redraw()
+  await band.press({ key: 'threads:delete-yes' })
+  expect(await filterOf(pane)).toEqual(['All', 'ops *', 'No thread'])
+  expect((kept['session:session-1'] as { viewThreads?: unknown }).viewThreads).toEqual(['ops'])
+})
+
+test('a restarted session takes up the filter its thread view kept', async ($, on) => {
+  const perf = { name: 'perf', color: PALETTE[1] ?? '#888888', createdBy: 'user' } as const
+  engine(on, { 'session:session-1': { isOn: true, threads: [DESIGN, perf], aliases: {}, snaps: {}, viewThreads: ['perf'] } })
+  await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
+  const pane = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...PANE })
+  expect(await filterOf(pane)).toEqual(['All', 'design', 'perf *', 'No thread'])
 })
 
 // A compaction's summary, as the engine stores it and the conversation then reads it.
@@ -828,11 +900,10 @@ test("the view shows messages alone: each turn's last reply, not a quiet one, no
       'Claude: Done.',
     ])
     // design picked: its parts alone
-    const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...BAND })
-    await band.select({ key: 'thread-picker', value: 'thread:design' })
+    await pane.press({ key: `${FILTER_THREAD_KEY}design` })
     expect(await sectionsOf(pane)).toEqual(['you: hello', 'Claude: the queue holds'])
-    await band.select({ key: 'thread-picker', value: 'none' })
-    for (const site of [band, pane]) await site.unmount()
+    await pane.press({ key: FILTER_ALL_KEY })
+    await pane.unmount()
   }
   // kept so for the session's next run
   expect(rowsIn(kept, files, 'session-1').flatMap(row => (row.interim === true ? [row.id] : []))).toEqual(['a1', 'a3'])

@@ -28,7 +28,7 @@ Threads keep mixed topics apart in one conversation. Start a message with a head
 ### Threads
 
 - **One message, two topics.** You write `# Bug` with a bug report, then `# Release` with a question about timing, in the same message. Each gets its own answer in its own section.
-- **Find it later.** After an hour across several topics, pick `# Deployment` and open the thread view to see only what was said about deployment.
+- **Find it later.** After an hour across several topics, open the thread view and pick `Deployment` in its filter to see only what was said about deployment.
 - **Tidy up.** A question about testing went into the wrong thread. You move it to `# Testing`, where it belongs.
 
 ### Both together

@@ -40,6 +40,7 @@ import {
   rowsOfChunks,
   rowsUpTo,
   thumbNameOf,
+  toggledShown,
   viewKey,
   viewMoveOf,
   viewPlaceOf,
@@ -67,6 +68,7 @@ const briefed = atom({ plugin: 'thread-chat', key: 'briefed' } as const, null)
 const viewRows = atom({ plugin: 'thread-chat', key: 'viewRows' } as const, [])
 const picturesRead = atom({ plugin: 'thread-chat', key: 'picturesRead' } as const, 0)
 const viewFrom = atom({ plugin: 'thread-chat', key: 'viewFrom' } as const, null)
+const viewThreads = atom({ plugin: 'thread-chat', key: 'viewThreads' } as const, [])
 const menuOpen = atom({ plugin: 'thread-chat', key: 'menuOpen' } as const, false)
 const pickerOpen = atom({ plugin: 'thread-chat', key: 'pickerOpen' } as const, false)
 const menuMode = atom({ plugin: 'thread-chat', key: 'menuMode' } as const, '')
@@ -347,9 +349,12 @@ type Saved = {
   moved: Record<string, string>
   untold: string[]
   briefed: Brief | null
+  // absent from a record kept before the thread view's own filter
+  viewThreads: string[]
 }
 
-// Keeps the session's switch, threads, merges, recorded meanings and picked thread for its next run.
+// Keeps the session's switch, threads, merges, recorded meanings, picked thread and the
+// thread view's filter for its next run.
 async function save($: EngineInterface) {
   const saved: Saved = {
     isOn: await read($, isOn),
@@ -362,6 +367,7 @@ async function save($: EngineInterface) {
     moved: await read($, moved),
     untold: await read($, untold),
     briefed: await read($, briefed),
+    viewThreads: await read($, viewThreads),
   }
   await $.store.set(storeKey(await $.session.id()), saved)
 }
@@ -405,7 +411,8 @@ async function parentOf($: EngineInterface, id: string): Promise<string | undefi
 
 // Joins a saved record to what this run holds, so neither loses anything: the threads
 // either knows (this run's own kept as they are), the merges, deletions and recorded
-// meanings of both (this run's winning), and this run's picked thread when it has one.
+// meanings of both (this run's winning), and this run's picked thread and the thread
+// view's filter when it has them.
 // A thread this run holds is not merged away or deleted by an older record. A record
 // kept before the thread picker gives the one thread its filter picked alone.
 async function takeUp($: EngineInterface, saved: Partial<Saved>) {
@@ -430,6 +437,7 @@ async function takeUp($: EngineInterface, saved: Partial<Saved>) {
   await update($, current, key => key || (saved.current ?? pickedByFilter(saved.threads ?? [])))
   await update($, untold, all => [...(saved.untold ?? []).filter(note => !all.includes(note)), ...all])
   await update($, briefed, brief => brief ?? saved.briefed ?? null)
+  await update($, viewThreads, keys => (keys.length > 0 ? keys : (saved.viewThreads ?? [])))
 }
 
 // A row's id as the screen knows it: blocks of one stored row drawn apart take
@@ -1213,7 +1221,7 @@ function drawPicker(
   )
 }
 
-// Picks the thread messages with no heading go to, which the thread view shows ('' none).
+// Picks the thread messages with no heading go to ('' none). The thread view's filter is its own.
 async function pickThread($: EngineInterface, key: string) {
   await update($, current, () => key)
   await save($)
@@ -1225,8 +1233,8 @@ async function nameByKey($: EngineInterface, key: string): Promise<string> {
 }
 
 // Merges the thread `fromKey` into `toKey`: an old heading means the one it joined, and
-// the picked thread follows it. The model is told beside the person's next message, as
-// where the threads stand changed.
+// the picked thread and the thread view's filter follow it. The model is told beside the
+// person's next message, as where the threads stand changed.
 async function mergeThreads($: EngineInterface, fromKey: string, toKey: string) {
   if (fromKey === toKey) return
   await update($, aliases, merged => ({
@@ -1235,18 +1243,22 @@ async function mergeThreads($: EngineInterface, fromKey: string, toKey: string) 
   }))
   await update($, threads, all => all.filter(t => keyOf(t.name) !== fromKey))
   await update($, current, key => (key === fromKey ? toKey : key))
+  await update($, viewThreads, keys => [...new Set(keys.map(key => (key === fromKey ? toKey : key)))])
   await save($)
 }
 
-// Archives a thread, or brings it back: archived, it leaves the pickers but keeps its
-// messages, and is no longer the picked thread. The model is told beside the person's
-// next message.
+// Archives a thread, or brings it back: archived, it leaves the pickers and the thread
+// view's filter but keeps its messages, and is no longer the picked thread. The model is
+// told beside the person's next message.
 async function setArchived($: EngineInterface, key: string, isArchived: boolean) {
   const name = await nameByKey($, key)
   await update($, threads, all =>
     all.map(t => (keyOf(t.name) !== key ? t : isArchived ? { ...t, isArchived: true } : withoutArchived(t))),
   )
-  if (isArchived) await update($, current, cur => (cur === key ? '' : cur))
+  if (isArchived) {
+    await update($, current, cur => (cur === key ? '' : cur))
+    await update($, viewThreads, keys => keys.filter(k => k !== key))
+  }
   const note = isArchived
     ? `The user archived the thread "${name}": it is hidden from their thread picker but kept. Write in it only if they bring it up.`
     : `The user brought back the archived thread "${name}".`
@@ -1263,6 +1275,7 @@ async function deleteThread($: EngineInterface, key: string) {
   await update($, threads, all => all.filter(t => keyOf(t.name) !== key))
   await update($, deleted, all => (all.includes(key) ? all : [...all, key]))
   await update($, current, cur => (cur === key ? '' : cur))
+  await update($, viewThreads, keys => keys.filter(k => k !== key))
   await update($, untold, all => [
     ...all,
     `The user deleted the thread "${name}": its messages no longer belong to any thread. Do not write under its heading unless they start it again.`,
@@ -1319,7 +1332,7 @@ const VIEW_SETTLE_MS = 100
 const VIEW_REDRAW_MS = 500
 // The plugin's keys the thread view is drawn from (viewInputs, and the pictures read).
 const VIEW_KEYS: ReadonlySet<string> = new Set([
-  'viewRows', 'picturesRead', 'viewFrom', 'threads', 'aliases', 'snaps', 'sentTo', 'moved', 'current', 'deleted',
+  'viewRows', 'picturesRead', 'viewFrom', 'viewThreads', 'threads', 'aliases', 'snaps', 'sentTo', 'moved', 'deleted',
 ])
 // Changes to what the thread view shows so far; the one the surface may yet report a
 // move of its own for as it draws it, until the person's next move or VIEW_REDRAW_MS.
@@ -1485,6 +1498,17 @@ function keptMoveOf(growth: ViewGrowth, e: { offset: number; by: number; bodyRow
   return nudge === 0 ? undefined : { at, offset: at + nudge, nudge }
 }
 
+// Changes what the thread view's filter picks (`shown` from what it picked), and takes
+// the view to the newest of what it then shows: where it was drawn from is of other
+// sections. The thread picked above the prompt stays as it is.
+async function filterView($: EngineInterface, shown: (keys: string[], list: Thread[]) => string[]) {
+  await placeViewAtEnd($)
+  const list = await read($, threads)
+  await update($, viewThreads, keys => shown(keys, list))
+  await save($)
+  await pinViewToEnd($)
+}
+
 // Opens the thread view (or shows it, already open) at its newest rows; a surface that
 // draws it only later is taken there as it does (settleView).
 async function openView($: EngineInterface) {
@@ -1520,12 +1544,12 @@ async function viewInputs($: EngineInterface, step: (what: string) => void = () 
     snapped: await read($, snaps),
     sent: await read($, sentTo),
     moves: await read($, moved),
-    current: await read($, current),
+    shown: await read($, viewThreads),
     deleted: await read($, deleted),
     known,
     messages,
   }
-  step(`threads read: ${inputs.list.length}, picked ${inputs.current === '' ? 0 : 1}`)
+  step(`threads read: ${inputs.list.length}, filter picked ${inputs.shown.length}`)
   return inputs
 }
 
@@ -2142,7 +2166,7 @@ async function drawThreadControls(
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'threads', description: 'Turn conversation threads on or off in this chat' })
-    await $.command.register({ name: VIEW, description: 'Show the picked thread alone, without tool rows, in a pane' })
+    await $.command.register({ name: VIEW, description: 'Read the threads you pick, without tool rows, in a pane' })
     // A restarted or resumed session takes up the rows its thread view kept; a reloaded
     // one, which holds its rows, the pictures' files noted in them since.
     if ((await read($, viewRows)).length === 0) {
@@ -2399,21 +2423,7 @@ export const register: Register = on => {
     return result
   })
 
-  // Another thread picked takes the thread view to the newest of what it holds.
-  on('state.set', { plugin: 'thread-chat', key: 'current' }, async ($, e, next) => {
-    const result = await next(e)
-    try {
-      if (e.previous !== e.value && (await $.ui.panes()).some(p => p.id === VIEW)) {
-        await placeViewAtEnd($)
-        await pinViewToEnd($)
-      }
-    } catch {
-      // the pick stands whether or not the view moves
-    }
-    return result
-  })
-
-  // The thread view: the picked thread's sections, their tags and a reply's
+  // The thread view: the sections of the threads its filter picked, their tags and a reply's
   // borders drawn by the code that draws the chat's. No Client: a pane of many
   // rows must not add to the Clients every overlay on the desktop shares. A failure to
   // draw it says so in the pane: else the engine draws its own, an empty pane.
@@ -2441,6 +2451,8 @@ export const register: Register = on => {
           near,
           from: from ?? undefined,
           showEarlier: () => void showEarlier($, viewContentRows),
+          toggleShown: key => void filterView($, (keys, list) => toggledShown(list, keys, key)),
+          showAll: () => void filterView($, () => []),
         },
         inputs,
         viewDeps,
