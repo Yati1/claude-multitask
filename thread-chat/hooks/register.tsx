@@ -1449,7 +1449,7 @@ const VIEW_SETTLE_MS = 100
 const VIEW_REDRAW_MS = 500
 // The plugin's keys the thread view is drawn from (viewInputs, and the pictures read).
 const VIEW_KEYS: ReadonlySet<string> = new Set([
-  'viewRows', 'picturesRead', 'viewFrom', 'viewThreads', 'threads', 'aliases', 'snaps', 'sentTo', 'moved', 'deleted',
+  'viewRows', 'picturesRead', 'viewFrom', 'viewThreads', 'recent', 'threads', 'aliases', 'snaps', 'sentTo', 'moved', 'deleted',
 ])
 // Changes to what the thread view shows so far; the one the surface may yet report a
 // move of its own for as it draws it, until the person's next move or VIEW_REDRAW_MS.
@@ -1480,11 +1480,22 @@ function noteViewChange($: EngineInterface) {
   })
 }
 
+// How long after a change to the view's filter the surface may still be drawing and laying
+// out what it then shows; and that change, while it may (filterView).
+const FILTER_SETTLE_MS = 1500
+let viewFiltering: number | undefined
+let viewFilters = 0
+
 // Whether a move reported as the person's is the surface's own as it draws a change at
-// the view's end: up, the first since the change, while it is drawn, and by no wheel
-// (whose pointer a terminal reports).
+// the view's end, by no wheel (whose pointer a surface reports): up, the first since the
+// change, while it is drawn; or any, while a filter change settles. Sections a wider
+// filter shows come above those in the window, and the surface keeping its window on
+// them moves it down, short of the new end.
 const isRedrawMove = (e: { origin: { kind: string }; by: number; pointer?: unknown }) =>
-  e.origin.kind === 'person' && e.pointer === undefined && viewChangeUndrawn !== undefined && viewPlace === 'end' && e.by < 0
+  e.origin.kind === 'person' &&
+  e.pointer === undefined &&
+  viewPlace === 'end' &&
+  ((viewChangeUndrawn !== undefined && e.by < 0) || viewFiltering !== undefined)
 
 // Takes the thread view's window to a row: a move to its top that its scroll hook
 // carries on to the row (a plugin names no row to scroll to).
@@ -1617,8 +1628,17 @@ function keptMoveOf(growth: ViewGrowth, e: { offset: number; by: number; bodyRow
 
 // Changes what the thread view's filter picks (`shown` from what it picked), and takes
 // the view to the newest of what it then shows: where it was drawn from is of other
-// sections. The thread picked above the prompt stays as it is.
+// sections. The surface's own moves as it draws and lays that out keep it at the end
+// (isRedrawMove), and once they settle it is taken there again, unless the person moved
+// it meanwhile. The thread picked above the prompt stays as it is.
 async function filterView($: EngineInterface, shown: (keys: string[], list: Thread[]) => string[]) {
+  const filtering = ++viewFilters
+  viewFiltering = filtering
+  $.clock.after(FILTER_SETTLE_MS, () => {
+    if (viewFiltering !== filtering) return
+    viewFiltering = undefined
+    if (viewPlace === 'end') void pinViewToEnd($)
+  })
   await placeViewAtEnd($)
   const list = await read($, threads)
   await update($, viewThreads, keys => shown(keys, list))
@@ -1662,6 +1682,7 @@ async function viewInputs($: EngineInterface, step: (what: string) => void = () 
     sent: await read($, sentTo),
     moves: await read($, moved),
     shown: await read($, viewThreads),
+    recent: await read($, recent),
     deleted: await read($, deleted),
     known,
     messages,
@@ -2623,7 +2644,6 @@ export const register: Register = on => {
           from: from ?? undefined,
           showEarlier: () => void showEarlier($, viewContentRows),
           toggleShown: key => void filterView($, (keys, list) => toggledShown(list, keys, key)),
-          showAll: () => void filterView($, () => []),
         },
         inputs,
         viewDeps,

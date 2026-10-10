@@ -46,7 +46,7 @@ Multitask has a dropdown, and thread-chat a `Threads` menu, in the band above th
 - `New thread` in the `Threads` menu starts a thread by name and picks it; `Manage threads` there merges, archives or deletes threads.
 - Archived threads leave the pickers but keep their messages; `Manage threads` brings them back, as does a heading naming one. Deleting a thread takes its tag off its messages.
 - `Filter the chat`, in the `Threads` menu while threads are on, is off at first, so the chat shows every message. On, with a thread picked, the chat shows only that thread's messages, and those since your last message that are in no thread. It is per chat, and kept when the chat is restarted.
-- `/thread-view`, or `Open thread view` in the `Threads` menu, opens the thread view: a pane with its own filter buttons, below its newest message, to show `All` threads or only the threads you pick (and `No thread` for messages outside any). The thread picker above the prompt and `Filter the chat` do not change it.
+- `/thread-view`, or `Open thread view` in the `Threads` menu, opens the thread view: a pane with a switch for each thread below its newest message. With none on it shows every message; with some on, only those threads' messages, and those since your last message that are in no thread, as `Filter the chat` does. The thread picker above the prompt and `Filter the chat` do not change it.
 - `/merge-threads <thread> into <thread>` also merges two threads.
 - `Agent may start threads`, in the `Threads` menu while threads are on, lets the agent start threads itself. It is per chat, and kept when the chat is restarted.
 

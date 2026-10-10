@@ -6,8 +6,6 @@ import type { ViewImage, ViewRow } from '../types'
 import { PALETTE } from '../hooks/parse'
 import {
   EARLIER_KEY,
-  FILTER_ALL_KEY,
-  FILTER_NONE_KEY,
   FILTER_THREAD_KEY,
   PICTURE_CHARS_DRAWN,
   chunksOf,
@@ -192,6 +190,18 @@ type Drawing = {
 
 type Drawn = { type?: string; props?: Record<string, unknown>; children?: unknown[] }
 
+// The element of a drawing with a key, its hover included.
+function keyedIn(node: unknown, key: string): (Drawn & { hover?: unknown }) | undefined {
+  if (typeof node !== 'object' || node === null) return undefined
+  const drawn = node as Drawn & { hover?: unknown }
+  if (drawn.props?.key === key) return drawn
+  for (const child of drawn.children ?? []) {
+    const found = keyedIn(child, key)
+    if (found !== undefined) return found
+  }
+  return undefined
+}
+
 // The strings an element shows, its own and its children's, in order.
 const shownIn = (node: unknown): string =>
   typeof node === 'string' ? node : ((node as Drawn | undefined)?.children ?? []).map(shownIn).join('')
@@ -219,11 +229,11 @@ async function sectionsOf(pane: Drawing) {
 }
 
 // The view's filter as drawn: each of its Buttons' label, starred where it is picked
-// (drawn as the main action).
+// (drawn at full strength, not dim).
 async function filterOf(pane: { findAll: (query: { type: string }) => Promise<{ props: Record<string, unknown> }[]> }) {
   return (await pane.findAll({ type: 'Button' }))
     .filter(b => String(b.props.key).startsWith('thread-view-filter:'))
-    .map(b => `${String(b.props.label)}${b.props.variant === 'primary' ? ' *' : ''}`)
+    .map(b => `${String(b.props.label)}${b.props.dimColor === true ? '' : ' *'}`)
 }
 
 test('the thread view shows the threads its own filter picks, earlier replies too, and no tool rows; the picker above the prompt leaves it be', async ($, on) => {
@@ -262,19 +272,25 @@ test('the thread view shows the threads its own filter picks, earlier replies to
     ]
     expect(await sectionsOf(pane)).toEqual(everything)
     expect(await pane.findAll({ text: /file contents|Read/ })).toEqual([])
-    // its filter: every thread, each thread, and the sections of no thread
-    expect(await filterOf(pane)).toEqual(['All *', 'design', 'perf', 'No thread'])
+    // its filter: a switch for each thread, none picked; plain, in the thread's colour and
+    // bold under the pointer; no label before them, no "All", no "No thread"
+    expect(await filterOf(pane)).toEqual(['design', 'perf'])
+    const designSwitch = keyedIn(await pane.drawn(), `${FILTER_THREAD_KEY}design`)
+    expect(designSwitch?.props).toMatchObject({ plain: true, dimColor: true })
+    expect(designSwitch?.hover).toEqual({ color: '#4fa3e0', bold: true })
+    expect(await pane.find({ type: 'Text', text: 'Show' })).toBeUndefined()
 
     // a thread picked above the prompt, where messages go, leaves the view as it was
     const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...BAND })
     await band.select({ key: 'thread-picker', value: 'thread:perf' })
     expect(await sectionsOf(pane)).toEqual(everything)
 
-    // design picked in the view's filter: its sections alone, before the last message too;
-    // the picker above the prompt as it was (no redraw asked for: the pick draws the view again)
+    // design picked in the view's filter: its sections, before the last message too, and as
+    // the chat's filter shows them, those of no thread since the person's last message; the
+    // picker above the prompt as it was (no redraw asked for: the pick draws the view again)
     await pane.press({ key: `${FILTER_THREAD_KEY}design` })
-    expect(await sectionsOf(pane)).toEqual(['you: hello', 'Claude: use a queue', 'Claude: next step'])
-    expect(await filterOf(pane)).toEqual(['All', 'design *', 'perf', 'No thread'])
+    expect(await sectionsOf(pane)).toEqual(['you: hello', 'Claude: use a queue', 'you: what now?', 'Claude: next step'])
+    expect(await filterOf(pane)).toEqual(['design *', 'perf'])
     expect((await band.find({ key: 'thread-picker' }))?.props.value).toBe('thread:perf')
 
     // each section's tag; the person's section a bubble in the surface's fill, and each
@@ -285,7 +301,8 @@ test('the thread view shows the threads its own filter picks, earlier replies to
         : (await pane.findAll({ type: 'Svg' })).filter(p => p.props.alt === 'design').length
     expect(tags).toBe(3)
     const filled = (await pane.findAll({ type: 'Box' })).filter(b => b.props.backgroundColor !== undefined)
-    expect(filled.map(b => b.props.backgroundColor)).toEqual([surface === 'terminal' ? 'userMessageBackground' : '#8888881a'])
+    const fill = surface === 'terminal' ? 'userMessageBackground' : '#8888881a'
+    expect(filled.map(b => b.props.backgroundColor)).toEqual([fill, fill])
     const bordered = (await pane.findAll({ type: 'Box' })).filter(b => PALETTE.some(color => b.props.borderColor === color))
     expect(bordered.map(b => [b.props.borderStyle, b.props.borderColor])).toEqual([
       ['round', '#4fa3e0'],
@@ -294,20 +311,23 @@ test('the thread view shows the threads its own filter picks, earlier replies to
     // no Client: every overlay on the desktop shares their one frame
     expect(await pane.findAll({ type: 'Client' })).toEqual([])
 
-    // perf picked too: both threads' sections
+    // perf picked too: both threads' sections, each picked at full strength
     await pane.press({ key: `${FILTER_THREAD_KEY}perf` })
-    expect(await sectionsOf(pane)).toEqual(['you: hello', 'you: fast?', 'Claude: use a queue', 'Claude: it is fine', 'Claude: next step'])
+    expect(await sectionsOf(pane)).toEqual([
+      'you: hello',
+      'you: fast?',
+      'Claude: use a queue',
+      'Claude: it is fine',
+      'you: what now?',
+      'Claude: next step',
+    ])
+    expect(await filterOf(pane)).toEqual(['design *', 'perf *'])
     // each pressed again, the last leaving: every section
     await pane.press({ key: `${FILTER_THREAD_KEY}design` })
-    expect(await sectionsOf(pane)).toEqual(['you: fast?', 'Claude: it is fine'])
+    expect(await sectionsOf(pane)).toEqual(['you: fast?', 'Claude: it is fine', 'you: what now?'])
     await pane.press({ key: `${FILTER_THREAD_KEY}perf` })
     expect(await sectionsOf(pane)).toEqual(everything)
-    // the sections of no thread alone, then every thread again
-    await pane.press({ key: FILTER_NONE_KEY })
-    expect(await sectionsOf(pane)).toEqual(['Claude: the plan', 'you: what now?'])
-    expect(await filterOf(pane)).toEqual(['All', 'design', 'perf', 'No thread *'])
-    await pane.press({ key: FILTER_ALL_KEY })
-    expect(await sectionsOf(pane)).toEqual(everything)
+    expect(await filterOf(pane)).toEqual(['design', 'perf'])
     expect((await band.find({ key: 'thread-picker' }))?.props.value).toBe('thread:perf')
 
     await band.select({ key: 'thread-picker', value: 'none' })
@@ -625,12 +645,12 @@ test("the view's filter follows a merge, lets go of an archived or deleted threa
   expect((await pane.find({ type: 'Text', text: /^Nothing/ }))?.text).toBe('Nothing here yet.')
   for (const key of ['design', 'perf', 'docs']) await pane.press({ key: `${FILTER_THREAD_KEY}${key}` })
   expect((await pane.find({ type: 'Text', text: /^Nothing/ }))?.text).toBe('Nothing in the threads shown yet.')
-  expect(await filterOf(pane)).toEqual(['All', 'design *', 'perf *', 'docs *', 'ops', 'No thread'])
+  expect(await filterOf(pane)).toEqual(['design *', 'perf *', 'docs *', 'ops'])
   expect((kept['session:session-1'] as { viewThreads?: unknown }).viewThreads).toEqual(['design', 'perf', 'docs'])
 
   // perf merged into ops: ops picked in its place
   await $.command.run({ command: 'merge-threads', args: 'perf into ops', origin: { kind: 'composer' }, presentation: {} as never })
-  expect(await filterOf(pane)).toEqual(['All', 'design *', 'docs *', 'ops *', 'No thread'])
+  expect(await filterOf(pane)).toEqual(['design *', 'docs *', 'ops *'])
   // docs archived and design deleted, from the menu: they leave the filter, ops still picked
   const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...BAND })
   await band.press({ key: 'threads' })
@@ -642,7 +662,7 @@ test("the view's filter follows a merge, lets go of an archived or deleted threa
   await band.press({ key: 'threads:delete:design' })
   await band.redraw()
   await band.press({ key: 'threads:delete-yes' })
-  expect(await filterOf(pane)).toEqual(['All', 'ops *', 'No thread'])
+  expect(await filterOf(pane)).toEqual(['ops *'])
   expect((kept['session:session-1'] as { viewThreads?: unknown }).viewThreads).toEqual(['ops'])
 })
 
@@ -651,7 +671,7 @@ test('a restarted session takes up the filter its thread view kept', async ($, o
   engine(on, { 'session:session-1': { isOn: true, threads: [DESIGN, perf], aliases: {}, snaps: {}, viewThreads: ['perf'] } })
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
   const pane = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...PANE })
-  expect(await filterOf(pane)).toEqual(['All', 'design', 'perf *', 'No thread'])
+  expect(await filterOf(pane)).toEqual(['design', 'perf *'])
 })
 
 // A compaction's summary, as the engine stores it and the conversation then reads it.
@@ -928,10 +948,11 @@ test("the view shows messages alone: each turn's last reply, not a quiet one, no
       'Claude: On it.',
       'Claude: Done.',
     ])
-    // design picked: its parts alone
+    // design picked: its parts alone (the last message the person's /threads, after which
+    // the rows of no thread came before it)
     await pane.press({ key: `${FILTER_THREAD_KEY}design` })
     expect(await sectionsOf(pane)).toEqual(['you: hello', 'Claude: the queue holds'])
-    await pane.press({ key: FILTER_ALL_KEY })
+    await pane.press({ key: `${FILTER_THREAD_KEY}design` })
     await pane.unmount()
   }
   // kept so for the session's next run
@@ -1086,6 +1107,59 @@ test('the view at its end stays there as the desktop draws it shorter', async ($
   await reply('a4', 'Fixed.')
   await advance()
   expect(await moveBy(-6)).toBe(34)
+})
+
+// (A wider filter shows sections above those in the window, and the desktop, keeping its
+// window on them, moves it down short of the new end: a move it reports as the person's,
+// with no pointer. The test holds each wait the plugin asks the clock for until it
+// advances; the kit answers none of the plugin's own scrolls, so its moves to the end go
+// unseen here.)
+test("every change to the view's filter takes it to the newest messages, back to everything too", async ($, on) => {
+  const { scrolls } = engine(on)
+  let due: (() => void)[] = []
+  on('clock.after', () => new Promise(resolve => due.push(() => resolve({ value: undefined }))))
+  const advance = async () => {
+    const now = due
+    due = []
+    for (const end of now) end()
+    await new Promise<void>(resolve => later(resolve, 10))
+  }
+  await flipThreads($)
+  await $.prompt.submit(say('# design\na\n# perf\nb'))
+  const { person, reply } = storer($)
+  await person('p1', '# design\nhello')
+  await reply('a1', 'the plan\n# perf\nfast')
+  await person('p2', 'and then?')
+  await reply('a2', '# design\nnext')
+  const pane = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...PANE })
+  // a window of 20 rows over the view, `contentRows` long as the desktop lays it out:
+  // where the plugin passes on a move of the desktop's, or of the person's wheel
+  const move = async (offset: number, by: number, contentRows: number, isWheel = false) => {
+    const pointer = isWheel ? { pointer: { column: 1, row: 1 } } : {}
+    await $.ui.scroll({ component: 'Pane', requestId: 'thread-view', offset, by, bodyRows: 20, contentRows, origin: { kind: 'person' }, ...pointer })
+    return scrolls.at(-1)?.offset
+  }
+
+  // design picked: the shorter view's move is kept at its end
+  await pane.press({ key: `${FILTER_THREAD_KEY}design` })
+  expect(await move(25, -15, 50)).toBe(30)
+  await advance()
+  // the last pick let go, everything shown: the desktop's moves as it lays out the longer
+  // view, down or none, go to its new end
+  await pane.press({ key: `${FILTER_THREAD_KEY}design` })
+  expect(await move(35, 5, 90)).toBe(70)
+  expect(await move(70, 0, 95)).toBe(75)
+  // the person's wheel meanwhile is theirs, and the desktop's moves after it too
+  expect(await move(50, -25, 95, true)).toBe(50)
+  expect(await move(53, 3, 95)).toBe(53)
+  await advance()
+
+  // a pick from there takes it to the end again, and the desktop's move with it
+  await pane.press({ key: `${FILTER_THREAD_KEY}perf` })
+  expect(await move(35, 2, 60)).toBe(40)
+  await advance()
+  // once that settles, a move up is the person's
+  expect(await move(34, -6, 60)).toBe(34)
 })
 
 test('the view draws from the start of a message, and keeps its window on what it showed as earlier ones come above', () => {
