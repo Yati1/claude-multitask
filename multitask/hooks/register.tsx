@@ -1245,6 +1245,8 @@ export const register: Register = (on, options) => {
       return <Box display="none" />
     }
     const isRelay = (origin.kind === 'plugin' && origin.name === 'multitask') || isRelayText(e.props.text)
+    // A thought's notice folds to the dim line on the terminal. The desktop may never ask to
+    // draw one (it draws its own task chips), but that is unconfirmed, so it is hidden there.
     const taskId = e.props.task?.id
     const isThoughtNotice =
       origin.kind === 'task-notification' &&
