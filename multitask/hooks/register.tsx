@@ -1428,9 +1428,7 @@ export const register: Register = (on, options) => {
     const live = (await read($, thoughts)).filter(t => t.status !== 'stopped')
     // The count is of the thoughts running now; an idle or failed one only keeps the button up.
     const running = live.filter(t => t.status === 'running').length
-    const queued = live.reduce((n, t) => n + t.queued.length, 0)
-    const thoughtsLabel =
-      (running > 0 ? `thoughts ${running}` : 'thoughts') + (queued > 0 ? ` · ${queued} queued` : '')
+    const thoughtsLabel = running > 0 ? `thoughts ${running}` : 'thoughts'
     const { Box, Button } = $.ui.resolve(e)
     let dropdown: RenderElement | undefined
     if (e.surface !== 'mobile') {
