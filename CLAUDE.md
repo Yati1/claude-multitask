@@ -6,6 +6,8 @@ Three Claude Code mods, each a plugin in its own folder: `thread-chat`, `multita
 
 The mod folders in this checkout are loaded live, so in auto mode edits to them here are blocked. Make every change in a git worktree on its own branch, then merge it into main.
 
+Bring main into a development branch by rebasing the branch onto main, not by merging main into it. Merge finished branches into main with `--no-ff`.
+
 ## Cleaning up worktrees
 
 Once a worktree's branch is merged into main, remove the worktree and delete its branch in the same step. Leave nothing behind: no stray worktrees or branches, and no ignored copies such as `node_modules`. Delete an unmerged branch only when the user says so; otherwise list it for them.
