@@ -1,7 +1,6 @@
-import type { On, RenderElement } from 'claude-code'
+import type { On } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
-
-import { MENU, MENU_BUTTON, SWITCHES, drawBand } from '../hooks/menu'
+import type { Engine } from 'claude-code/testing'
 
 // The test stands in for the engine beneath the plugin.
 function engine(on: On) {
@@ -16,27 +15,6 @@ function engine(on: On) {
   on('turn.complete', () => ({ text: '' }))
 }
 
-// The other two mods, multitask and react, drawn beneath through the same band as they
-// draw it: each its switch, multitask its `thoughts` too.
-function otherMods(on: On) {
-  on('ui.render', { component: 'AbovePrompt' }, async ($, e) => {
-    const ui = $.ui.resolve(e)
-    const parts = (name: string, rank: number, label: string, control?: RenderElement) => ({
-      ui,
-      surface: e.surface,
-      controls: control === undefined ? undefined : { rank, name, element: control },
-      switches: [{ rank, key: `mods-menu:${name}`, label, isOn: false, onPress: () => undefined }],
-      isOpen: async () => false,
-      onToggle: () => undefined,
-    })
-    const react = await drawBand({ type: 'engine', ref: 0 }, parts('react', 30, 'Reactions'))
-    return drawBand(
-      react,
-      parts('multitask', 20, 'Multitask', ui.Button({ key: 'open-thoughts', label: 'thoughts', onPress: () => undefined })),
-    )
-  })
-}
-
 const BAND = {
   component: 'AbovePrompt',
   props: {
@@ -49,105 +27,167 @@ const BAND = {
   },
 } as const
 
+// The row below the input that holds the mode and model.
+const MODE = { component: 'SessionMode', props: { modes: [] } } as const
+
+// Thread-chat's menu in the band, and its switches: threads on in this chat, and
+// whether the agent may start them.
+const MENU = 'threads'
+const THREADS_SWITCH = 'threads-on'
+const AGENT_SWITCH = 'agent-threads'
+// The menu's row that opens the thread view, while threads are on.
+const VIEW = 'thread-view'
+
+const TOOL = 'mcp__thread-chat__create_thread'
+
 const say = (text: string) => ({ text, origin: { kind: 'composer' as const }, wait: false })
 
-type Drawn = { type: string; props?: Record<string, unknown>; hover?: Record<string, unknown>; children?: unknown[] }
+const flipThreads = ($: Engine) =>
+  $.command.run({ command: 'threads', args: '', origin: { kind: 'composer' }, presentation: {} as never })
 
-// The path from the root to the first element `is` holds, outermost first.
-function pathTo(node: unknown, is: (n: Drawn) => boolean): Drawn[] | undefined {
+type Drawn = { type?: string; props?: Record<string, unknown>; hover?: unknown; children?: unknown[] }
+
+// The first element of a drawn tree keyed `key`, outermost first.
+function keyedIn(node: unknown, key: string): Drawn | undefined {
   if (typeof node !== 'object' || node === null) return undefined
   const n = node as Drawn
-  if (is(n)) return [n]
+  if (n.props?.key === key) return n
   for (const child of n.children ?? []) {
-    const below = pathTo(child, is)
-    if (below !== undefined) return [n, ...below]
+    const hit = keyedIn(child, key)
+    if (hit !== undefined) return hit
   }
   return undefined
 }
 
-// The keys of the mods menu's switches, in the order drawn.
-async function switchKeys(band: { findAll: (query: { type: string }) => Promise<{ key: string | undefined }[]> }) {
-  return (await band.findAll({ type: 'Button' })).map(b => b.key ?? '').filter(key => key.startsWith('mods-menu:'))
+// The pictures under `node`, by alt.
+function picturesIn(node: unknown): string[] {
+  if (typeof node !== 'object' || node === null) return []
+  const n = node as Drawn
+  return n.type === 'Svg' ? [String(n.props?.alt)] : (n.children ?? []).flatMap(picturesIn)
 }
 
-test('alone, thread-chat draws the band with one mods menu holding its switch', async ($, on) => {
-  engine(on)
-  for (const surface of ['desktop', 'terminal'] as const) {
-    const band = await $.ui.mount({ plugin: 'thread-chat', surface, ...BAND })
-    expect(await band.findAll({ key: MENU })).toHaveLength(1)
-    expect(await band.findAll({ key: MENU_BUTTON })).toHaveLength(1)
-    expect(await switchKeys(band)).toEqual(['mods-menu:threads'])
-    expect((await band.find({ key: 'mods-menu:threads' }))?.props.label).toBe('off')
-    await band.unmount()
-  }
-})
+// The desktop menu's switches as drawn: each one's slide switch, by its picture's alt,
+// in the menu after its caret.
+const switchesOf = async (band: { drawn: () => Promise<unknown> }) =>
+  picturesIn(keyedIn(await band.drawn(), MENU)).filter(alt => alt !== 'menu')
 
-test('with the other mods drawn beneath, the band still holds one mods menu, every mod its switches in it', async ($, on) => {
-  otherMods(on)
-  engine(on)
-  await $.command.run({ command: 'threads', args: '', origin: { kind: 'composer' }, presentation: {} as never })
-  await $.prompt.submit(say('# design\na'))
+// A press on a slide switch's hit area, as a click on it.
+const clickSwitch = (band: { pointer: (p: never) => Promise<unknown> }, key: string) =>
+  band.pointer({ type: 'down', x: 1, y: 0, button: 'left', in: `switch:${key}` } as never)
 
-  for (const surface of ['desktop', 'terminal'] as const) {
-    const band = await $.ui.mount({ plugin: 'thread-chat', surface, ...BAND })
-    const tree = await band.drawn()
-    expect(await band.findAll({ key: MENU })).toHaveLength(1)
-    expect(await band.findAll({ key: MENU_BUTTON })).toHaveLength(1)
-    expect(await switchKeys(band)).toEqual(['mods-menu:threads', 'mods-menu:agent-threads', 'mods-menu:multitask', 'mods-menu:react'])
-    // the controls in one row, the threads first, the menu at the row's end
-    const pill = pathTo(tree, n => n.props?.key === 'thread-picker')
-    const thoughts = pathTo(tree, n => n.props?.key === 'open-thoughts')
-    const menu = pathTo(tree, n => n.props?.key === MENU)
-    expect(pill?.[0]).toBe(tree as unknown as Drawn)
-    expect(thoughts?.[1]).toBe(pill?.[1])
-    expect(menu?.length).toBe(2)
-    expect((tree as Drawn).children?.at(-1)).toBe(menu?.[1])
-    await band.unmount()
-  }
-})
-
-test('the mods menu is a card on the desktop the pointer reveals over the band', async ($, on) => {
-  engine(on)
-  const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...BAND })
-  const path = pathTo(await band.drawn(), n => n.props?.key === SWITCHES)
-  const [card, list] = (path ?? []).slice(-2)
-  expect(path?.at(-3)?.props?.key).toBe(MENU)
-  expect(card?.props).toMatchObject({ position: 'absolute', display: 'none' })
-  expect(card?.hover).toEqual({ display: 'flex' })
-  expect(list?.props?.display).toBeUndefined()
-})
-
-test('off the desktop, mods opens and closes the menu in the band', async ($, on) => {
-  engine(on)
-  const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...BAND })
-  const shown = async () => (await band.find({ key: SWITCHES }))?.props.display
-  expect(await shown()).toBe('none')
-  await band.press({ key: MENU_BUTTON })
-  await band.redraw()
-  expect(await shown()).toBe('flex')
-  await band.press({ key: MENU_BUTTON })
-  await band.redraw()
-  expect(await shown()).toBe('none')
-})
-
-test('the threads switch in the mods menu turns threads on and off, as /threads does', async ($, on) => {
+test('the desktop draws a Threads button like its Select, its switches in a card the pointer reveals; nothing below the input', async ($, on) => {
   engine(on)
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
-  for (const surface of ['desktop', 'terminal'] as const) {
-    const band = await $.ui.mount({ plugin: 'thread-chat', surface, ...BAND })
-    expect(await band.find({ text: /start a thread/ })).toBeUndefined()
-    await band.press({ key: 'mods-menu:threads' })
-    await band.redraw()
-    expect((await band.find({ key: 'mods-menu:threads' }))?.props.label).toBe('on')
-    expect(await band.find({ text: /start a thread with # name/ })).toBeDefined()
-    expect((await band.find({ key: 'mods-menu:agent-threads' }))?.props.label).toBe('off')
-    await band.press({ key: 'mods-menu:threads' })
-    await band.redraw()
-    expect((await band.find({ key: 'mods-menu:threads' }))?.props.label).toBe('off')
-    expect(await band.find({ text: /start a thread/ })).toBeUndefined()
-    expect(await band.find({ key: 'mods-menu:agent-threads' })).toBeUndefined()
-    await band.unmount()
-  }
+  const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...BAND })
+
+  // the button: a keyed Box, one line high, with the Select's ring (stronger under the
+  // pointer), fill and caret, reading Threads
+  const button = keyedIn(await band.drawn(), MENU)
+  expect(button?.type).toBe('Box')
+  expect(button?.props).toMatchObject({ height: 1, paddingX: 1, paddingY: 0, borderStyle: 'single', backgroundColor: 'userMessageBackground' })
+  expect(button?.hover).toEqual({ borderColor: 'promptBorder' })
+  expect(await band.find({ type: 'Text', text: 'Threads' })).toBeDefined()
+  const caret = await band.find({ type: 'Svg' })
+  expect(caret?.props).toMatchObject({ alt: 'menu', width: 20, height: 14 })
+  expect(String(caret?.props.source)).toContain('d="M4 6l4 4 4-4"')
+
+  // the card: out of the flow, shown only under the pointer, so the desktop lifts it;
+  // a row per switch, its label a Button and its slide switch a picture with a hit area
+  const card = (button?.children as Drawn[]).find(n => n.type === 'Box' && n.props?.display === 'none')
+  expect(card?.props).toMatchObject({ position: 'absolute', display: 'none' })
+  expect(card?.hover).toEqual({ display: 'flex' })
+  expect((await band.find({ key: THREADS_SWITCH }))?.props).toMatchObject({ label: 'On in this chat', plain: true })
+  expect(await switchesOf(band)).toEqual(['On in this chat: off'])
+  const hit = await band.find({ key: `switch:${THREADS_SWITCH}` })
+  expect(hit?.type).toBe('Client')
+  expect(String(hit?.props.module)).toEndWith('switch.tsx')
+  expect(hit?.props.props).toEqual({ isOn: false })
+  expect(await band.find({ key: AGENT_SWITCH })).toBeUndefined()
+  expect(await band.find({ key: VIEW })).toBeUndefined()
+
+  const mode = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...MODE })
+  expect(await mode.drawn()).toEqual({ type: 'engine', ref: 0 })
+})
+
+test("the desktop menu's labels and slide switches flip threads and the agent switch", async ($, on) => {
+  engine(on)
+  await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
+  const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...BAND })
+  expect((await $.tool.call({ tool: TOOL, tool_use_id: 't1', name: 'ideas' })).deny).toContain('off')
+
+  // On in this chat's label turns threads on, as /threads does, and the agent's switch
+  // joins it, then the row that opens the thread view, in the card
+  await band.press({ key: THREADS_SWITCH })
+  await band.redraw()
+  expect(await switchesOf(band)).toEqual(['On in this chat: on', 'Agent may start threads: off'])
+  expect(keyedIn(keyedIn(await band.drawn(), MENU), VIEW)).toMatchObject({ type: 'Button', props: { label: 'Open thread view', plain: true } })
+  expect(await band.find({ text: /start a thread with # name/ })).toBeDefined()
+  expect((await $.tool.call({ tool: TOOL, tool_use_id: 't2', name: 'ideas' })).deny).toBeDefined()
+
+  // the agent's slide switch lets the agent start threads, and back
+  await clickSwitch(band, AGENT_SWITCH)
+  await band.redraw()
+  expect(await switchesOf(band)).toEqual(['On in this chat: on', 'Agent may start threads: on'])
+  expect((await $.tool.call({ tool: TOOL, tool_use_id: 't3', name: 'ideas' })).deny).toBeUndefined()
+  await band.press({ key: AGENT_SWITCH })
+  await band.redraw()
+  expect(await switchesOf(band)).toEqual(['On in this chat: on', 'Agent may start threads: off'])
+
+  // On in this chat's slide switch turns them off, and the view's row goes
+  await clickSwitch(band, THREADS_SWITCH)
+  await band.redraw()
+  expect(await switchesOf(band)).toEqual(['On in this chat: off'])
+  expect(await band.find({ key: VIEW })).toBeUndefined()
   const reply = await $.command.run({ command: 'merge-threads', args: 'a into b', origin: { kind: 'composer' }, presentation: {} as never })
   expect(reply.text).toBe('Threads are off in this chat; /threads turns them on.')
+})
+
+test('the terminal opens and shuts the menu with a press on Threads, its switches beside it', async ($, on) => {
+  engine(on)
+  await $.session.start({ cwd: '.', surface: 'terminal', isInteractive: true })
+  const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...BAND })
+  const labelOf = async (key: string) => (await band.find({ key }))?.props.label
+
+  // shut, the button alone
+  expect(await band.find({ key: MENU })).toMatchObject({ type: 'Button', props: { label: 'Threads ▾' } })
+  expect(await band.find({ key: THREADS_SWITCH })).toBeUndefined()
+
+  // open, a switch per row beside it, off
+  await band.press({ key: MENU })
+  await band.redraw()
+  expect(await labelOf(MENU)).toBe('Threads ▴')
+  expect(await band.find({ text: 'On in this chat' })).toBeDefined()
+  expect(await labelOf(THREADS_SWITCH)).toBe('(● )')
+  expect(await band.find({ key: VIEW })).toBeUndefined()
+
+  // a press flips one, and threads on bring the agent's, then the thread view's row
+  await band.press({ key: THREADS_SWITCH })
+  await band.redraw()
+  expect(await labelOf(THREADS_SWITCH)).toBe('( ●)')
+  expect(await labelOf(AGENT_SWITCH)).toBe('(● )')
+  expect(await labelOf(VIEW)).toBe('Open thread view')
+  await band.press({ key: AGENT_SWITCH })
+  await band.redraw()
+  expect(await labelOf(AGENT_SWITCH)).toBe('( ●)')
+  expect((await $.tool.call({ tool: TOOL, tool_use_id: 't1', name: 'ideas' })).deny).toBeUndefined()
+
+  // Threads again shuts it
+  await band.press({ key: MENU })
+  await band.redraw()
+  expect(await labelOf(MENU)).toBe('Threads ▾')
+  expect(await band.find({ key: THREADS_SWITCH })).toBeUndefined()
+  expect(await band.find({ key: VIEW })).toBeUndefined()
+})
+
+test('the mobile app, which draws no menu, shows the thread picker alone while threads are on', async ($, on) => {
+  engine(on)
+  await $.session.start({ cwd: '.', surface: 'mobile', isInteractive: true })
+  const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'mobile', ...BAND })
+  expect(await band.drawn()).toEqual({ type: 'engine', ref: 0 })
+  await flipThreads($)
+  await $.prompt.submit(say('# design\na'))
+  await band.redraw()
+  expect(await band.find({ key: MENU })).toBeUndefined()
+  expect(await band.find({ key: VIEW })).toBeUndefined()
+  expect(await band.find({ key: 'thread-picker' })).toBeDefined()
 })

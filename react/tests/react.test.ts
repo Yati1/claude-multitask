@@ -1,8 +1,7 @@
-import type { On, RenderElement, TurnStepChunk } from 'claude-code'
+import type { On, TurnStepChunk } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 
-import { MENU, MENU_BUTTON, drawBand } from '../hooks/menu'
 import { BRIEF, NO_RESPONSE, OFF_NOTE, couldBeEmoji, isOneEmoji, markOf, marksOf } from '../hooks/reactions'
 
 type Seen = {
@@ -89,7 +88,7 @@ async function step($: Engine, seen: Seen, pieces: TurnStepChunk[], agentId?: st
   }
 }
 
-// How a person's message draws on a surface: the reaction under it, or the engine's
+// How a person's message draws on a surface: the reaction by it, or the engine's
 // drawing alone, or nothing.
 async function badgeOf($: Engine, surface: 'terminal' | 'desktop', requestId: string, said: string) {
   const row = await $.ui.mount({
@@ -107,6 +106,34 @@ async function badgeOf($: Engine, surface: 'terminal' | 'desktop', requestId: st
     const texts = await Promise.all(['(', ')'].map(mark => row.find({ type: 'Text', text: mark })))
     const emoji = await row.find({ type: 'Text', text: /\p{Extended_Pictographic}/u })
     return texts.every(t => t !== undefined) ? `(${emoji?.text ?? ''})` : 'no brackets'
+  } finally {
+    await row.unmount()
+  }
+}
+
+// Where a person's message's reaction sits by it, read from the drawing: the way the box
+// holding both runs, their order, and the edge the reaction keeps to in its own row.
+async function placeOf($: Engine, surface: 'terminal' | 'desktop', requestId: string, said: string) {
+  const row = await $.ui.mount({
+    plugin: 'react',
+    surface,
+    component: 'UserMessage',
+    props: { text: said, origin: { kind: 'composer' }, isExpanded: false },
+    requestId,
+  })
+  try {
+    type Drawn = { type: string; props?: { flexDirection?: string; justifyContent?: string }; children?: unknown[] }
+    const tree = (await row.drawn()) as Drawn
+    const holdsEngine = (node: unknown): boolean =>
+      typeof node === 'object' && node !== null && ((node as Drawn).type === 'engine' || ((node as Drawn).children ?? []).some(holdsEngine))
+    const parts = (tree.children ?? [])
+      .filter((child): child is Drawn => typeof child === 'object' && child !== null)
+      .map(child => {
+        if (holdsEngine(child)) return 'message'
+        const edge = child.props?.justifyContent
+        return edge === undefined ? 'reaction' : `reaction at ${edge}`
+      })
+    return `${tree.props?.flexDirection ?? 'row'}: ${parts.join(', ')}`
   } finally {
     await row.unmount()
   }
@@ -178,6 +205,10 @@ test("a reply of one emoji goes on as \"No response requested.\" and draws as a 
       badge: surface === 'desktop' ? 'Reaction: 👍🏽' : '(👍🏽)',
     })
   }
+  // On the desktop it sits on the line above the bubble, at the right as the bubble is;
+  // on the terminal it is the line under the message.
+  expect(await placeOf($, 'desktop', 'p1', 'thanks, that fixed the build')).toBe('column: reaction at flex-end, message')
+  expect(await placeOf($, 'terminal', 'p1', 'thanks, that fixed the build')).toBe('column: message, reaction')
   // A message with no reaction is the engine's drawing alone; one drawn under another id
   // is known by its text, where that is long enough to tell it from others.
   expect(await badgeOf($, 'desktop', 'p0', 'an earlier message')).toBe('none')
@@ -301,73 +332,4 @@ test('a rewound or forked session, under a new id, takes up the switch and the r
   // its history may not hold the note, so the model is told again
   await say($, 'go on')
   expect(seen.prompts.at(-1)).toBe(`go on\n--\n${BRIEF}`)
-})
-
-const BAND = {
-  component: 'AbovePrompt',
-  props: {
-    hasSurvey: false,
-    isWorking: false,
-    maxRows: 10,
-    bodyColumns: 100,
-    scroll: { offset: 0, bodyRows: 10 },
-    view: {},
-  },
-} as const
-
-// Reactions' switch in the band's mods menu.
-const SWITCH = 'mods-menu:react'
-
-// The keys of the mods menu's switches, in the order drawn.
-async function switchKeys(band: { findAll: (query: { type: string }) => Promise<{ key: string | undefined }[]> }) {
-  return (await band.findAll({ type: 'Button' })).map(b => b.key ?? '').filter(key => key.startsWith('mods-menu:'))
-}
-
-test('alone, react draws the band with one mods menu, whose switch turns reactions on and off', async ($, on) => {
-  const seen = engine(on)
-  await start($)
-  for (const surface of ['desktop', 'terminal'] as const) {
-    const band = await $.ui.mount({ plugin: 'react', surface, ...BAND })
-    expect(await band.findAll({ key: MENU })).toHaveLength(1)
-    expect(await band.findAll({ key: MENU_BUTTON })).toHaveLength(1)
-    expect(await switchKeys(band)).toEqual([SWITCH])
-    expect((await band.find({ key: SWITCH }))?.props.label).toBe('off')
-    await band.unmount()
-  }
-  const band = await $.ui.mount({ plugin: 'react', surface: 'desktop', ...BAND })
-  await band.press({ key: SWITCH })
-  await band.redraw()
-  expect((await band.find({ key: SWITCH }))?.props.label).toBe('on')
-  await say($, 'hello')
-  expect(seen.prompts.at(-1)).toContain(BRIEF)
-})
-
-test('with the other mods drawn beneath, the band still holds one mods menu, every mod its switch in it', async ($, on) => {
-  // thread-chat and multitask, drawn beneath through the same band as they draw it
-  on('ui.render', { component: 'AbovePrompt' }, async ($, e) => {
-    const ui = $.ui.resolve(e)
-    const parts = (name: string, rank: number, label: string, control: RenderElement, grows: boolean) => ({
-      ui,
-      surface: e.surface,
-      controls: { rank, name, element: control, grows },
-      switches: [{ rank, key: `mods-menu:${name}`, label, isOn: true, onPress: () => undefined }],
-      isOpen: async () => false,
-      onToggle: () => undefined,
-    })
-    const pills = ui.Text({ children: ['pills'] })
-    const thoughts = ui.Button({ key: 'open-thoughts', label: 'thoughts', onPress: () => undefined })
-    const multitask = await drawBand({ type: 'engine', ref: 0 }, parts('multitask', 20, 'Multitask', thoughts, false))
-    return drawBand(multitask, parts('threads', 10, 'Threads', pills, true))
-  })
-  engine(on)
-  await start($)
-  for (const surface of ['desktop', 'terminal'] as const) {
-    const band = await $.ui.mount({ plugin: 'react', surface, ...BAND })
-    expect(await band.findAll({ key: MENU })).toHaveLength(1)
-    expect(await band.findAll({ key: MENU_BUTTON })).toHaveLength(1)
-    expect(await switchKeys(band)).toEqual(['mods-menu:threads', 'mods-menu:multitask', SWITCH])
-    expect(await band.find({ text: /^pills$/ })).toBeDefined()
-    expect(await band.find({ key: 'open-thoughts' })).toBeDefined()
-    await band.unmount()
-  }
 })

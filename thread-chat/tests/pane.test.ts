@@ -2,17 +2,27 @@ import type { On, SessionMessage } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 
-import type { ViewRow } from '../types'
+import type { ViewImage, ViewRow } from '../types'
 import { PALETTE } from '../hooks/parse'
 import {
+  EARLIER_KEY,
+  PICTURE_CHARS_DRAWN,
   chunksOf,
   dataFolderOf,
+  drawnFromOf,
   fingerprintOf,
+  grownOffsetOf,
   isKeptView,
+  isNearEnd,
   markOf,
   marksOf,
+  messagesBefore,
+  nudgeOf,
+  picturesNear,
   rowsOfChunks,
   rowsUpTo,
+  viewMoveOf,
+  viewPlaceOf,
   withViewRow,
 } from '../hooks/pane'
 
@@ -26,17 +36,27 @@ const VIEWS = '/config/plugins/data/thread-chat-inline/views'
 // as the conversation `$.session.messages()` reads (`transcript`, which a test may
 // rewrite as a compaction does), the mod store (`kept`, seeded with `store`), and
 // the files it reads and writes (`files`, seeded with `seed`; `writes` the paths
-// written, in order).
+// written, in order), binary files as base64 (`bytes`), and the commands it runs
+// (`runs`): PowerShell makes each picture it is given smaller, a JPEG (`THUMB`).
 function engine(on: On, store: Record<string, unknown> = {}, seed: Record<string, string> = {}) {
   const opened: string[] = []
   const transcript: SessionMessage[] = []
   const kept: Record<string, unknown> = { ...store }
   const files: Record<string, string> = { ...seed }
+  const bytes: Record<string, string> = {}
   const writes: string[] = []
+  const runs: { argv: readonly string[]; env: Record<string, string> }[] = []
+  // the moves the plugin's scroll hook passes on
+  const scrolls: { offset: number }[] = []
   mock.env(on, { CLAUDE_CONFIG_DIR: '/config' })
   // the engine hands a path on resolved (on Windows, `C:\config\...`)
   const pathOf = (path: string) => path.replace(/\\/g, '/').replace(/^[A-Za-z]:/, '')
   on('fs.read', ($, e) => {
+    if (e.as === 'bytes') {
+      const base64 = bytes[pathOf(e.path)]
+      if (base64 === undefined) throw new Error(`ENOENT: ${e.path}`)
+      return { value: { base64 } }
+    }
     const text = files[pathOf(e.path)]
     if (text === undefined) throw new Error(`ENOENT: ${e.path}`)
     return { value: text }
@@ -45,6 +65,21 @@ function engine(on: On, store: Record<string, unknown> = {}, seed: Record<string
     files[pathOf(e.path)] = e.text
     writes.push(pathOf(e.path))
     return { value: undefined }
+  })
+  on('fs.stat', ($, e) => {
+    const base64 = bytes[pathOf(e.path)]
+    const text = files[pathOf(e.path)]
+    if (base64 === undefined && text === undefined) throw new Error(`ENOENT: ${e.path}`)
+    const size = base64 === undefined ? (text ?? '').length : Math.floor((base64.length * 3) / 4)
+    return { value: { kind: 'file' as const, size, mtimeMs: 1000, isLink: false } }
+  })
+  on('fs.exists', ($, e) => ({ value: bytes[pathOf(e.path)] !== undefined || files[pathOf(e.path)] !== undefined }))
+  on('process.run', ($, e) => {
+    const env = e.init?.env ?? {}
+    runs.push({ argv: e.argv, env })
+    const jobs = JSON.parse(env.THREAD_CHAT_THUMBS ?? '[]') as { from: string; to: string }[]
+    for (const job of jobs) if (bytes[pathOf(job.from)] !== undefined) bytes[pathOf(job.to)] = THUMB
+    return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
   on('store.get', ($, e) => ({ value: kept[e.key] }))
   on('store.set', ($, e) => {
@@ -71,7 +106,10 @@ function engine(on: On, store: Record<string, unknown> = {}, seed: Record<string
     opened.push(e.id)
     return { value: { isPlaced: true as const } }
   })
-  on('ui.scroll', () => ({}))
+  on('ui.scroll', ($, e) => {
+    scrolls.push(e)
+    return {}
+  })
   on('turn.complete', () => ({ text: '' }))
   on('session.messages', () => ({ value: [...transcript] }))
   // A row is kept in the transcript; the kit has no store beneath to keep it in, so
@@ -88,7 +126,7 @@ function engine(on: On, store: Record<string, unknown> = {}, seed: Record<string
     }
     return next(e)
   })
-  return { opened, transcript, kept, files, writes }
+  return { opened, transcript, kept, files, bytes, writes, runs, scrolls }
 }
 
 // The rows a session's files hold, as the store notes them.
@@ -201,11 +239,10 @@ test('the thread view shows the picked thread alone, earlier replies too, and no
 
   for (const surface of ['terminal', 'desktop'] as const) {
     const pane = await $.ui.mount({ plugin: 'thread-chat', surface, ...PANE })
-    // none picked: the whole conversation, without its tool rows
+    // none picked: the whole conversation, without its tool rows or the words a tool call followed
     expect(await sectionsOf(pane)).toEqual([
       'you: hello',
       'you: fast?',
-      'Claude: on it',
       'Claude: the plan',
       'Claude: use a queue',
       'Claude: it is fine',
@@ -451,29 +488,69 @@ test("the view draws a thread's tags and borders as the chat does", async ($, on
   }
 })
 
-test('/thread-view and the band button open the view, once threads are on', async ($, on) => {
+test("/thread-view and the Threads menu's row open the view, once threads are on", async ($, on) => {
   const { opened } = engine(on)
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
   const view = () => $.command.run({ command: 'thread-view', args: '', origin: { kind: 'composer' }, presentation: {} as never })
   expect((await view()).text).toBe('Threads are off in this chat; /threads turns them on.')
+  // the terminal's menu, opened by a press on it, stays open from here on
+  const terminal = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...BAND })
+  await terminal.press({ key: 'threads' })
+  await terminal.unmount()
+
+  for (const surface of ['terminal', 'desktop'] as const) {
+    // off, the menu holds its switch and no row for the view
+    const band = await $.ui.mount({ plugin: 'thread-chat', surface, ...BAND })
+    expect(await band.find({ key: 'threads-on' })).toBeDefined()
+    expect(await band.find({ key: 'thread-view' })).toBeUndefined()
+    await band.unmount()
+  }
   expect(opened).toEqual([])
   await flipThreads($)
   expect((await view()).text).toBe('Thread view opened.')
   expect(opened).toEqual(['thread-view'])
 
   for (const surface of ['terminal', 'desktop'] as const) {
-    // the band offers it once there is a thread
+    // on, the menu's row opens it, before any thread starts
     const band = await $.ui.mount({ plugin: 'thread-chat', surface, ...BAND })
-    expect(await band.find({ key: 'thread-view' })).toBeUndefined()
-    await band.unmount()
-  }
-  await $.prompt.submit(say('# design\nhello'))
-  for (const surface of ['terminal', 'desktop'] as const) {
-    const band = await $.ui.mount({ plugin: 'thread-chat', surface, ...BAND })
+    expect((await band.find({ key: 'thread-view' }))?.props.label).toBe('Open thread view')
     await band.press({ key: 'thread-view' })
     await band.unmount()
   }
   expect(opened).toEqual(['thread-view', 'thread-view', 'thread-view'])
+})
+
+// A drawing that throws leaves the engine to draw its own pane, which for the thread
+// view is an empty one: the view went blank, saying nothing. It says why instead.
+test('a thread view that fails to draw says why rather than going blank', async ($, on) => {
+  engine(on)
+  await flipThreads($)
+  await $.prompt.submit(say('# design\nhello'))
+  for (const surface of ['terminal', 'desktop'] as const) {
+    // a pane drawn with no window over its body: reading where it stands throws
+    const { scroll: _, ...props } = PANE.props
+    const pane = await $.ui.mount({ plugin: 'thread-chat', surface, ...PANE, props: props as never })
+    const drawn = (await pane.drawn()) as { type?: string }
+    expect(drawn.type).toBe('Box')
+    expect((await pane.find({ type: 'Text', text: /^The thread view could not be drawn: TypeError: / }))?.text).toContain('scroll')
+    await pane.unmount()
+  }
+})
+
+test('/thread-view trace tells how the view was last opened and drawn, step by step', async ($, on) => {
+  engine(on)
+  const trace = async () =>
+    (await $.command.run({ command: 'thread-view', args: 'trace', origin: { kind: 'composer' }, presentation: {} as never })).text
+  expect(await trace()).toBe('The thread view has not been drawn since thread-chat last loaded.')
+  await flipThreads($)
+  await $.prompt.submit(say('# design\nhello'))
+  await $.command.run({ command: 'thread-view', args: '', origin: { kind: 'composer' }, presentation: {} as never })
+  const pane = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...PANE })
+  await pane.drawn()
+  const text = await trace()
+  expect(text).toContain('open answered: {"isPlaced":true}')
+  expect(text).toMatch(/: \d+ms returned a Box near 1\.00 of sections 0 on of 0: 0 picture cards, 0 with 0 characters of picture data/)
+  expect(text).toMatch(/\d+ms threads read: 1, picked 0/)
 })
 
 // A compaction's summary, as the engine stores it and the conversation then reads it.
@@ -544,10 +621,10 @@ test('a restarted session draws every message it kept, from its files', async ($
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
 
   const pane = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...PANE })
-  // all of them are there; the pane draws the newest 200 sections at once
-  expect((await pane.find({ type: 'Text', text: /earlier sections not shown/ }))?.text).toBe('1000 earlier sections not shown')
+  // all of them are there; the pane draws the newest 30 sections at first
+  expect((await pane.find({ key: EARLIER_KEY }))?.text).toBe('1170 earlier messages')
   const shown = await sectionsOf(pane)
-  expect([shown.length, shown[0], shown[shown.length - 1]]).toEqual([200, 'you: message 1000', 'Claude: message 1199'])
+  expect([shown.length, shown[0], shown[shown.length - 1]]).toEqual([30, 'you: message 1170', 'Claude: message 1199'])
 })
 
 test('a restarted session draws the rows an earlier version kept; those without text draw while the conversation holds them', async ($, on) => {
@@ -667,6 +744,514 @@ test('a session keeps no rows on disk until threads are on, then every one, thos
   await reply('a2', '# design\nin a thread')
   await done()
   expect(rowsIn(kept, files, 'session-1').map(row => row.id)).toEqual(['a1', 'a2'])
+})
+
+// The multitask plugin's wake-up, as it submits it in the person's words.
+const WAKE = '<local-command-stdout>Set model to unchanged (multitask wake-up: read the thought updates just above)</local-command-stdout>'
+
+type Origin = Parameters<Engine['session']['append']>[0]['origin']
+
+// Stores rows as the engine does: the person's message, a plugin's prompt in the
+// person's words, Claude's reply, Claude's tool call with its result; and ends a turn.
+function storer($: Engine) {
+  let calls = 0
+  const append = (uuid: string, door: 'prompt' | 'response' | 'tool-result', content: Block[], origin: Origin) =>
+    $.session
+      .append({
+        message: door === 'response' ? { type: 'assistant', role: 'assistant', content } : { type: 'user', role: 'user', content },
+        door,
+        origin,
+        uuid,
+      })
+      .catch(() => undefined)
+  return {
+    person: (uuid: string, text: string) => append(uuid, 'prompt', [{ type: 'text', text }], { kind: 'composer' }),
+    plugin: (uuid: string, text: string) => append(uuid, 'prompt', [{ type: 'text', text }], { kind: 'plugin', name: 'multitask', asUser: true }),
+    reply: (uuid: string, text: string) => append(uuid, 'response', [{ type: 'text', text }], model),
+    call: async (uuid: string) => {
+      const id = `toolu_${++calls}`
+      await append(uuid, 'response', [{ type: 'tool_use', id, name: 'Bash', input: {} }], model)
+      await append(`${uuid}-result`, 'tool-result', [{ type: 'tool_result', tool_use_id: id, content: 'ok' }], { kind: 'tool', tool: 'Bash' })
+    },
+    done: () => $.turn.complete({ answer: '', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' }),
+  }
+}
+
+test("the view shows messages alone: each turn's last reply, not a quiet one, nor another party's prompt", async ($, on) => {
+  const { kept, files } = engine(on)
+  await flipThreads($)
+  await $.prompt.submit(say('# design\nhello'))
+  const { person, plugin, reply, call, done } = storer($)
+  // the words before a turn's tool calls, of a thread or not, lead up to its last reply
+  await person('p1', '# design\nhello')
+  await reply('a1', 'Testing the fix live:')
+  await call('a2')
+  await reply('a3', '# design\nchecking the queue')
+  await call('a4')
+  await reply('a5', 'It works.\n# design\nthe queue holds')
+  await done()
+  // the voice saying nothing, and kept as saying nothing (as a reaction is too)
+  await person('p2', 'thanks')
+  await reply('a6', '(quiet)')
+  await done()
+  await plugin('w1', WAKE)
+  await reply('a7', 'No response requested.')
+  await done()
+  // a turn's last reply stays though the next turn calls a tool
+  await person('p3', 'and now?')
+  await reply('a8', 'On it.')
+  await done()
+  await plugin('w2', WAKE)
+  await call('a9')
+  await reply('a10', 'Done.')
+  await done()
+  // others' prompts, though stored as the person's
+  await person('o1', 'Thought updates:\n- fix: done')
+  await person('o2', WAKE)
+  await person('o3', '<task-notification>\n<task-id>b1</task-id>\n</task-notification>')
+  await person('o4', 'Another Claude session sent a message:\n[Subagent hand-back] all done')
+  await person('o5', '<command-name>/threads</command-name>')
+  // a reply a tool call followed, stored again, is still left out
+  await reply('a1', 'Testing the fix live:')
+  await done()
+
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const pane = await $.ui.mount({ plugin: 'thread-chat', surface, ...PANE })
+    // none picked: every message, its parts of no thread too
+    expect(await sectionsOf(pane)).toEqual([
+      'you: hello',
+      'Claude: It works.',
+      'Claude: the queue holds',
+      'you: thanks',
+      'you: and now?',
+      'Claude: On it.',
+      'Claude: Done.',
+    ])
+    // design picked: its parts alone
+    const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...BAND })
+    await band.press({ key: 'picker:thread:design' })
+    expect(await sectionsOf(pane)).toEqual(['you: hello', 'Claude: the queue holds'])
+    await band.press({ key: 'picker:none' })
+    for (const site of [band, pane]) await site.unmount()
+  }
+  // kept so for the session's next run
+  expect(rowsIn(kept, files, 'session-1').flatMap(row => (row.interim === true ? [row.id] : []))).toEqual(['a1', 'a3'])
+})
+
+test('a session with no rows kept shows the messages its conversation holds, and no others', async ($, on) => {
+  const { transcript } = engine(on, { 'session:session-1': { threads: [DESIGN], aliases: {}, snaps: {} } })
+  const call = (id: string) => [{ tool_use_id: id, tool: 'Bash', input: {} }]
+  const result = (id: string) => [{ tool_use_id: id, text: 'ok' }]
+  transcript.push(
+    ...([
+      { role: 'user', text: '# design\nhello', toolUses: [] },
+      { role: 'assistant', text: 'Testing the fix live:', toolUses: call('toolu_1') },
+      { role: 'user', text: '', toolUses: [], toolResults: result('toolu_1') },
+      { role: 'assistant', text: '# design\nchecking the queue', toolUses: [] },
+      { role: 'assistant', text: '', toolUses: call('toolu_2') },
+      { role: 'user', text: '', toolUses: [], toolResults: result('toolu_2') },
+      { role: 'assistant', text: 'It works.\n# design\nthe queue holds', toolUses: [] },
+      { role: 'user', text: 'Thought updates:\n- fix: done', toolUses: [] },
+      { role: 'user', text: WAKE, toolUses: [] },
+      { role: 'assistant', text: '(quiet)', toolUses: [] },
+      { role: 'user', text: 'Another Claude session sent a message:\n[Subagent hand-back] all done', toolUses: [] },
+      { role: 'assistant', text: 'No response requested.', toolUses: [] },
+    ] as SessionMessage[]),
+  )
+  await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
+
+  const pane = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...PANE })
+  expect(await sectionsOf(pane)).toEqual(['you: hello', 'Claude: It works.', 'Claude: the queue holds'])
+})
+
+// (The kit answers none of the plugin's own scrolls, so the view's move to its end
+// as a message comes goes unseen here; where a move leaves it decides whether it does.)
+test('the thread view keeps to its end as messages come only while the person has it at or near the end', () => {
+  // a window of 20 rows over 60: its end is at row 40
+  const at = (offset: number) => isNearEnd({ offset, bodyRows: 20, contentRows: 60 })
+  expect([at(40), at(37), at(36), at(10), at(0)]).toEqual([true, true, false, false, false])
+  // a tree that fits shows its end wherever the window stands
+  expect(isNearEnd({ offset: 0, bodyRows: 20, contentRows: 12 })).toBe(true)
+  // where the person leaves it: its end, or their row
+  expect([viewPlaceOf({ offset: 38, bodyRows: 20, contentRows: 60 }), viewPlaceOf({ offset: 10, bodyRows: 20, contentRows: 60 })]).toEqual(['end', 10])
+})
+
+test('a surface that draws the view afresh at its top is taken back where the person left it', () => {
+  // opened, or back on its tab, at the end: to the end
+  expect(viewMoveOf('end', undefined, 0)).toEqual({ to: 'end' })
+  // left at row 10: to the end first, where the surface measures its rows, then back to row 10
+  expect(viewMoveOf(10, undefined, 0)).toEqual({ to: 'end', back: 10 })
+  expect(viewMoveOf(10, 10, 40)).toEqual({ to: 10 })
+  // nothing where it stands away from the top, or at the top the person left it at
+  expect(viewMoveOf('end', undefined, 40)).toBeUndefined()
+  expect(viewMoveOf(10, undefined, 10)).toBeUndefined()
+  expect(viewMoveOf(0, undefined, 0)).toBeUndefined()
+})
+
+// The runtime's own timer, which the kit's typings leave out.
+const { setTimeout: later } = globalThis as unknown as { setTimeout: (run: () => void, ms: number) => void }
+
+// (The kit answers none of the plugin's own scrolls; the view's moves back show as the
+// waits it asks the clock for, each a move once it is due. The test holds each wait
+// itself, as the kit's clock would, so a move of the person's can come before it ends.)
+test('the view is taken back where the person left it on opening and on coming back to its tab', async ($, on) => {
+  engine(on)
+  let moves = 0
+  let due: (() => void)[] = []
+  on('clock.after', () => {
+    moves += 1
+    return new Promise(resolve => due.push(() => resolve({ value: undefined })))
+  })
+  // ends the waits so far, and lets the moves they were for run
+  const advance = async () => {
+    const now = due
+    due = []
+    for (const end of now) end()
+    await new Promise<void>(resolve => later(resolve, 10))
+  }
+  await flipThreads($)
+  const personTo = (offset: number) =>
+    $.ui.scroll({ component: 'Pane', requestId: 'thread-view', offset, by: offset - 40, bodyRows: 20, contentRows: 60, origin: { kind: 'person' } })
+
+  // opened, the desktop draws it at its top: it goes to its end
+  const pane = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...PANE })
+  const drawAt = (offset: number) => pane.redraw({ ...PANE.props, scroll: { offset, bodyRows: 20 } })
+  await advance()
+  await drawAt(40)
+  expect(moves).toBe(1)
+
+  // left at row 10, back on its tab at the top: to its end, then from there back to row 10
+  await personTo(10)
+  await drawAt(10)
+  await drawAt(0)
+  await advance()
+  await drawAt(40)
+  await advance()
+  await drawAt(10)
+  expect(moves).toBe(3)
+
+  // the person's move while a move back waits stands, and no move back follows it
+  await drawAt(0)
+  await personTo(5)
+  await advance()
+  await drawAt(40)
+  expect(moves).toBe(4)
+
+  // left at the top, it stays there
+  await personTo(0)
+  await drawAt(0)
+  await advance()
+  expect(moves).toBe(4)
+})
+
+// (The desktop reports the move it makes as it draws a shorter view as the person's;
+// the engine, keeping to the end, hands it on from the new end. The test holds each wait
+// the plugin asks the clock for until it advances. The kit answers none of the plugin's
+// own scrolls, so its moves to the end go unseen here.)
+test('the view at its end stays there as the desktop draws it shorter', async ($, on) => {
+  const { scrolls } = engine(on)
+  let due: (() => void)[] = []
+  on('clock.after', () => new Promise(resolve => due.push(() => resolve({ value: undefined }))))
+  const advance = async () => {
+    const now = due
+    due = []
+    for (const end of now) end()
+    await new Promise<void>(resolve => later(resolve, 10))
+  }
+  await flipThreads($)
+  const { person, reply, call } = storer($)
+  // a window of 20 rows over 60, its end at row 40, moved by the desktop or the person:
+  // where the plugin passes the move on to
+  const moveBy = async (by: number) => {
+    await $.ui.scroll({ component: 'Pane', requestId: 'thread-view', offset: 40 + by, by, bodyRows: 20, contentRows: 60, origin: { kind: 'person' } })
+    return scrolls.at(-1)?.offset
+  }
+
+  // a reply a tool call follows is hidden: the desktop's window, pulled up, stays at the end
+  await person('p1', 'hello')
+  await reply('a1', 'Looking into it:')
+  await call('a2')
+  expect(await moveBy(-6)).toBe(40)
+  // the person's move after it is theirs
+  expect(await moveBy(-10)).toBe(30)
+  // scrolled up, the view stays where the person put it as it changes
+  await reply('a3', 'Found it.')
+  expect(await moveBy(-6)).toBe(34)
+  // back at the end, once a change is drawn, a move up is the person's
+  await moveBy(0)
+  await reply('a4', 'Fixed.')
+  await advance()
+  expect(await moveBy(-6)).toBe(34)
+})
+
+test('the view draws from the start of a message, and keeps its window on what it showed as earlier ones come above', () => {
+  // a message of two sections, then 41 of one
+  const ids = ['a', 'a', ...Array.from({ length: 41 }, (_, i) => `m${i}`)]
+  // the newest 30; from a place asked for, back to the start of its message; never fewer
+  expect([drawnFromOf(ids, undefined), drawnFromOf(ids, 1), drawnFromOf(ids, 5), drawnFromOf(ids, 40)]).toEqual([13, 0, 5, 13])
+  expect(drawnFromOf(['a', 'a', 'a'], undefined)).toBe(0)
+  // the messages before them, a message of several sections once; one with no row each
+  expect([messagesBefore(ids, 13), messagesBefore([undefined, undefined, 'x', 'x'], 4)]).toEqual([12, 3])
+  // a window at row 14 over 120 rows, sections drawn above it: where it stays, once the
+  // surface says the rows they added (240 in all), less a row it was nudged by meanwhile
+  expect(grownOffsetOf({ rows: 120, nudge: 0 }, 14, 120)).toBeUndefined()
+  expect(grownOffsetOf({ rows: 120, nudge: 0 }, 14, 240)).toBe(134)
+  expect(grownOffsetOf({ rows: 120, nudge: 1 }, 15, 240)).toBe(134)
+  // the nudge that has a desktop say its rows: down where it can, else up short of the
+  // top, else none
+  expect([nudgeOf(5, 120, 20), nudgeOf(0, 120, 20), nudgeOf(100, 120, 20), nudgeOf(1, 21, 20), nudgeOf(0, 15, 20)]).toEqual([1, 1, -1, 0, 0])
+})
+
+// (The kit answers none of the plugin's own scrolls, and the test holds every wait the
+// plugin asks the clock for, so the plugin's moves to keep the window where it was go
+// unseen here; the person's moves show where the plugin passes them on. Each is a wheel's,
+// which a surface drawing the view shorter does not make.)
+function lazyView($: Engine, on: On) {
+  const { scrolls } = engine(on)
+  on('clock.after', () => new Promise(() => {}))
+  const settle = () => new Promise<void>(resolve => later(resolve, 10))
+  const moveTo = async (offset: number, by: number, contentRows: number) => {
+    const pointer = { column: 1, row: 1 }
+    await $.ui.scroll({ component: 'Pane', requestId: 'thread-view', offset, by, bodyRows: 20, contentRows, origin: { kind: 'person' }, pointer })
+    await settle()
+    return scrolls.at(-1)?.offset
+  }
+  return { moveTo, settle }
+}
+
+test('the view draws its newest messages, and earlier ones as the person scrolls near its top or presses the line of them', async ($, on) => {
+  const { moveTo, settle } = lazyView($, on)
+  await flipThreads($)
+  const { person } = storer($)
+  for (let i = 0; i < 70; i++) await person(`p${i}`, `message ${i}`)
+  const pane = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...PANE })
+  const shown = async () => {
+    const sections = await sectionsOf(pane)
+    return [sections.length, sections[0], (await pane.find({ key: EARLIER_KEY }))?.text]
+  }
+
+  // the newest 30, under a line saying how many messages come before them
+  expect(await shown()).toEqual([30, 'you: message 40', '40 earlier messages'])
+  // scrolled up, short of the top: as it was
+  expect(await moveTo(50, -50, 120)).toBe(50)
+  expect(await shown()).toEqual([30, 'you: message 40', '40 earlier messages'])
+  // within a window of the top: 30 more above
+  expect(await moveTo(15, -35, 120)).toBe(15)
+  expect(await shown()).toEqual([60, 'you: message 10', '10 earlier messages'])
+  // once the surface says the rows they added, the person's move goes down by them, then
+  // as it comes
+  expect(await moveTo(14, -1, 240)).toBe(134)
+  expect(await moveTo(130, -4, 240)).toBe(130)
+  // the line pressed: the rest
+  await pane.press({ key: EARLIER_KEY })
+  await settle()
+  expect(await shown()).toEqual([70, 'you: message 0', undefined])
+  // opened again: the newest 30
+  await $.command.run({ command: 'thread-view', args: '', origin: { kind: 'composer' }, presentation: {} as never })
+  await settle()
+  expect(await shown()).toEqual([30, 'you: message 40', '40 earlier messages'])
+})
+
+test('scrolled up, the view keeps what it draws as messages come; at its end, the newest', async ($, on) => {
+  const { moveTo, settle } = lazyView($, on)
+  await flipThreads($)
+  const { person } = storer($)
+  for (let i = 0; i < 40; i++) await person(`p${i}`, `message ${i}`)
+  const pane = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...PANE })
+  const shown = async () => {
+    const sections = await sectionsOf(pane)
+    return [sections.length, sections[0]]
+  }
+  expect(await shown()).toEqual([30, 'you: message 10'])
+  // at its end, a message: the newest 30
+  await person('p40', 'message 40')
+  await settle()
+  expect(await shown()).toEqual([30, 'you: message 11'])
+  // scrolled up: those drawn stay, new ones below them
+  await moveTo(40, -20, 120)
+  await person('p41', 'message 41')
+  await settle()
+  expect(await shown()).toEqual([31, 'you: message 11'])
+})
+
+// A PNG's first bytes, base64: its signature and the header naming its size.
+function pngOf(width: number, height: number) {
+  const word = (n: number) => String.fromCharCode((n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255)
+  return btoa(`\x89PNG\r\n\x1a\n${word(13)}IHDR${word(width)}${word(height)}\x08\x06\x00\x00\x00`)
+}
+
+// A JPEG of 300 by 225 pixels, as small as one goes: its start, its frame's size, its end.
+const THUMB = btoa(`\xff\xd8\xff\xc0\x00\x11\x08\x00\xe1\x01\x2c\x03${'\x00'.repeat(9)}\xff\xd9`)
+
+// The clock, answering each wait at once: the view reads pictures once it is drawn.
+const waitNot = (on: On) => on('clock.after', () => ({ value: undefined }))
+
+// The view's pictures as drawn once those it waits for are read: each card's size and
+// what it holds (the picture's media type, `empty` while it is read), or `[image]`.
+async function picturesIn(pane: { findAll: (query: { type: string }) => Promise<{ type: string; props: Record<string, unknown>; text?: string }[]> }) {
+  const shown = async () =>
+    (await pane.findAll({ type: 'Svg' }))
+      .filter(svg => svg.props.alt === 'Pasted image')
+      .map(svg => {
+        const type = /href="data:([^;]+);base64,/.exec(String(svg.props.source))?.[1] ?? 'empty'
+        return `${String(svg.props.width)}x${String(svg.props.height)} ${type}`
+      })
+  // the files are read in the background, the view drawn again once they are
+  for (let i = 0; i < 50 && (await shown()).some(card => card.endsWith('empty')); i++) for (let j = 0; j < 100; j++) await Promise.resolve()
+  const marks = (await pane.findAll({ type: 'Text' })).filter(t => t.text === '[image]')
+  return [...(await shown()), ...marks.map(() => '[image]')]
+}
+
+test('the pictures pasted with a message draw above it from their files: thumbnails on a page, marks on the terminal', async ($, on) => {
+  const { kept, files, bytes, runs } = engine(on)
+  waitNot(on)
+  await flipThreads($)
+  const shot = pngOf(400, 300)
+  // more than the desktop's largest picture takes
+  const huge = `${pngOf(1600, 1200)}${'A'.repeat(140_000)}`
+  bytes['/pics/shot.png'] = shot
+  bytes['/pics/huge.png'] = huge
+  const image = (data: string): Block => ({ type: 'image', source: { type: 'base64', media_type: 'image/png', data } })
+  const append = (uuid: string, content: Block[], isMeta?: true) =>
+    $.session
+      .append({ message: { type: 'user', role: 'user', content, ...(isMeta && { isMeta }) }, door: 'prompt', origin: { kind: 'composer' }, uuid })
+      .catch(() => undefined)
+  // Claude Code names each picture's file in a hidden row after the message
+  const sources = (uuid: string, paths: string[]) => append(uuid, paths.map(path => ({ type: 'text', text: `[Image: source: ${path}]` })), true)
+  await append('p1', [image(shot), image(huge), image(shot), { type: 'text', text: 'look at this' }])
+  await sources('m1', ['C:\\pics\\shot.png', 'C:\\pics\\huge.png', 'C:\\pics\\gone.png'])
+  await append('p2', [image(shot)])
+  // a hidden row of other words names no file
+  await append('m2', [{ type: 'text', text: '[Image: source: C:\\pics\\other.png] and more' }], true)
+  await sources('m3', ['C:\\pics\\shot.png'])
+  // nor does one after the message's own
+  await sources('m4', ['C:\\pics\\late.png'])
+
+  // kept with their messages for the session's next run: each one's size and file, not its bytes
+  await $.turn.complete({ answer: '', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })
+  expect(rowsIn(kept, files, 'session-1').map(row => row.images)).toEqual([
+    [
+      { type: 'image/png', width: 400, height: 300, path: 'C:\\pics\\shot.png' },
+      { type: 'image/png', width: 1600, height: 1200, path: 'C:\\pics\\huge.png' },
+      { type: 'image/png', width: 400, height: 300, path: 'C:\\pics\\gone.png' },
+    ],
+    [{ type: 'image/png', width: 400, height: 300, path: 'C:\\pics\\shot.png' }],
+  ])
+
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const pane = await $.ui.mount({ plugin: 'thread-chat', surface, ...PANE })
+    // the words in a bubble; a message of pictures alone has none
+    expect(await sectionsOf(pane)).toEqual(['you: look at this'])
+    if (surface === 'terminal') {
+      expect(await picturesIn(pane)).toEqual(['[image]', '[image]', '[image]', '[image]'])
+      expect(runs.length).toBe(0)
+    } else {
+      // cards 200 pixels across, as tall as the picture's shape, at the right: one too
+      // large to draw from a smaller copy; a mark for a file gone
+      expect(await picturesIn(pane)).toEqual(['200x150 image/png', '200x150 image/jpeg', '200x150 image/png', '[image]'])
+      const cards = (await pane.findAll({ type: 'Svg' })).map(svg => String(svg.props.source))
+      expect(cards[0]).toContain(`href="data:image/png;base64,${shot}"`)
+      expect(cards[1]).toContain(`href="data:image/jpeg;base64,${THUMB}"`)
+      expect((await pane.findAll({ type: 'Box' })).some(b => b.props.flexWrap === 'wrap' && b.props.justifyContent === 'flex-end')).toBe(true)
+      // the smaller copy made once, by PowerShell on Windows, under the plugin's data folder
+      expect(runs.map(run => [run.argv[0], JSON.parse(run.env.THREAD_CHAT_THUMBS ?? '[]')])).toEqual([
+        ['powershell.exe', [{ from: 'C:\\pics\\huge.png', to: expect.stringMatching(/^\/config\/plugins\/data\/thread-chat-inline\/thumbs\/[0-9a-f]{8}-.*\.jpg$/) }]],
+      ])
+    }
+    await pane.unmount()
+  }
+})
+
+// A PNG of the given size in pixels whose file comes to `chars` base64 characters.
+const pngOfChars = (width: number, height: number, chars: number) => {
+  const word = (n: number) => String.fromCharCode((n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255)
+  const head = `\x89PNG\r\n\x1a\n${word(13)}IHDR${word(width)}${word(height)}\x08\x06\x00\x00\x00`
+  return btoa(head + '\x00'.repeat(Math.floor((chars * 3) / 4) - head.length))
+}
+
+// The desktop draws nothing of a view whose drawing holds too much picture data, saying
+// only that the plugin has not drawn there: the view went blank once it drew a dozen.
+test('the view draws the pictures nearest its window within what the desktop draws, the rest as empty cards', async ($, on) => {
+  const { bytes } = engine(on)
+  waitNot(on)
+  await flipThreads($)
+  const shot = pngOfChars(400, 300, 24_000)
+  const append = (uuid: string, content: Block[], isMeta?: true) =>
+    $.session
+      .append({ message: { type: 'user', role: 'user', content, ...(isMeta && { isMeta }) }, door: 'prompt', origin: { kind: 'composer' }, uuid })
+      .catch(() => undefined)
+  for (let i = 0; i < 6; i++) {
+    bytes[`/pics/${i}.png`] = shot
+    await append(`p${i}`, [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: shot } }, { type: 'text', text: `look ${i}` }])
+    await append(`m${i}`, [{ type: 'text', text: `[Image: source: C:\\pics\\${i}.png]` }], true)
+  }
+
+  const pane = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...PANE })
+  // at its end: the newest three fit, oldest first in the view
+  expect(await picturesIn(pane)).toEqual([
+    '200x150 empty',
+    '200x150 empty',
+    '200x150 empty',
+    '200x150 image/png',
+    '200x150 image/png',
+    '200x150 image/png',
+  ])
+  const drawn = (await pane.findAll({ type: 'Svg' })).map(svg => /base64,([^"]*)"/.exec(String(svg.props.source))?.[1]?.length ?? 0)
+  expect(drawn.reduce((sum, n) => sum + n, 0)).toBeLessThanOrEqual(PICTURE_CHARS_DRAWN)
+})
+
+test('the pictures nearest the window draw first, and those past the room are not read', () => {
+  const images = [0, 1, 2, 3].map(i => ({ type: 'image/png', path: `C:\\pics\\${i}.png` }))
+  const sections = images.map(image => [image])
+  const read: string[] = []
+  const pictureOf = (image: ViewImage) => {
+    read.push(image.path ?? '')
+    return { type: 'image/png', data: 'A'.repeat(40) }
+  }
+  const at = (near: number) => {
+    read.length = 0
+    const drawn = picturesNear(sections, near, 80, pictureOf)
+    return images.map(image => (drawn.get(image) === 'loading' ? 'empty' : 'drawn'))
+  }
+  expect(at(1)).toEqual(['empty', 'empty', 'drawn', 'drawn'])
+  expect(read).toEqual(['C:\\pics\\3.png', 'C:\\pics\\2.png'])
+  expect(at(0)).toEqual(['drawn', 'drawn', 'empty', 'empty'])
+  expect(at(1 / 3)).toEqual(['empty', 'drawn', 'drawn', 'empty'])
+})
+
+test('pictures kept by an earlier version draw from their bytes; files a repair noted in the kept rows are taken up', async ($, on) => {
+  const shot = pngOf(400, 300)
+  const rows: ViewRow[] = [
+    { id: 'a', role: 'user', mark: 'a', text: 'a', images: [{ type: 'image/png', width: 400, height: 300, data: shot }, { type: 'image/png' }] },
+    { id: 'b', role: 'user', mark: 'b', text: 'b' },
+    { id: 'c', role: 'assistant', mark: 'c', text: 'c' },
+  ]
+  const { note, files: seed } = keptAs('session-1', rows)
+  const { kept, files, bytes } = engine(on, { 'session:session-1': { isOn: true, threads: [], aliases: {}, snaps: {} }, 'view:session-1': note }, seed)
+  waitNot(on)
+  bytes['/pics/b.png'] = pngOf(100, 50)
+  await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
+
+  const pane = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...PANE })
+  expect(await picturesIn(pane)).toEqual(['200x150 image/png', '[image]'])
+  await pane.unmount()
+
+  // a repair of the kept rows names the files of pictures this run's rows lack
+  const repaired = keptAs('session-1', [rows[0] as ViewRow, { ...(rows[1] as ViewRow), images: [{ type: 'image/png', path: 'C:\\pics\\b.png' }] }, rows[2] as ViewRow])
+  Object.assign(files, repaired.files)
+  await $.session
+    .append({ message: { type: 'assistant', role: 'assistant', content: [{ type: 'text', text: 'd' }] }, door: 'response', origin: model, uuid: 'd' })
+    .catch(() => undefined)
+  await $.turn.complete({ answer: '', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })
+  // kept, not written over, and drawn: a picture of no known size takes its file's shape
+  expect(rowsIn(kept, files, 'session-1').map(row => row.images)).toEqual([
+    rows[0]?.images,
+    [{ type: 'image/png', path: 'C:\\pics\\b.png' }],
+    undefined,
+    undefined,
+  ])
+  const again = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...PANE })
+  expect(await picturesIn(again)).toEqual(['200x150 image/png', '100x50 image/png', '[image]'])
 })
 
 test('rows are kept one per id, every one, and read back from their files as written', async () => {

@@ -19,11 +19,23 @@ export type Thought = {
   turnId: string | null
   // a message to hand over once the interrupted turn has ended
   interruptWith: string | null
+  // whether its queue waits no longer for a turn to end: the turn it waited for ended, and
+  // it goes to the thought at the next chance
+  isHandOverDue?: boolean
 }
 
 // What a thought said, waiting to reach the voice: a progress note, or the end of a
-// turn (isDone), with the text it ended on or none
-export type Update = { thought: string; text: string; isDone?: boolean }
+// turn (isDone), with the text it ended on or none. A turn's end tells how many of the
+// voice's messages waited for it (pending), and whether they have reached the thought
+// since; a note about such messages still pending is isPending, dropped once they reach it.
+export type Update = {
+  thought: string
+  text: string
+  isDone?: boolean
+  pending?: number
+  isHandedOver?: boolean
+  isPending?: boolean
+}
 
 // What the voice was last told of a thought, by a relay or a what's-new note: its status,
 // its report and its latest progress note as they were then
@@ -47,9 +59,6 @@ declare module 'claude-code' {
       // thoughts whose last report the person opened in the Thoughts pane to read whole,
       // instead of its first line; a thought leaves it when it starts new work
       openReports: string[]
-      // whether the band's `mods` menu is open off the desktop, where `mods` opens and closes
-      // it; read only while this mod lays the band out
-      menuOpen: boolean
     }
   }
 }

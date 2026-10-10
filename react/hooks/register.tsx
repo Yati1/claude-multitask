@@ -15,16 +15,11 @@ import {
   reactionsHeld,
   withReaction,
 } from './reactions'
-import { drawBand } from './menu'
 
 const isOn = atom({ plugin: 'react', key: 'isOn' } as const, false)
 const isBriefed = atom({ plugin: 'react', key: 'isBriefed' } as const, false)
 const reactions = atom({ plugin: 'react', key: 'reactions' } as const, [])
 const answering = atom({ plugin: 'react', key: 'answering' } as const, null)
-const menuOpen = atom({ plugin: 'react', key: 'menuOpen' } as const, false)
-
-// Reactions' switch in the band's `mods` menu.
-const SWITCH = 'mods-menu:react'
 
 // The ways a person's own prompt arrives: typed in the terminal, the desktop
 // app (an SDK host) or Remote Control.
@@ -222,24 +217,38 @@ function badgePicture(emoji: string): string {
   ].join('')
 }
 
-// A reaction under its message, on the side the surface puts the person's messages:
-// a small pill where the surface draws pictures, the emoji in faint brackets on the terminal.
-function drawBadge($: EngineInterface, e: Parameters<EngineInterface['ui']['resolve']>[0], emoji: string): RenderElement {
+// A message with its reaction. Where the surface draws pictures, a small pill on the line
+// above the bubble, at the edge the person's messages keep to; on the terminal, the emoji
+// in faint brackets on the line under it. Not beside the bubble: the desktop sizes its
+// bubble to a share of the row it is drawn in, and a row shared with the badge shrinks to
+// the message, so the bubble would narrow and its words wrap.
+function withBadge(
+  $: EngineInterface,
+  e: Parameters<EngineInterface['ui']['resolve']>[0],
+  message: RenderElement,
+  emoji: string,
+): RenderElement {
   if (e.surface === 'terminal') {
     const { Box, Text } = $.ui.resolve(e)
     return (
-      <Box flexDirection="row" marginLeft={2}>
-        <Text dimColor>(</Text>
-        <Text>{emoji}</Text>
-        <Text dimColor>)</Text>
+      <Box flexDirection="column">
+        {message}
+        <Box flexDirection="row" marginLeft={2}>
+          <Text dimColor>(</Text>
+          <Text>{emoji}</Text>
+          <Text dimColor>)</Text>
+        </Box>
       </Box>
     )
   }
   const { Box, Svg } = $.ui.resolve(e)
   const isOnRight = e.surface === 'desktop' || e.surface === 'mobile'
   return (
-    <Box flexDirection="row" justifyContent={isOnRight ? 'flex-end' : 'flex-start'}>
-      <Svg source={badgePicture(emoji)} alt={`Reaction: ${emoji}`} width={BADGE_WIDTH} height={BADGE_HEIGHT} />
+    <Box flexDirection="column">
+      <Box flexDirection="row" justifyContent={isOnRight ? 'flex-end' : 'flex-start'}>
+        <Svg source={badgePicture(emoji)} alt={`Reaction: ${emoji}`} width={BADGE_WIDTH} height={BADGE_HEIGHT} />
+      </Box>
+      {message}
     </Box>
   )
 }
@@ -329,22 +338,8 @@ export const register: Register = on => {
     return <Box display="none" />
   })
 
-  // The band above the prompt, shared with the other mods of this repository through
-  // ./menu.tsx: the switch in its `mods` menu that turns reactions on and off.
-  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    const below = await next(e)
-    if (e.props.hasSurvey) return below
-    return drawBand(below, {
-      ui: $.ui.resolve(e),
-      surface: e.surface,
-      switches: [{ rank: 30, key: SWITCH, label: 'Reactions', isOn: await read($, isOn), onPress: () => flip($) }],
-      isOpen: () => read($, menuOpen),
-      onToggle: () => update($, menuOpen, open => !open),
-    })
-  })
-
   // A message with a reaction is the engine's drawing (or another mod's), the reaction
-  // under it. A row drawn as nothing stays nothing.
+  // above it (under it on the terminal). A row drawn as nothing stays nothing.
   on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
     if (!(await read($, isOn))) return next(e)
     const isPerson = PERSON.has(e.props.origin.kind)
@@ -352,12 +347,6 @@ export const register: Register = on => {
     if (reaction === undefined) return next(e)
     const message = await next(e)
     if (isBlank(message)) return message
-    const { Box } = $.ui.resolve(e)
-    return (
-      <Box flexDirection="column">
-        {message}
-        {drawBadge($, e, reaction.emoji)}
-      </Box>
-    )
+    return withBadge($, e, message, reaction.emoji)
   })
 }

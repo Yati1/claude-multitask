@@ -7,14 +7,20 @@ Notable changes to the thread-chat, multitask and react mods. The format is base
 ### Added
 
 - Added a react mod (`/react`) so the agent can acknowledge a message with an emoji reaction, not a reply.
-- Added a `mods` menu above the prompt to thread-chat, multitask and react, with their switches for the chat.
+- Added a `Threads` menu above the prompt to thread-chat with a switch that turns threads on or off.
 - Added a thread picker to thread-chat's band to pick, start, merge, archive and delete threads.
+- Added `/thread-view trace` to thread-chat to show how the thread view was last opened and drawn.
 
 ### Changed
 
 - Changed thread-chat's agent to pick the right threads for its reply, even for unheaded messages.
-- Changed thread-chat's agent-threads switch and multitask's switch to sit in the `mods` menu.
-- Changed thread-chat's thread view to look like the chat and show the picked thread, or every thread.
+- Changed thread-chat's agent-threads switch and `view` button to sit in its `Threads` menu.
+- Changed multitask's switch to a dropdown above the prompt that reads `Multitask` or `Focus`.
+- Changed thread-chat's thread view to match the chat, with its bubbles, image thumbnails, thread tags and borders.
+- Changed thread-chat's thread view to show the picked thread, or every thread while none is picked.
+- Changed thread-chat's thread view to show only your messages and each turn's final reply.
+- Changed thread-chat's thread view to open at the bottom and keep your place across tabs and new messages.
+- Changed thread-chat's thread view to load earlier messages as you scroll up or press its top line.
 
 ### Fixed
 
@@ -22,6 +28,10 @@ Notable changes to the thread-chat, multitask and react mods. The format is base
 - Fixed issue where multitask's voice could post a message to a thought it meant to queue or interrupt.
 - Fixed issue where multitask's `tell` showed as a success when its message did not reach the thought.
 - Fixed issue where multitask's messages to thoughts were never delivered in auto mode.
+- Fixed issue where multitask's messages to a thought were refused once it had finished its turn.
+- Fixed issue where multitask's queued messages never reached a finished thought in auto mode.
+- Fixed issue where thread-chat's thread view went blank, without saying why, when it failed to draw.
+- Fixed issue where thread-chat's thread view drew nothing once it held a dozen or so pasted pictures.
 
 ### Removed
 

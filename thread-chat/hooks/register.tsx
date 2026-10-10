@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { BoxProps, Elements, EngineInterface, Register, RenderElement, RenderSurface } from 'claude-code'
 
-import type { Brief, Thread, ViewRow } from '../types'
+import type { Brief, Thread, ViewImage, ViewRow } from '../types'
 import {
   PALETTE,
   closestThread,
@@ -18,25 +18,38 @@ import {
 } from './parse'
 import type { RunOn, Section } from './parse'
 import {
+  SECTIONS_MORE,
   chunksOf,
   dataFolderOf,
   drawView,
+  drawViewFailure,
   fingerprintOf,
+  grownOffsetOf,
+  hasToolCall,
+  imagePathsOf,
+  imageSizeOf,
+  imageTypeOf,
+  isDrawable,
   isKeptView,
   markHashOf,
   markOf,
   marksOf,
   needsMessages,
   noteDrawnReply,
+  nudgeOf,
   rowsOfChunks,
   rowsUpTo,
+  thumbNameOf,
   viewKey,
+  viewMoveOf,
+  viewPlaceOf,
   viewRowOf,
+  withImagePaths,
+  withInterim,
+  withKeptPaths,
   withViewRow,
 } from './pane'
-import type { ViewDeps, ViewInputs } from './pane'
-import { drawBand } from './menu'
-import type { MenuSwitch } from './menu'
+import type { Picture, ViewDeps, ViewGrowth, ViewInputs, ViewPlace, ViewSpan } from './pane'
 
 const isOn = atom({ plugin: 'thread-chat', key: 'isOn' } as const, false)
 const threads = atom({ plugin: 'thread-chat', key: 'threads' } as const, [])
@@ -52,15 +65,23 @@ const naming = atom({ plugin: 'thread-chat', key: 'naming' } as const, false)
 const untold = atom({ plugin: 'thread-chat', key: 'untold' } as const, [])
 const briefed = atom({ plugin: 'thread-chat', key: 'briefed' } as const, null)
 const viewRows = atom({ plugin: 'thread-chat', key: 'viewRows' } as const, [])
+const picturesRead = atom({ plugin: 'thread-chat', key: 'picturesRead' } as const, 0)
+const viewFrom = atom({ plugin: 'thread-chat', key: 'viewFrom' } as const, null)
 const menuOpen = atom({ plugin: 'thread-chat', key: 'menuOpen' } as const, false)
 const pickerOpen = atom({ plugin: 'thread-chat', key: 'pickerOpen' } as const, false)
 const pickerMode = atom({ plugin: 'thread-chat', key: 'pickerMode' } as const, '')
 
 const CREATE_TOOL = 'mcp__thread-chat__create_thread'
-// The switches in the band's `mods` menu: threads on or off, and whether the agent may start them.
-const THREADS_SWITCH = 'mods-menu:threads'
-const AGENT_SWITCH = 'mods-menu:agent-threads'
-// The thread view's pane id, which is also its command's name and its band button's key.
+// Thread-chat's menu in the band: a "Threads" button, and a row per switch, which a
+// press flips: threads on in this chat, and, while on, whether the agent may start them.
+// On the desktop the rows are a card shown while the pointer is on the button or it has
+// the focus; on the terminal a press on the button shows or hides them in the band.
+const MENU = 'threads'
+const THREADS_SWITCH = 'threads-on'
+const AGENT_SWITCH = 'agent-threads'
+// A switch's hit area over its picture, keyed by this and the switch's key.
+const SWITCH_HIT = 'switch:'
+// The thread view's pane id, which is also its command's name and its menu row's key.
 const VIEW = 'thread-view'
 const VIEW_TITLE = 'Thread view'
 
@@ -193,6 +214,13 @@ async function flipThreads($: EngineInterface): Promise<boolean> {
   if (now && (await read($, agentMayCreate))) await offerCreateTool($)
   await save($)
   return now
+}
+
+// Flips a switch of the band's menu. The agent's switch while threads are off leaves
+// things be.
+async function flipMenuSwitch($: EngineInterface, key: string) {
+  if (key === THREADS_SWITCH) await flipThreads($)
+  else if (key === AGENT_SWITCH && (await read($, isOn))) await flipAgentSwitch($)
 }
 
 // What a heading means, by one rule for sending and drawing alike: `+name` a new
@@ -412,6 +440,10 @@ const stemOf = (id: string) => id.slice(0, 24)
 // quotes came from), until their rows are stored.
 const unsent: { text: string; key: string }[] = []
 
+// The ids of the main conversation's replies with text in the turn so far, since its
+// last tool call: interim if another tool call follows them in the turn.
+let turnReplies = new Set<string>()
+
 // The text blocks of a stored row, as one text.
 function textOf(content: readonly { type: string; [field: string]: unknown }[]): string {
   return content.flatMap(block => (block.type === 'text' && typeof block.text === 'string' ? [block.text] : [])).join('\n')
@@ -556,6 +588,25 @@ async function offNote($: EngineInterface): Promise<string | undefined> {
   await save($)
   return 'The user turned conversation threads off. Reply without thread headings; a level-1 heading in their messages is plain text now.'
 }
+
+// The SVG of a slide switch: a rounded track with the knob to the right when on.
+function switchPicture(isOn: boolean): string {
+  const track = isOn ? '#3b82f6' : '#8c8c8c'
+  const knob = isOn ? 23 : 11
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="34" height="20" viewBox="0 0 34 20"><rect x="1" y="2" width="32" height="16" rx="8" fill="${track}"/><circle cx="${knob}" cy="10" r="6" fill="#ffffff"/></svg>`
+}
+
+// The desktop's Select caret, a chevron 14px square in the secondary text colour of
+// the theme, after a 6px gap: the picture is the gap and the caret.
+const CARET_GAP = 6
+const CARET_SIZE = 14
+const CARET_PICTURE = [
+  `<svg xmlns="http://www.w3.org/2000/svg" width="${CARET_GAP + CARET_SIZE}" height="${CARET_SIZE}"`,
+  ` viewBox="${-CARET_GAP * (16 / CARET_SIZE)} 0 ${(CARET_GAP + CARET_SIZE) * (16 / CARET_SIZE)} 16">`,
+  '<style>.c{stroke:#c3c2b7}@media (prefers-color-scheme: light){.c{stroke:#52514e}}</style>',
+  '<path class="c" d="M4 6l4 4 4-4" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>',
+  '</svg>',
+].join('')
 
 const CHIP_HEIGHT = 20
 
@@ -985,14 +1036,98 @@ function drawAddThread(
   )
 }
 
-// A tip for the control in the keyed Box it sits in, shown while the pointer is over
-// that Box. Placed out of the flow, so showing it moves nothing; the desktop lifts it
-// into a card over the band, beside the control.
-function drawTip($: EngineInterface, e: Parameters<EngineInterface['ui']['resolve']>[0], text: string): RenderElement {
-  const { Box, Text } = $.ui.resolve(e)
+type MenuSwitch = { key: string; label: string; isOn: boolean }
+
+// The switches of the band's menu: threads on in this chat, and, while they are, whether
+// the agent may start them.
+async function menuSwitches($: EngineInterface): Promise<MenuSwitch[]> {
+  const isThreadsOn = await read($, isOn)
+  return [
+    { key: THREADS_SWITCH, label: 'On in this chat', isOn: isThreadsOn },
+    ...(isThreadsOn ? [{ key: AGENT_SWITCH, label: 'Agent may start threads', isOn: await read($, agentMayCreate) }] : []),
+  ]
+}
+
+// A row of the desktop's menu card: its label, a Button that flips it, then its slide
+// switch, a picture with a hit area laid over it that flips it too.
+function drawMenuRow($: EngineInterface, elements: Elements['desktop'], s: MenuSwitch): RenderElement {
+  const { Box, Button, Svg, Client } = elements
   return (
-    <Box position="absolute" display="none" hover={{ display: 'flex' }}>
-      <Text>{text}</Text>
+    <Box flexDirection="row" alignItems="center" justifyContent="space-between" columnGap={2}>
+      <Button key={s.key} label={s.label} plain onPress={() => flipMenuSwitch($, s.key)} />
+      <Box flexShrink={0}>
+        <Svg source={switchPicture(s.isOn)} alt={`${s.label}: ${s.isOn ? 'on' : 'off'}`} width={34} height={CHIP_HEIGHT} />
+        <Box position="absolute" top={0} left={0} width="100%" height="100%">
+          <Client key={SWITCH_HIT + s.key} module="./switch.tsx" props={{ isOn: s.isOn }} width="100%" height="100%" />
+        </Box>
+      </Box>
+    </Box>
+  )
+}
+
+// The menu's row that opens the thread view, as /thread-view does; only while threads are on.
+const VIEW_ROW = 'Open thread view'
+
+// The band's "Threads" menu. On the desktop, a button drawn as the desktop draws a
+// Select: the field's fill and its ring, stronger under the pointer, the radius, one
+// line high, the caret. The keyed Box it is holds the switches, then the thread view's
+// row, in a card the desktop lifts over the band while the pointer is on the button or
+// the card, or the focus is in them. Elsewhere, a Button that shows or hides them beside it.
+async function drawMenu($: EngineInterface, e: Parameters<EngineInterface['ui']['resolve']>[0]): Promise<RenderElement> {
+  const switches = await menuSwitches($)
+  const isThreadsOn = await read($, isOn)
+  if (e.surface === 'desktop') {
+    const desktop = $.ui.resolve(e)
+    const { Box, Text, Svg, Button } = desktop
+    return (
+      <Box
+        key={MENU}
+        flexDirection="row"
+        alignItems="center"
+        height={1}
+        paddingX={1}
+        paddingY={0}
+        borderStyle="single"
+        backgroundColor="userMessageBackground"
+        hover={{ borderColor: 'promptBorder' }}
+      >
+        <Text color="text">Threads</Text>
+        <Svg source={CARET_PICTURE} alt="menu" width={CARET_GAP + CARET_SIZE} height={CARET_SIZE} />
+        <Box position="absolute" display="none" hover={{ display: 'flex' }} flexDirection="column" rowGap={2}>
+          {switches.map(s => drawMenuRow($, desktop, s))}
+          {isThreadsOn && (
+            <Box flexDirection="row" alignItems="center">
+              <Button key={VIEW} label={VIEW_ROW} plain onPress={() => openView($)} />
+            </Box>
+          )}
+        </Box>
+      </Box>
+    )
+  }
+  const { Box, Text, Button } = $.ui.resolve(e)
+  const isOpen = await read($, menuOpen)
+  return (
+    <Box flexDirection="row" alignItems="center" columnGap={2}>
+      <Button
+        key={MENU}
+        label={isOpen ? 'Threads ▴' : 'Threads ▾'}
+        variant="secondary"
+        onPress={() => update($, menuOpen, open => !open)}
+      />
+      {isOpen &&
+        switches.map(s => (
+          <Box flexDirection="row" columnGap={1}>
+            <Text dimColor>{s.label}</Text>
+            <Button
+              key={s.key}
+              label={s.isOn ? '( ●)' : '(● )'}
+              variant={s.isOn ? 'primary' : 'secondary'}
+              dimColor={!s.isOn}
+              onPress={() => flipMenuSwitch($, s.key)}
+            />
+          </Box>
+        ))}
+      {isOpen && isThreadsOn && <Button key={VIEW} label={VIEW_ROW} variant="secondary" onPress={() => openView($)} />}
     </Box>
   )
 }
@@ -1176,6 +1311,42 @@ function bubbleText(shown: Section[], resolve: (name: string) => Thread | undefi
 // The thread view (pane.tsx) places a section by the rules the chat draws it by.
 const viewDeps: ViewDeps = { threadOf, personThreadOf, personSectionsOf, replySectionsOf, linksFor, placeSection, stemOf }
 
+// Where the thread view's window stood when it last moved: at or near its end, a new
+// message keeps it at the end; scrolled up, it stays where the person put it.
+let viewPlace: ViewPlace = 'end'
+// A row the window is still to go back to, once the surface drawing it afresh has
+// measured its rows (viewMoveOf).
+let viewReturn: number | undefined
+// The row this plugin's own move to the window's top is carried on to (returnView).
+let viewReturning: number | undefined
+// The person's moves of the window so far: one made while a move back waits stands.
+let personMoves = 0
+// The rows of the view's tree as its window last moved over it; none before it moved.
+let viewContentRows: number | undefined
+
+// Where the window stands over the thread view, `offset` rows down: 0 at its top, 1 at its
+// end. At its end while it keeps to the end, or before its rows are known.
+function viewNearOf(offset: number, bodyRows: number): number {
+  if (viewPlace === 'end' || viewContentRows === undefined || viewContentRows <= bodyRows) return 1
+  return Math.min(1, Math.max(0, (offset + bodyRows / 2) / viewContentRows))
+}
+
+// How long a move back waits after a surface draws the view afresh: for it to measure
+// its rows, and for a move of the person's it drew for to be seen first.
+const VIEW_SETTLE_MS = 100
+
+// How long a surface may take to draw a change to what the thread view shows, and to
+// lay out its markdown and pictures: a move it reports meanwhile may be its own.
+const VIEW_REDRAW_MS = 500
+// The plugin's keys the thread view is drawn from (viewInputs, and the pictures read).
+const VIEW_KEYS: ReadonlySet<string> = new Set([
+  'viewRows', 'picturesRead', 'viewFrom', 'threads', 'aliases', 'snaps', 'sentTo', 'moved', 'current', 'deleted',
+])
+// Changes to what the thread view shows so far; the one the surface may yet report a
+// move of its own for as it draws it, until the person's next move or VIEW_REDRAW_MS.
+let viewChanges = 0
+let viewChangeUndrawn: number | undefined
+
 // Keeps the thread view's window on its newest rows as they come, until the person scrolls.
 async function pinViewToEnd($: EngineInterface) {
   try {
@@ -1185,10 +1356,159 @@ async function pinViewToEnd($: EngineInterface) {
   }
 }
 
-// Opens the thread view (or shows it, already open) at its newest rows.
+// A change to what the thread view shows. At its end, a shorter tree (a reply hidden
+// once a tool call follows it, a picture's card made smaller) pulls the desktop's window
+// up with it, which it reports as the person's move: the view's scroll hook keeps it
+// at its end (isRedrawMove). Once drawn, a view at its end is taken there again: a
+// surface that stopped keeping to its end, or went there before its rows were laid out,
+// leaves it short.
+function noteViewChange($: EngineInterface) {
+  const change = ++viewChanges
+  viewChangeUndrawn = change
+  $.clock.after(VIEW_REDRAW_MS, () => {
+    if (viewChangeUndrawn === change) viewChangeUndrawn = undefined
+    if (viewChanges === change && viewPlace === 'end') void pinViewToEnd($)
+  })
+}
+
+// Whether a move reported as the person's is the surface's own as it draws a change at
+// the view's end: up, the first since the change, while it is drawn, and by no wheel
+// (whose pointer a terminal reports).
+const isRedrawMove = (e: { origin: { kind: string }; by: number; pointer?: unknown }) =>
+  e.origin.kind === 'person' && e.pointer === undefined && viewChangeUndrawn !== undefined && viewPlace === 'end' && e.by < 0
+
+// Takes the thread view's window to a row: a move to its top that its scroll hook
+// carries on to the row (a plugin names no row to scroll to).
+async function returnView($: EngineInterface, row: number) {
+  viewReturning = row
+  try {
+    await $.ui.scroll({ in: VIEW, to: 'start' })
+  } catch {
+    return
+  } finally {
+    viewReturning = undefined
+  }
+}
+
+// Puts the thread view's window back where the person left it when a surface draws the
+// view afresh, at its top: the desktop does on opening it and on coming back to its tab.
+function settleView($: EngineInterface, offset: number) {
+  const move = viewMoveOf(viewPlace, viewReturn, offset)
+  if (move === undefined) return
+  if (move.to !== 'end') viewReturn = undefined
+  const moves = personMoves
+  $.clock.after(VIEW_SETTLE_MS, () => {
+    if (personMoves !== moves) return
+    if (move.to !== 'end') {
+      void returnView($, move.to)
+      return
+    }
+    viewReturn = move.back
+    void pinViewToEnd($)
+  })
+}
+
+// The person's place in the thread view from now on: its newest rows, the newest sections
+// drawn.
+async function placeViewAtEnd($: EngineInterface) {
+  viewPlace = 'end'
+  viewReturn = undefined
+  viewGrowth = undefined
+  try {
+    await update($, viewFrom, () => null)
+  } catch {
+    // drawn from where it was
+  }
+}
+
+// The sections the thread view last drew: its first, of how many; none before it drew.
+let viewSpan: ViewSpan | undefined
+// Earlier sections drawn above the window, to be kept out of it (ViewGrowth): the first
+// section drawn before them (`from`), whether a drawing holds them yet, when they were
+// asked for, and the moves left to keep the window off them.
+type Growth = ViewGrowth & { from: number; isDrawn: boolean; at: number; tries: number }
+let viewGrowth: Growth | undefined
+// Whether this plugin's move to the window's top is one keeping it off them (keepViewPlace).
+let viewKeeping = false
+// How many moves try to keep the window off them, VIEW_SETTLE_MS apart, before it is left
+// be; and how long they hold off more earlier sections.
+const KEEP_TRIES = 6
+const VIEW_GROW_MS = 3000
+
+// A step of the thread view's own for `/thread-view trace`, beside its drawings.
+const noteView = (what: string) => traceView(what).end('noted')
+
+// Draws SECTIONS_MORE earlier sections above those the thread view draws, the window kept
+// on the rows it shows: `rows` the view's rows as the window last moved over it. A view at
+// its end is kept there, as the surface keeps to its end.
+async function showEarlier($: EngineInterface, rows: number | undefined) {
+  const span = viewSpan
+  if (span === undefined || span.from === 0) return
+  if (viewGrowth !== undefined && Date.now() - viewGrowth.at < VIEW_GROW_MS) return
+  const isAtEnd = viewPlace === 'end' || rows === undefined
+  const from = Math.max(0, span.from - SECTIONS_MORE)
+  viewGrowth = isAtEnd ? undefined : { rows, nudge: 0, from: span.from, isDrawn: false, at: Date.now(), tries: KEEP_TRIES }
+  noteView(`earlier sections asked for: from ${span.from} to ${from} of ${span.count}, ${isAtEnd ? 'at the end' : `over ${rows} rows`}`)
+  if (isAtEnd) await pinViewToEnd($)
+  try {
+    await update($, viewFrom, () => from)
+  } catch {
+    viewGrowth = undefined
+  }
+}
+
+// Keeps the sections the thread view draws while the person reads it scrolled up: new ones
+// come below them, and none goes from above.
+async function holdViewFrom($: EngineInterface) {
+  const span = viewSpan
+  if (span === undefined) return
+  try {
+    if ((await read($, viewFrom)) === null) await update($, viewFrom, from => from ?? span.from)
+  } catch {
+    // drawn as it was
+  }
+}
+
+// Keeps the thread view's window off the earlier sections drawn above it: a move to its top
+// that its scroll hook carries down by the rows they added (keptMoveOf), tried again until
+// the surface has said them.
+async function keepViewPlace($: EngineInterface) {
+  const growth = viewGrowth
+  if (growth === undefined) return
+  growth.tries -= 1
+  viewKeeping = true
+  try {
+    await $.ui.scroll({ in: VIEW, to: 'start' })
+  } catch {
+    // tried again while tries are left
+  } finally {
+    viewKeeping = false
+  }
+  if (viewGrowth !== growth) return
+  if (growth.tries > 0) $.clock.after(VIEW_SETTLE_MS, () => void keepViewPlace($))
+  else viewGrowth = undefined
+}
+
+// Where keepViewPlace's move goes, from the window's row (`at`): down by the rows the earlier
+// sections added, or, before the surface has said them, a row up or down, which has a desktop
+// say them. None where the window cannot move: the view fitted it.
+function keptMoveOf(growth: ViewGrowth, e: { offset: number; by: number; bodyRows: number; contentRows: number }) {
+  const at = e.offset - e.by
+  const offset = grownOffsetOf(growth, at, e.contentRows)
+  if (offset !== undefined) return { at, offset, nudge: 0 }
+  const nudge = nudgeOf(at, e.contentRows, e.bodyRows)
+  return nudge === 0 ? undefined : { at, offset: at + nudge, nudge }
+}
+
+// Opens the thread view (or shows it, already open) at its newest rows; a surface that
+// draws it only later is taken there as it does (settleView).
 async function openView($: EngineInterface) {
+  await placeViewAtEnd($)
+  const { step, end } = traceView('open asked')
   const opened = await $.ui.open({ id: VIEW, title: VIEW_TITLE })
+  step(`open answered: ${JSON.stringify(opened)}`)
   if (opened.isPlaced) await pinViewToEnd($)
+  end('open done')
   return opened
 }
 
@@ -1196,17 +1516,20 @@ async function openView($: EngineInterface) {
 // The rows it kept are the transcript as stored; the conversation as the engine
 // holds it (a compaction's summary in place of what came before) is read only to
 // fill in rows kept without their text, or for a session it kept no rows of.
-async function viewInputs($: EngineInterface): Promise<ViewInputs> {
+async function viewInputs($: EngineInterface, step: (what: string) => void = () => {}): Promise<ViewInputs> {
   const known = await read($, viewRows)
+  step(`rows read: ${known.length}, ${known.filter(row => row.text === undefined).length} without text`)
   let messages: ViewInputs['messages'] = []
   if (needsMessages(known)) {
     try {
       messages = await $.session.messages()
-    } catch {
+      step(`conversation read: ${messages.length} messages`)
+    } catch (error) {
+      step(`conversation not read: ${String(error)}`)
       messages = []
     }
   }
-  return {
+  const inputs = {
     list: await read($, threads),
     merged: await read($, aliases),
     snapped: await read($, snaps),
@@ -1217,20 +1540,65 @@ async function viewInputs($: EngineInterface): Promise<ViewInputs> {
     known,
     messages,
   }
+  step(`threads read: ${inputs.list.length}, picked ${inputs.current === '' ? 0 : 1}`)
+  return inputs
 }
+
+// The thread view's last few drawings, step by step, for `/thread-view trace`: when each
+// began, the time to each step, and how it ended (no end: still running, or cut off).
+type ViewTrace = { at: string; steps: string[]; end?: string }
+const viewTraces: ViewTrace[] = []
+const VIEW_TRACES_KEPT = 10
+
+function traceView(start: string): { step: (what: string) => void; end: (how: string) => void } {
+  const began = Date.now()
+  const trace: ViewTrace = { at: new Date(began).toISOString(), steps: [] }
+  viewTraces.push(trace)
+  if (viewTraces.length > VIEW_TRACES_KEPT) viewTraces.shift()
+  const step = (what: string) => {
+    trace.steps.push(`${Date.now() - began}ms ${what}`)
+  }
+  step(start)
+  return { step, end: how => (trace.end = `${Date.now() - began}ms ${how}`) }
+}
+
+// The picture cards a drawing of the view holds, those with bytes, and their bytes' length.
+function picturesIn(node: unknown, counts = { cards: 0, filled: 0, chars: 0 }) {
+  if (typeof node !== 'object' || node === null) return counts
+  const { type, props, children } = node as { type?: unknown; props?: { alt?: unknown; source?: unknown }; children?: unknown[] }
+  if (type === 'Svg' && props?.alt === 'Pasted image') {
+    counts.cards += 1
+    const data = /base64,([^"]*)"/.exec(String(props.source))?.[1]
+    if (data !== undefined) {
+      counts.filled += 1
+      counts.chars += data.length
+    }
+  }
+  for (const child of children ?? []) picturesIn(child, counts)
+  return counts
+}
+
+const viewTraceText = () =>
+  viewTraces.length === 0
+    ? 'The thread view has not been drawn since thread-chat last loaded.'
+    : viewTraces.map(t => [`draw at ${t.at}: ${t.end ?? 'NO END (still running, or cut off)'}`, ...t.steps.map(s => `  ${s}`)].join('\n')).join('\n')
 
 // The file beside a session's rows that holds their marks' hashes, a line a row.
 const MARKS_FILE = 'marks.txt'
 
-// Where a session's view rows are kept between runs: files of their own, all of
-// every message's text, as the store holds 4 MiB in all; the store notes only how
-// many there are (KeptView). They are in the plugin's data folder under the Claude
-// Code configuration folder, a folder a session. None where the configuration
-// folder is not known.
-async function rowsFolder($: EngineInterface, id: string): Promise<string | undefined> {
+// The plugin's data folder, under the Claude Code configuration folder; none where
+// that folder is not known.
+async function dataFolder($: EngineInterface): Promise<string | undefined> {
   const home = (await $.env.get('USERPROFILE')) || (await $.env.get('HOME'))
   const config = (await $.env.get('CLAUDE_CONFIG_DIR')) || (home ? `${home}/.claude` : undefined)
-  const data = dataFolderOf($.plugin.root, $.plugin.name, config)
+  return dataFolderOf($.plugin.root, $.plugin.name, config)
+}
+
+// Where a session's view rows are kept between runs: files of their own, all of
+// every message's text, as the store holds 4 MiB in all; the store notes only how
+// many there are (KeptView). They are in the plugin's data folder, a folder a session.
+async function rowsFolder($: EngineInterface, id: string): Promise<string | undefined> {
+  const data = await dataFolder($)
   return data === undefined ? undefined : `${data}/views/${id.replace(/[^A-Za-z0-9_-]/g, '_')}`
 }
 
@@ -1275,6 +1643,242 @@ async function keepViewRows($: EngineInterface, id: string, rows: ViewRow[]) {
     // nothing more is kept this time
   }
 }
+
+// Takes up the pictures' files a session's kept rows note and its rows here lack: noted
+// there since this run read them (by a repair of rows an earlier version kept). Best
+// effort, as keeping them is.
+async function takeKeptPaths($: EngineInterface, id: string) {
+  try {
+    const rows = await read($, viewRows)
+    if (rows.length === 0) return
+    const kept = await keptRows($, id)
+    if (withKeptPaths(rows, kept) !== rows) await update($, viewRows, all => withKeptPaths(all, kept))
+  } catch {
+    // the rows stand as they are
+  }
+}
+
+// The person's message whose pictures wait for the row naming their files, which Claude
+// Code stores after it in the same turn.
+let awaitingPaths: string | undefined
+
+// The thread view's pictures, by the file each was saved to: their bytes once read
+// (`Picture`), `loading` until then, `failed` where they cannot be (the file gone, or
+// too large to draw and no way here to make it smaller). Read once a run of this code.
+const pictures = new Map<string, Picture | 'loading' | 'failed'>()
+// The files whose pictures wait to be read, in the order the view asked for them, and
+// whether they are being read (or soon will be).
+const pictureQueue: string[] = []
+let isReadingPictures = false
+
+// A picture whose file's base64 is longer than this is drawn from a smaller copy, so
+// several fit in what one drawing of the view holds (PICTURE_CHARS_DRAWN): a JPEG at
+// most this many pixels across and down (a card's bounds and a fifth), of this quality.
+const PICTURE_FILE_CHARS = 40_000
+const THUMB_BOX = { width: 240, height: 360 }
+const THUMB_QUALITY = 70
+// The pictures one run of PowerShell makes smaller, by the characters their job list takes:
+// it goes in an environment variable, which takes 32767 at most.
+const THUMB_JOBS_CHARS = 16_000
+// Whether this machine may have a way to make a picture smaller: false once none was
+// found, so the view stops asking.
+let canResize = true
+
+// A picture's bytes as the view draws them, from its file: at hand once read; else read
+// in the background, the view drawn again once they are.
+function pictureFor($: EngineInterface, image: ViewImage): Picture | 'loading' | undefined {
+  const { path } = image
+  if (path === undefined) return undefined
+  const known = pictures.get(path)
+  if (known !== undefined) return known === 'failed' ? undefined : known
+  pictures.set(path, 'loading')
+  pictureQueue.push(path)
+  if (!isReadingPictures) {
+    isReadingPictures = true
+    // once this drawing is done: a drawing writes nothing
+    $.clock.after(1, () => void readPictures($))
+  }
+  return 'loading'
+}
+
+// The thread view drawn again with the pictures read so far.
+async function drawPictures($: EngineInterface) {
+  try {
+    await update($, picturesRead, n => n + 1)
+  } catch {
+    try {
+      $.ui.invalidate('ui.render')
+    } catch {
+      // drawn with them next time it is drawn
+    }
+  }
+}
+
+// Reads the pictures the view waits for, the view drawn again as they come: those few
+// enough to draw from their files, the rest from smaller copies kept under the plugin's
+// data folder, made once.
+async function readPictures($: EngineInterface) {
+  try {
+    while (pictureQueue.length > 0) {
+      const paths = pictureQueue.splice(0)
+      const folder = await dataFolder($).catch(() => undefined)
+      const toMake: ThumbJob[] = []
+      for (const path of paths) {
+        const stat = await $.fs.stat(path).catch(() => undefined)
+        if (stat?.kind !== 'file') {
+          pictures.set(path, 'failed')
+          continue
+        }
+        if (Math.ceil(stat.size / 3) * 4 <= PICTURE_FILE_CHARS) {
+          pictures.set(path, (await pictureFile($, path)) ?? 'failed')
+          continue
+        }
+        const name = thumbNameOf(path, stat.size, stat.mtimeMs, THUMB_BOX.width)
+        const thumb = folder === undefined ? undefined : `${folder}/thumbs/${name}`
+        const made = thumb === undefined ? undefined : await pictureFile($, thumb)
+        if (thumb === undefined || made !== undefined || !canResize) pictures.set(path, made ?? 'failed')
+        else toMake.push({ from: path, to: thumb })
+      }
+      await drawPictures($)
+      if (toMake.length === 0) continue
+      await makeThumbs($, toMake).catch(() => undefined)
+      for (const { from, to } of toMake) pictures.set(from, (await pictureFile($, to)) ?? 'failed')
+      await drawPictures($)
+    }
+  } finally {
+    isReadingPictures = false
+  }
+}
+
+// A picture file's bytes as the view draws them; none where it cannot be read, is not
+// a picture of a type drawn, is too large to draw, or is cut short.
+async function pictureFile($: EngineInterface, path: string): Promise<Picture | undefined> {
+  try {
+    const { base64 } = await $.fs.read(path, { as: 'bytes' })
+    const type = imageTypeOf(base64)
+    if (type === undefined || !isDrawable(type, base64)) return undefined
+    if (type === 'image/jpeg' && !atob(base64.slice(-8)).endsWith('\xff\xd9')) return undefined
+    return { type, data: base64, ...imageSizeOf(type, base64) }
+  } catch {
+    return undefined
+  }
+}
+
+// A picture to make smaller: its file, and the file its smaller copy is written to.
+type ThumbJob = { from: string; to: string }
+
+// Makes smaller copies of pictures with what this machine has: on Windows, PowerShell's
+// System.Drawing, the pictures of a run in one call; elsewhere sips (macOS), else
+// ImageMagick where it is installed. Each writes a JPEG within THUMB_BOX, and none
+// enlarges. A way that cannot start is not tried again; none that can, and the view
+// stops asking.
+async function makeThumbs($: EngineInterface, jobs: ThumbJob[]) {
+  if (!canResize || jobs.length === 0) return
+  if (jobs.some(job => /^(?:[A-Za-z]:[\\/]|\\\\)/.test(job.from))) {
+    let batch: ThumbJob[] = []
+    for (const job of [...jobs, undefined]) {
+      if (job !== undefined && JSON.stringify([...batch, job]).length <= THUMB_JOBS_CHARS) {
+        batch.push(job)
+        continue
+      }
+      if (batch.length > 0 && !(await resizeOnWindows($, batch))) {
+        canResize = false
+        return
+      }
+      batch = job === undefined ? [] : [job]
+    }
+    return
+  }
+  for (const job of jobs) {
+    if (!(await resizeElsewhere($, job))) {
+      canResize = false
+      return
+    }
+  }
+}
+
+// PowerShell's script for a run of pictures named in THREAD_CHAT_THUMBS: each drawn
+// smaller onto white (a JPEG has no transparency), written beside its place and then
+// moved there, so a copy cut short is never taken for one made.
+const RESIZE_SCRIPT = `
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.Drawing
+$codec = [System.Drawing.Imaging.ImageCodecInfo]::GetImageEncoders() | Where-Object { $_.MimeType -eq 'image/jpeg' }
+$options = New-Object System.Drawing.Imaging.EncoderParameters 1
+$options.Param[0] = New-Object System.Drawing.Imaging.EncoderParameter ([System.Drawing.Imaging.Encoder]::Quality), ([long]$env:THREAD_CHAT_THUMB_QUALITY)
+$box = [double]$env:THREAD_CHAT_THUMB_WIDTH, [double]$env:THREAD_CHAT_THUMB_HEIGHT
+$jobs = $env:THREAD_CHAT_THUMBS | ConvertFrom-Json
+foreach ($job in $jobs) {
+  try {
+    $source = [System.Drawing.Image]::FromFile($job.from)
+    try {
+      $scale = [Math]::Min(1.0, [Math]::Min($box[0] / $source.Width, $box[1] / $source.Height))
+      $width = [Math]::Max(1, [int][Math]::Round($source.Width * $scale))
+      $height = [Math]::Max(1, [int][Math]::Round($source.Height * $scale))
+      $thumb = New-Object System.Drawing.Bitmap $width, $height
+      try {
+        $graphics = [System.Drawing.Graphics]::FromImage($thumb)
+        $graphics.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+        $graphics.Clear([System.Drawing.Color]::White)
+        $graphics.DrawImage($source, 0, 0, $width, $height)
+        $graphics.Dispose()
+        [void][System.IO.Directory]::CreateDirectory([System.IO.Path]::GetDirectoryName($job.to))
+        $part = "$($job.to).part"
+        $thumb.Save($part, $codec, $options)
+        Move-Item -LiteralPath $part -Destination $job.to -Force
+      } finally { $thumb.Dispose() }
+    } finally { $source.Dispose() }
+  } catch { [Console]::Error.WriteLine("$($job.from): $_") }
+}
+`
+
+// Makes a run of pictures smaller on Windows; false where PowerShell cannot start.
+async function resizeOnWindows($: EngineInterface, jobs: ThumbJob[]): Promise<boolean> {
+  try {
+    await $.process.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', RESIZE_SCRIPT], {
+      env: {
+        THREAD_CHAT_THUMBS: JSON.stringify(jobs),
+        THREAD_CHAT_THUMB_WIDTH: String(THUMB_BOX.width),
+        THREAD_CHAT_THUMB_HEIGHT: String(THUMB_BOX.height),
+        THREAD_CHAT_THUMB_QUALITY: String(THUMB_QUALITY),
+      },
+      timeoutMs: Math.min(600_000, 20_000 + 2_000 * jobs.length),
+    })
+    return true
+  } catch {
+    // not started, or still running at the timeout: the copies made so far stand
+    return false
+  }
+}
+
+// The commands that make a picture smaller off Windows, in the order tried: sips
+// (macOS), then ImageMagick 7 and 6. The first of them that starts is used from then on.
+const RESIZERS: ((job: ThumbJob) => string[])[] = [
+  job => ['sips', '-Z', String(THUMB_BOX.width), '-s', 'format', 'jpeg', '-s', 'formatOptions', String(THUMB_QUALITY), job.from, '--out', job.to],
+  job => ['magick', job.from, '-auto-orient', '-thumbnail', `${THUMB_BOX.width}x${THUMB_BOX.height}>`, '-quality', String(THUMB_QUALITY), `jpeg:${job.to}`],
+  job => ['convert', job.from, '-auto-orient', '-thumbnail', `${THUMB_BOX.width}x${THUMB_BOX.height}>`, '-quality', String(THUMB_QUALITY), `jpeg:${job.to}`],
+]
+let resizerAt = 0
+
+// Makes one picture smaller off Windows; false where no command for it starts.
+async function resizeElsewhere($: EngineInterface, job: ThumbJob): Promise<boolean> {
+  // the commands write into the folder, but do not make it
+  const folder = job.to.slice(0, Math.max(job.to.lastIndexOf('/'), job.to.lastIndexOf('\\')))
+  if (!(await $.fs.exists(folder).catch(() => false))) await $.fs.write(`${folder}/README.txt`, THUMBS_README).catch(() => undefined)
+  while (resizerAt < RESIZERS.length) {
+    const argv = RESIZERS[resizerAt]?.(job)
+    if (argv === undefined) break
+    try {
+      await $.process.run(argv, { timeoutMs: 20_000 })
+      return true
+    } catch {
+      resizerAt += 1
+    }
+  }
+  return false
+}
+
+const THUMBS_README = 'Smaller copies of pictures pasted in Claude Code sessions, drawn in the thread view. Safe to delete: they are made again.\n'
 
 // The thread picker in the band: its keyed Box, which the desktop opens its menu's card
 // from, and the field in its menu for a new thread's name. The menu's controls are keyed
@@ -1446,7 +2050,7 @@ function drawPickerMenu($: EngineInterface, ui: PickerUi, list: Thread[], cur: s
   ])
 }
 
-// Threads' controls in the band: the thread picker, then `view`. The picker's button names
+// Threads' controls in the band: the thread picker. Its button names
 // the picked thread, where a message with no heading goes; its menu picks another, starts
 // one, and merges, archives and deletes them. On the desktop the menu is a card the desktop
 // lifts out of the band while the pointer or the focus is on the button or the card; on
@@ -1466,9 +2070,6 @@ async function drawThreadControls(
   const { Box, Text, Button } = ui
   const Input = 'Input' in ui ? ui.Input : undefined
   const menu = drawPickerMenu($, { Box, Text, Button, Input }, list, cur, mode)
-  // After the picker, a short button that opens the thread view: a Button, not a Client.
-  const viewButton =
-    list.length === 0 ? undefined : <Button key={VIEW} label="view" variant="secondary" dimColor onPress={() => openView($)} />
   const hint = active.length === 0 && (
     <Text dimColor wrap="truncate-end">
       start a thread with # name
@@ -1496,12 +2097,6 @@ async function drawThreadControls(
             {menu}
           </Box>
         </Box>
-        {viewButton && (
-          <Box key="thread-view-tip" flexShrink={0}>
-            {viewButton}
-            {drawTip($, e, 'Thread view: the picked thread alone, in a pane')}
-          </Box>
-        )}
         {hint}
       </Box>
     )
@@ -1523,7 +2118,6 @@ async function drawThreadControls(
           {menu}
         </Box>
       </Box>
-      {viewButton && <Box flexShrink={0}>{viewButton}</Box>}
       {hint}
     </Box>
   )
@@ -1533,10 +2127,13 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'threads', description: 'Turn conversation threads on or off in this chat' })
     await $.command.register({ name: VIEW, description: 'Show the picked thread alone, without tool rows, in a pane' })
-    // A restarted or resumed session takes up the rows its thread view kept.
+    // A restarted or resumed session takes up the rows its thread view kept; a reloaded
+    // one, which holds its rows, the pictures' files noted in them since.
     if ((await read($, viewRows)).length === 0) {
       const kept = await keptRows($, await $.session.id()).catch(() => [])
       if (kept.length > 0) await update($, viewRows, () => kept)
+    } else {
+      await takeKeptPaths($, await $.session.id())
     }
     await $.command.register({
       name: 'merge-threads',
@@ -1665,8 +2262,32 @@ export const register: Register = on => {
       stored = await next(e)
       return stored
     } finally {
-      const row = stored?.deny === undefined ? viewRowOf(stored === undefined ? e : { ...e, message: stored.message }, PERSON) : undefined
-      if (row !== undefined) await update($, viewRows, all => withViewRow(all, row))
+      const kept = stored?.message === undefined ? e : { ...e, message: stored.message }
+      const row = stored?.deny === undefined ? viewRowOf(kept, PERSON) : undefined
+      if (row !== undefined) {
+        await update($, viewRows, all => withViewRow(all, row))
+        // A new message keeps the thread view at its end, unless the person scrolled up.
+        if (viewPlace === 'end') void pinViewToEnd($)
+      }
+      // The pictures pasted with a person's message are known by the files Claude Code
+      // saved them to, which a hidden row after it names.
+      if (row?.role === 'user') awaitingPaths = row.images === undefined ? undefined : row.id
+      const paths = stored?.deny === undefined && awaitingPaths !== undefined ? imagePathsOf(kept) : undefined
+      if (paths !== undefined && awaitingPaths !== undefined) {
+        const id = awaitingPaths
+        awaitingPaths = undefined
+        await update($, viewRows, all => withImagePaths(all, id, paths))
+      }
+      // The view shows a turn's last reply: those a tool call follows in its turn are interim.
+      if (e.agentId === undefined && stored?.deny === undefined) {
+        if (e.message.type === 'user' && e.door === 'prompt') turnReplies = new Set()
+        if (row?.role === 'assistant' && row.interim !== true) turnReplies.add(row.id)
+        if (e.message.type === 'assistant' && hasToolCall(e.message.content)) {
+          const ids = turnReplies
+          turnReplies = new Set()
+          if (ids.size > 0) await update($, viewRows, all => withInterim(all, ids))
+        }
+      }
     }
   })
 
@@ -1674,25 +2295,100 @@ export const register: Register = on => {
   // are on: all of them then, those from before they came on too.
   on('turn.complete', async ($, e, next) => {
     const result = await next(e)
+    if (e.agentId === undefined) turnReplies = new Set()
     if (e.agentId === undefined && (await read($, isOn))) {
       if ((await read($, threads)).length > 0) await save($)
+      const id = await $.session.id()
+      // pictures' files a repair noted in the kept rows since are kept, not written over
+      await takeKeptPaths($, id)
       const rows = await read($, viewRows)
-      if (rows.length > 0) await keepViewRows($, await $.session.id(), rows)
+      if (rows.length > 0) await keepViewRows($, id, rows)
     }
     return result
   })
 
-  on('command.run', { command: VIEW }, async $ => {
+  on('command.run', { command: VIEW }, async ($, e) => {
+    if (e.args.trim() === 'trace') return { text: viewTraceText() }
     if (!(await read($, isOn))) return { text: OFF_TEXT }
     const opened = await openView($)
     return { text: opened.isPlaced ? 'Thread view opened.' : `Thread view not shown: ${opened.reason}` }
+  })
+
+  // Where the thread view's window was last moved to, by the person or by this plugin:
+  // at or near its end, new messages keep it there. This plugin's move back to a row
+  // goes to that row; a move of the person's drops any still to come. The surface's own
+  // move as it draws a shorter view at its end goes to the end: the engine, keeping to
+  // the end, would take it on from the new end, as far again above it, and stop there.
+  // Earlier sections drawn above the window push what it showed down, as many pixels down
+  // as the desktop keeps it: the next move, this plugin's or the person's, once the surface
+  // has said the rows they added, goes down by them. The person near the top of what is
+  // drawn has earlier sections drawn; scrolled up elsewhere, what is drawn stays.
+  on('ui.scroll', { component: 'Pane', requestId: VIEW }, async ($, e, next) => {
+    const isMine = e.origin.kind === 'plugin' && e.origin.name === $.plugin.name
+    const isPerson = e.origin.kind === 'person'
+    const isRedraw = isRedrawMove(e)
+    const growth = viewGrowth
+    const isKeeping = isMine && viewKeeping && e.offset === 0
+    const kept = isKeeping && growth !== undefined ? keptMoveOf(growth, e) : undefined
+    if (isKeeping && kept === undefined) {
+      // kept already, or the window cannot move: the view fitted it, and its end shows
+      // what it showed
+      if (growth !== undefined) {
+        viewGrowth = undefined
+        void pinViewToEnd($)
+      }
+      return { deny: 'no move to keep the window where it was' }
+    }
+    if (isPerson && growth !== undefined && !growth.isDrawn) growth.rows = e.contentRows
+    const grown = isPerson && !isRedraw && growth?.isDrawn === true ? grownOffsetOf(growth, e.offset, e.contentRows) : undefined
+    const move = isRedraw
+      ? { ...e, offset: Math.max(0, e.contentRows - e.bodyRows) }
+      : kept !== undefined
+        ? { ...e, offset: kept.offset }
+        : grown !== undefined
+          ? { ...e, offset: grown }
+          : isMine && viewReturning !== undefined && e.offset === 0
+            ? { ...e, offset: viewReturning }
+            : e
+    if (isPerson) viewChangeUndrawn = undefined
+    if (isPerson && !isRedraw) {
+      personMoves += 1
+      viewReturn = undefined
+    }
+    const result = await next(move)
+    if (result.deny === undefined) {
+      if (kept !== undefined && kept.nudge !== 0 && growth !== undefined) growth.nudge += kept.nudge
+      else viewPlace = viewPlaceOf(move)
+      if (viewGrowth === growth && ((kept !== undefined && kept.nudge === 0) || grown !== undefined)) viewGrowth = undefined
+    }
+    if (growth !== undefined && (kept !== undefined || grown !== undefined)) {
+      const how = kept === undefined ? 'kept on the person\'s move' : kept.nudge === 0 ? 'kept' : 'nudged'
+      const denied = result.deny === undefined ? '' : `, denied (${result.deny})`
+      noteView(`window ${how}: ${e.contentRows} rows (were ${growth.rows}), to ${move.offset}${denied}`)
+    }
+    viewContentRows = move.contentRows
+    if (isPerson && !isRedraw && result.deny === undefined) {
+      if (viewPlace !== 'end') void holdViewFrom($)
+      if (e.by < 0 && move.offset <= e.bodyRows) void showEarlier($, move.contentRows)
+    }
+    return result
+  })
+
+  // What the thread view shows changed: kept at its end as a surface draws it.
+  on('state.set', { plugin: 'thread-chat' }, async ($, e, next) => {
+    const result = await next(e)
+    if (VIEW_KEYS.has(e.key)) noteViewChange($)
+    return result
   })
 
   // Another thread picked takes the thread view to the newest of what it holds.
   on('state.set', { plugin: 'thread-chat', key: 'current' }, async ($, e, next) => {
     const result = await next(e)
     try {
-      if (e.previous !== e.value && (await $.ui.panes()).some(p => p.id === VIEW)) await pinViewToEnd($)
+      if (e.previous !== e.value && (await $.ui.panes()).some(p => p.id === VIEW)) {
+        await placeViewAtEnd($)
+        await pinViewToEnd($)
+      }
     } catch {
       // the pick stands whether or not the view moves
     }
@@ -1701,21 +2397,55 @@ export const register: Register = on => {
 
   // The thread view: the picked thread's sections, their tags and a reply's
   // borders drawn by the code that draws the chat's. No Client: a pane of many
-  // rows must not add to the Clients every overlay on the desktop shares.
-  on('ui.render', { component: 'Pane', requestId: VIEW }, async ($, e) =>
-    drawView(
-      {
-        ui: $.ui.resolve(e),
-        markdown: text => drawMarkdown($, e, text),
-        // the chat's tags without its move button: the picker it opens is the chat's row's
-        tagRow: thread => drawTagRow($, e, [drawTag($, e, thread, isOnRightOf(e.surface) ? 'end' : 'start')]),
-        // its text is markdown, so its tag is not inset, as on the chat's markdown parts
-        threadPart: (thread, body) => drawThreadPart($, e, thread, drawTag($, e, thread, 'start'), body),
-      },
-      await viewInputs($),
-      viewDeps,
-    ),
-  )
+  // rows must not add to the Clients every overlay on the desktop shares. A failure to
+  // draw it says so in the pane: else the engine draws its own, an empty pane.
+  on('ui.render', { component: 'Pane', requestId: VIEW }, async ($, e) => {
+    const { step, end } = traceView(`began: ${e.surface}, window at ${e.props.scroll?.offset} of ${e.props.scroll?.bodyRows} rows`)
+    try {
+      settleView($, e.props.scroll.offset)
+      // drawn again as the pictures it waits for are read
+      const read_ = await read($, picturesRead)
+      step(`pictures read so far: ${read_}`)
+      const inputs = await viewInputs($, step)
+      // the newest sections, or from the first the person had drawn as they scrolled up
+      const from = await read($, viewFrom)
+      const near = viewNearOf(e.props.scroll.offset, e.props.scroll.bodyRows)
+      const { tree: drawn, span } = drawView(
+        {
+          surface: e.surface,
+          ui: $.ui.resolve(e),
+          markdown: text => drawMarkdown($, e, text),
+          // the chat's tags without its move button: the picker it opens is the chat's row's
+          tagRow: thread => drawTagRow($, e, [drawTag($, e, thread, isOnRightOf(e.surface) ? 'end' : 'start')]),
+          // its text is markdown, so its tag is not inset, as on the chat's markdown parts
+          threadPart: (thread, body) => drawThreadPart($, e, thread, drawTag($, e, thread, 'start'), body),
+          picture: image => pictureFor($, image),
+          near,
+          from: from ?? undefined,
+          showEarlier: () => void showEarlier($, viewContentRows),
+        },
+        inputs,
+        viewDeps,
+      )
+      viewSpan = span
+      // earlier sections drawn above the window: once the surface has drawn them, the window
+      // is kept off them
+      const growth = viewGrowth
+      if (growth !== undefined && !growth.isDrawn && span.from < growth.from) {
+        growth.isDrawn = true
+        $.clock.after(VIEW_SETTLE_MS, () => void keepViewPlace($))
+      }
+      const { cards, filled, chars } = picturesIn(drawn)
+      end(
+        `returned a ${(drawn as { type?: string }).type ?? 'tree'} near ${near.toFixed(2)} of sections ${span.from} on of ${span.count}: ` +
+          `${cards} picture cards, ${filled} with ${chars} characters of picture data`,
+      )
+      return drawn
+    } catch (error) {
+      end(`threw ${String(error)}`)
+      return drawViewFailure($.ui.resolve(e), error)
+    }
+  })
 
   on('command.run', { command: 'merge-threads' }, async ($, e) => {
     if (!(await read($, isOn))) return { text: OFF_TEXT }
@@ -1769,10 +2499,12 @@ export const register: Register = on => {
     return result
   })
 
-  // The one open move picker's pills post here when clicked: the only Clients, so their
-  // count stays near the number of threads.
+  // The menu's switches and the one open move picker's pills post here when clicked: the
+  // only Clients, so their count stays near the number of threads.
   on('ui.message', async ($, e, next) => {
-    if ((e.data as { flip?: unknown } | null)?.flip === true && (await read($, isOn))) {
+    if ((e.data as { flip?: unknown } | null)?.flip !== true) return next(e)
+    if (e.element.startsWith(SWITCH_HIT)) await flipMenuSwitch($, e.element.slice(SWITCH_HIT.length))
+    else if (await read($, isOn)) {
       if (e.element.startsWith('pick:')) await moveTo($, e.element.slice('pick:'.length))
       else if (e.element === NEW_THREAD_PILL) await setNaming($, true)
     }
@@ -1945,32 +2677,33 @@ export const register: Register = on => {
     return <Box flexDirection="column" rowGap={1}>{parts}</Box>
   })
 
-  // The band above the prompt, shared with the other mods of this repository through
-  // ./menu.tsx: while threads are on, the thread picker and `view`; always, the switches in its
-  // `mods` menu that turn threads on and off and, while on, let the agent start them.
+  // The band above the prompt: thread-chat's menu, then, while threads are on, the thread
+  // picker, taking the room left and giving way first. They sit before what other mods
+  // draw there, which keeps its width. The mobile app draws no menu: /threads and
+  // /thread-view are there.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const below = await next(e)
     if (e.props.hasSurvey) return below
 
     const on_ = await read($, isOn)
-    const switches: MenuSwitch[] = [{ rank: 10, key: THREADS_SWITCH, label: 'Threads', isOn: on_, onPress: () => flipThreads($) }]
-    if (on_) {
-      const mayCreate = await read($, agentMayCreate)
-      switches.push({
-        rank: 11,
-        key: AGENT_SWITCH,
-        label: 'Agent may start threads',
-        isOn: mayCreate,
-        onPress: () => flipAgentSwitch($),
-      })
-    }
-    return drawBand(below, {
-      ui: $.ui.resolve(e),
-      surface: e.surface,
-      controls: on_ ? { rank: 10, name: 'thread-chat', element: await drawThreadControls($, e), grows: true } : undefined,
-      switches,
-      isOpen: () => read($, menuOpen),
-      onToggle: () => update($, menuOpen, open => !open),
-    })
+    const { Box } = $.ui.resolve(e)
+    const menu = e.surface === 'mobile' ? undefined : await drawMenu($, e)
+    if (menu === undefined && !on_) return below
+
+    const mine = (
+      <Box flexDirection="row" alignItems="center" columnGap={1} flexGrow={1} flexShrink={1} minWidth={0}>
+        {menu !== undefined && <Box flexShrink={0}>{menu}</Box>}
+        {on_ && (await drawThreadControls($, e))}
+      </Box>
+    )
+    if (below.type === 'engine') return mine
+    return (
+      <Box flexDirection="row" alignItems="center" columnGap={2}>
+        {mine}
+        <Box flexDirection="row" alignItems="center" flexShrink={0}>
+          {below}
+        </Box>
+      </Box>
+    )
   })
 }

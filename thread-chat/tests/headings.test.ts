@@ -250,7 +250,8 @@ test('the thread view shows the rest of a split heading as the first line of its
   const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...BAND })
   await band.press({ key: 'picker:thread:threads' })
   const pane = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...PANE })
-  const said = (await pane.findAll({ type: 'Markdown' })).map(m => String(m.props.text))
-  expect(said).toEqual(['Lets fix the view\nand the tags', 'on it'])
+  // the person's section a bubble of their words, the reply's markdown
+  expect((await pane.findAll({ type: 'Text' })).map(t => t.text)).toContain('Lets fix the view\nand the tags')
+  expect((await pane.findAll({ type: 'Markdown' })).map(m => String(m.props.text))).toEqual(['on it'])
   expect(await tagOf(pane, 'Threads')).toBeDefined()
 })

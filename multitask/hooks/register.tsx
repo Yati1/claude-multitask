@@ -3,6 +3,7 @@ import type {
   AgentStatus,
   EngineInterface,
   Register,
+  RenderElement,
   SessionSendAddress,
   SessionSendResult,
   Timer,
@@ -30,9 +31,9 @@ import {
   marksOf,
   newsOf,
   oneLine,
+  pendingNote,
   relayNames,
 } from './prompts'
-import { drawBand } from './menu'
 
 const isOn = atom({ plugin: 'multitask', key: 'isOn' } as const, false)
 const thoughts = atom({ plugin: 'multitask', key: 'thoughts' } as const, [])
@@ -42,11 +43,13 @@ const toldVoice = atom({ plugin: 'multitask', key: 'toldVoice' } as const, false
 const expanded = atom({ plugin: 'multitask', key: 'expanded' } as const, [])
 const openReports = atom({ plugin: 'multitask', key: 'openReports' } as const, [])
 const heard = atom({ plugin: 'multitask', key: 'heard' } as const, {})
-const menuOpen = atom({ plugin: 'multitask', key: 'menuOpen' } as const, false)
 
 const PANE = 'multitask-thoughts'
-// Multitask's switch in the band's `mods` menu.
-const SWITCH = 'mods-menu:multitask'
+// Multitask's dropdown in the band. Its face is the mode the chat is in, Multitask or
+// Focus (Multitask off); picking the other mode switches to it.
+const DROPDOWN = 'multitask'
+const MULTITASK_MODE = 'multitask'
+const FOCUS_MODE = 'focus'
 const AGENT = 'multitask:thought'
 const TOOL = {
   think: 'mcp__multitask__think',
@@ -77,6 +80,12 @@ const INTERRUPT_GRACE_MS = 4000
 // How often, and how many times, a hand-over looks for the engine to have ended a thought's run.
 const SETTLE_POLL_MS = 250
 const SETTLE_POLLS = 20
+// How long after a thought's turn ended its run may still count as running, ending, before
+// what waits for it goes anyway.
+const SETTLE_MS = SETTLE_POLL_MS * SETTLE_POLLS
+// When the voice is woken to hand a thought what waits for it, should no hook of this
+// mod's have handed it over since it fell due: after each of these waits, then no more.
+const DUE_WAKES_MS = [3000, 15000, 60000]
 // How many of a thought's progress notes are kept, and how long each may be.
 const NOTES_KEPT = 5
 const NOTE_MAX = 500
@@ -97,6 +106,13 @@ let flushTimer: Timer | undefined
 // engine's notice or hand-back of that end waits for. Kept here, not in state: what one
 // dispatch reads of state stands still while it runs, so a wait for it would never see it.
 const settling = new Map<string, { name: string; done: Promise<void> }>()
+// Of the messages due to each thought, by thought id, kept here for the same reason: the
+// hand-overs in flight, when each thought's fell due, the refusal the voice was last told
+// of, and the timer that wakes the voice to hand them over.
+const handingOver = new Set<string>()
+const dueAt = new Map<string, number>()
+const toldRefusal = new Map<string, string>()
+const dueWakes = new Map<string, Timer>()
 
 // Whether an engine's notice or hand-back is about this thought: the notice names its
 // agent id, the hand-back its sender (by id or, once named, by name).
@@ -267,9 +283,18 @@ async function toggle($: EngineInterface): Promise<boolean> {
   await update($, isOn, was => (now = !was))
   if (now) {
     await offerVoiceTools($)
+    // What fell due for a thought while off goes to it now that it can be resumed again.
+    for (const t of await read($, thoughts)) if (isDue(t)) scheduleDueWake($, t.id, 0)
   }
   await keepSwitch($)
   return now
+}
+
+// Switches to the mode picked in the band's dropdown; the mode the chat is in already,
+// or anything else, leaves it be.
+async function pickMode($: EngineInterface, value: string) {
+  const wantsOn = value === MULTITASK_MODE ? true : value === FOCUS_MODE ? false : undefined
+  if (wantsOn !== undefined && wantsOn !== (await read($, isOn))) await toggle($)
 }
 
 // Where a session's switch is kept between runs of the app: whether it is on, when it
@@ -364,7 +389,7 @@ async function noteThoughtSaid($: EngineInterface, id: string, text: string) {
 // The end of a thought's turn reaches the voice once, as a done line. Its report replaces
 // the notes still waiting that it repeats; if it went out already as the latest note,
 // the line is a bare "done". With notes not relayed, nothing went out before it.
-async function relayDone($: EngineInterface, t: Thought, report: string, isFailed: boolean) {
+async function relayDone($: EngineInterface, t: Thought, report: string, isFailed: boolean, pending: number) {
   const notes = t.notes ?? []
   const wasSent = RELAY_NOTES && report !== '' && notes.at(-1) === report.slice(0, NOTE_MAX)
   await relay($, list => {
@@ -379,7 +404,7 @@ async function relayDone($: EngineInterface, t: Thought, report: string, isFaile
     }
     const said = isWaiting || !wasSent ? report : ''
     const text = isFailed ? [said, '(ended on an error)'].filter(part => part !== '').join(' ') : said
-    return [...kept, { thought: t.name, text, isDone: true }]
+    return [...kept, { thought: t.name, text, isDone: true, ...(pending > 0 && { pending }) }]
   })
 }
 
@@ -429,25 +454,126 @@ async function runEnded($: EngineInterface, id: string): Promise<AgentStatus | u
   }
 }
 
-// Hands a thought what waited for its turn to end, once the engine has ended the run.
-// What does not reach it goes back to the front of its queue, and the voice is told.
-async function handOver($: EngineInterface, id: string, waited: string[], text: string) {
-  const ended = await runEnded($, id)
+// Whether a thought has messages due: its queue no longer waits for a turn to end.
+function isDue(t: Thought): boolean {
+  return t.isHandOverDue === true && t.queued.length > 0 && t.status !== 'stopped'
+}
+
+// What a thought is handed for an interruption that waited for its turn to be cut.
+const interruption = (text: string) => `Interruption from the voice: ${text}`
+
+// Its queue, after the interruption waiting for its turn to be cut, if any.
+function withInterruption(t: Thought): string[] {
+  return t.interruptWith === null ? t.queued : [interruption(t.interruptWith), ...t.queued]
+}
+
+// What waits for a thought fell due (isHandOverDue set with it): the next hook of this
+// mod's the engine raises hands it over (handOverDue), and should none have by then, the
+// voice is woken, for its turn to.
+async function fellDue($: EngineInterface, id: string) {
+  dueAt.set(id, await $.clock.now())
+  scheduleDueWake($, id, 0)
+}
+
+// Forgets a thought's due messages: handed over, withdrawn, or the thought stopped.
+function forgetDue(id: string) {
+  dueWakes.get(id)?.cancel()
+  dueWakes.delete(id)
+  dueAt.delete(id)
+  toldRefusal.delete(id)
+}
+
+function scheduleDueWake($: EngineInterface, id: string, step: number) {
+  dueWakes.get(id)?.cancel()
+  dueWakes.delete(id)
+  const ms = DUE_WAKES_MS[step]
+  if (ms !== undefined) dueWakes.set(id, $.clock.after(ms, () => void wakeForDue($, id, step)))
+}
+
+// Messages are still due to a thought, which no hook of this mod's has handed over since
+// they fell due: the voice is told they are still pending, which wakes it, and its turn
+// hands them over. A note already waiting for the voice about the thought wakes it as well.
+async function wakeForDue($: EngineInterface, id: string, step: number) {
+  dueWakes.delete(id)
   const t = (await read($, thoughts)).find(one => one.id === id)
-  if (t === undefined || t.status === 'stopped') return
-  const sent = await deliver($, t, text)
-  if (sent.isDelivered) return
-  await patchThought($, id, one => ({
-    ...one,
-    queued: [...waited, ...one.queued],
-    status: ended === 'running' ? one.status : statusOf(ended ?? 'completed'),
-  }))
-  const what = waited.length === 1 ? 'a message' : `${waited.length} messages`
-  await relay($, list => [...list, { thought: t.name, text: `(${what} did not reach it, still queued for the end of its next turn: ${sent.reason})` }])
+  const isInFlight = handingOver.has(id)
+  if (t === undefined || (!isInFlight && !isDue(t))) return
+  scheduleDueWake($, id, step + 1)
+  if (isInFlight) return
+  const note: Update = { thought: t.name, text: `(${pendingNote(t.queued.length)})`, isPending: true }
+  await relay($, list => (list.some(u => u.thought === t.name) ? list : [...list, note]))
+}
+
+// Hands each thought whose turn has ended the messages due to it. Called only from hooks
+// of this mod's that the engine raises (the voice's turns, the engine's notice that a
+// thought finished, tell), as only there does the engine run this mod's allowance of its
+// own SendMessage (tool.check, below). A $ call made after the hook that made it has
+// returned, or from a timer, runs beneath this mod's own frame, where the engine leaves out
+// every hook of this mod, the allowance too: auto mode then refuses the send.
+async function handOverDue($: EngineInterface) {
+  if (!(await read($, isOn))) return
+  const due = (await read($, thoughts)).filter(t => isDue(t) && !handingOver.has(t.id))
+  if (due.length === 0) return
+  const agents = await $.agent.list()
+  const now = await $.clock.now()
+  for (const t of due) {
+    // Still ending the run its turn ended, a message would wait unread (runEnded): it goes
+    // at the next chance. One running a new turn reads it at its next step.
+    const run = agents.find(a => a.id === t.id)?.status
+    const isEnding = run === 'running' && t.turnId === null && now - (dueAt.get(t.id) ?? 0) < SETTLE_MS
+    if (!isEnding) await handOver($, t.id)
+  }
+}
+
+// Hands a thought the messages due to it, and `also` after them (tell's message to an idle
+// one), from a hook of this mod's the engine raised (handOverDue says why). Delivered, they
+// are off its queue and the voice's relay says so; refused, they stay at its front, due
+// still, and the voice is told why, once a reason. Undefined when there was nothing to send.
+async function handOver($: EngineInterface, id: string, also?: string): Promise<SessionSendResult | undefined> {
+  const isFree = !handingOver.has(id)
+  let waited: string[] = []
+  if (isFree) {
+    handingOver.add(id)
+    await patchThought($, id, one => {
+      if (!isDue(one)) return one
+      waited = one.queued
+      return { ...one, queued: [] }
+    })
+  }
+  try {
+    const t = (await read($, thoughts)).find(one => one.id === id)
+    const parts = also === undefined ? waited : [...waited, also]
+    if (t === undefined || parts.length === 0) return undefined
+    const sent = await deliver($, t, parts.join('\n\n'))
+    if (waited.length === 0) return sent
+    if (sent.isDelivered) {
+      await patchThought($, id, one => ({ ...one, isHandOverDue: false }))
+      forgetDue(id)
+      // The voice's relay, if it has not gone out yet, says they reached it.
+      await update($, inbox, list =>
+        list
+          .filter(u => u.thought !== t.name || u.isPending !== true)
+          .map(u => (u.thought === t.name && u.isDone === true && (u.pending ?? 0) > 0 ? { ...u, isHandedOver: true } : u)),
+      )
+      return sent
+    }
+    await patchThought($, id, one =>
+      one.status === 'stopped' ? one : { ...one, queued: [...waited, ...one.queued], isHandOverDue: true },
+    )
+    if (toldRefusal.get(id) !== sent.reason) {
+      toldRefusal.set(id, sent.reason)
+      const text = `(${pendingNote(waited.length)}. The last try failed: ${sent.reason})`
+      await relay($, list => [...list, { thought: t.name, text, isPending: true }])
+    }
+    return sent
+  } finally {
+    if (isFree) handingOver.delete(id)
+  }
 }
 
 async function stopThought($: EngineInterface, id: string) {
-  await patchThought($, id, t => ({ ...t, status: 'stopped', queued: [], interruptWith: null }))
+  await patchThought($, id, t => ({ ...t, status: 'stopped', queued: [], interruptWith: null, isHandOverDue: false }))
+  forgetDue(id)
   try {
     await $.tool.call({ tool: 'TaskStop', task_id: id })
   } catch {
@@ -456,16 +582,20 @@ async function stopThought($: EngineInterface, id: string) {
 }
 
 async function unqueue($: EngineInterface, id: string, index: number | undefined) {
-  await patchThought($, id, t => ({
-    ...t,
-    queued: index === undefined ? [] : t.queued.filter((_, i) => i !== index),
-  }))
+  let isEmpty = false
+  await patchThought($, id, t => {
+    const queued = index === undefined ? [] : t.queued.filter((_, i) => i !== index)
+    isEmpty = queued.length === 0
+    return { ...t, queued, isHandOverDue: !isEmpty && t.isHandOverDue === true }
+  })
+  if (isEmpty) forgetDue(id)
 }
 
 // Cuts a thought's running turn so the message goes in at once: the cut turn's end (or
-// the grace timer) hands it over. With no turn the engine will cut, the message waits in
-// its queue for the run's end, or goes now when the run has ended. The thought is never
-// stopped: a stopped agent takes no more messages. Answers as tell does.
+// the grace timer) makes it due, and it goes at the next chance. With no turn the engine
+// will cut, the message waits in its queue for the run's end, or goes now when the run has
+// ended. The thought is never stopped: a stopped agent takes no more messages. Answers as
+// tell does.
 async function interrupt($: EngineInterface, t: Thought, text: string): Promise<TellAnswer> {
   let pending = text
   if (t.turnId !== null) {
@@ -475,17 +605,23 @@ async function interrupt($: EngineInterface, t: Thought, text: string): Promise<
     }))
     try {
       await $.turn.abort({ turnId: t.turnId })
-      // Normally its turn.complete hands the message over; this covers a turn that never reports.
-      $.clock.after(INTERRUPT_GRACE_MS, () => void handOverInterrupt($, t.id))
+      // Normally its turn.complete makes the message due; this covers a turn that never reports.
+      $.clock.after(INTERRUPT_GRACE_MS, () => void interruptionFallsDue($, t.id))
       return { result: `Interrupting ${t.name}; it gets the message as soon as its current turn is cut.` }
     } catch {
-      // That turn had ended. Unless its end handed the message over, it goes another way.
+      // That turn had ended. Unless its end made the message due, it goes another way.
       let taken = null as string | null
       await patchThought($, t.id, one => {
         taken = one.interruptWith
         return { ...one, interruptWith: null }
       })
-      if (taken === null) return { result: `${t.name}'s turn had just ended; it gets the message now.` }
+      if (taken === null) {
+        // Due now, it goes from here, this being the voice's own call.
+        await runEnded($, t.id)
+        const sent = await handOver($, t.id)
+        if (sent === undefined || sent.isDelivered) return { result: `${t.name}'s turn had just ended; it has the message now.` }
+        return { result: `${t.name}'s turn had just ended; the message is pending and goes to it at the next chance (${sent.reason}).` }
+      }
       pending = taken
     }
   }
@@ -499,16 +635,17 @@ async function interrupt($: EngineInterface, t: Thought, text: string): Promise<
   return { result: `${t.name} had no turn running; it has the message now and resumes.` }
 }
 
-// Hands over the interruption still waiting, if any. Whichever comes second, the cut
-// turn's end or the grace timer, finds none and leaves the thought be: its turn by
-// then may be the one the interruption started, whose id a later interrupt aborts.
-async function handOverInterrupt($: EngineInterface, id: string) {
-  let text = null as string | null
+// Makes the interruption still waiting, if any, due, before the thought's queue: the grace
+// timer's, for a cut turn that never reports. Whichever comes second, the cut turn's end
+// or the grace timer, finds none and leaves the thought be.
+async function interruptionFallsDue($: EngineInterface, id: string) {
+  let isMoved = false
   await patchThought($, id, t => {
-    text = t.interruptWith
-    return text === null ? t : { ...t, interruptWith: null, turnId: null }
+    if (t.interruptWith === null || t.status === 'stopped') return t
+    isMoved = true
+    return { ...t, queued: withInterruption(t), interruptWith: null, isHandOverDue: true }
   })
-  if (text !== null) await handOver($, id, [text], `Interruption from the voice: ${text}`)
+  if (isMoved) await fellDue($, id)
 }
 
 // The notes a turn's report leaves: its own text arrived as notes too, last.
@@ -518,9 +655,11 @@ function notesBefore(notes: string[], report: string): string[] {
   return kept
 }
 
-// A thought's turn ended: the voice is told, with the text it ended on as its report (a
-// result, question or problem); then an interruption or its queue is handed over, or
-// it goes idle.
+// A thought's turn ended: it goes idle (or failed), and what waited for that end, an
+// interruption and its queue, falls due; the voice is told, with the text it ended on as
+// its report (a result, question or problem) and how many messages are still pending.
+// Nothing is handed over here: this runs on after the engine's hook has returned (see
+// handOverDue), and the run that turn ended may not have ended yet.
 async function settleThought($: EngineInterface, id: string, reason: TurnCompleteReason, answer: string) {
   const t = (await read($, thoughts)).find(one => one.id === id)
   if (t === undefined || t.status === 'stopped') return
@@ -536,27 +675,19 @@ async function settleThought($: EngineInterface, id: string, reason: TurnComplet
       notedSinceReport: false,
     }))
   }
-  if (!isCut) await relayDone($, t, report, reason === 'error' || reason === 'refusal')
   // What waits for it is read as it stands now, in the same step that settles it, not as
   // it stood when the turn ended: the voice may have queued or interrupted since.
-  const status: ThoughtStatus = reason === 'error' || reason === 'refusal' ? 'failed' : 'idle'
-  let waiting = null as 'interruption' | 'queue' | null
-  let queued: string[] = []
+  const isFailed = reason === 'error' || reason === 'refusal'
+  const status: ThoughtStatus = isFailed ? 'failed' : 'idle'
+  let pending = 0
   await patchThought($, id, one => {
     if (one.status === 'stopped') return one
-    if (one.interruptWith !== null) {
-      waiting = 'interruption'
-      return one
-    }
-    if (one.queued.length > 0) {
-      waiting = 'queue'
-      queued = one.queued
-      return { ...one, queued: [], turnId: null }
-    }
-    return { ...one, status, turnId: null }
+    const queued = withInterruption(one)
+    pending = queued.length
+    return { ...one, status, turnId: null, queued, interruptWith: null, isHandOverDue: pending > 0 }
   })
-  if (waiting === 'interruption') return handOverInterrupt($, id)
-  if (waiting === 'queue') return handOver($, id, queued, queued.join('\n\n'))
+  if (!isCut) await relayDone($, t, report, isFailed, pending)
+  if (pending > 0) await fellDue($, id)
 }
 
 // What the voice is told beside the person's message: its whole part once Multitask
@@ -682,10 +813,13 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
-  on('agent.offer', { agent: AGENT }, () => ({ isOffered: false }))
+  // The engine resumes an ended thought with a message only if its type is offered, so it
+  // is offered while Multitask is on; the model still cannot start one (tool.check, below).
+  on('agent.offer', { agent: AGENT }, async ($, e, next) => ((await read($, isOn)) ? next(e) : { isOffered: false }))
 
   on('command.run', { command: 'multitask' }, async $ => {
     const now = await toggle($)
+    await handOverDue($)
     return {
       text: now
         ? 'Multitask is on: this session is now the voice and hands all work to thoughts.'
@@ -765,14 +899,17 @@ export const register: Register = (on, options) => {
       isRunning = false // its turn ended meanwhile
     }
     if (how === 'interrupt' && isRunning) return interrupt($, t, message)
-    // With no turn running, its last run may still be winding down: the message goes once it has ended.
+    // With no turn running, its last run may still be winding down: the message goes once it
+    // has ended, after what is still pending for it.
     if (!isRunning) await runEnded($, t.id)
-    const sent = await deliver($, t, message)
+    const pending = !isRunning && isDue(t) ? t.queued.length : 0
+    const sent = (pending > 0 ? await handOver($, t.id, message) : undefined) ?? (await deliver($, t, message))
     if (!sent.isDelivered) return notDelivered(t, sent.reason)
+    const after = pending === 0 ? '' : `, after the ${pending === 1 ? 'message' : `${pending} messages`} still pending for it,`
     return {
       result: isRunning
         ? `Posted to ${t.name}; it reads it at its next step.`
-        : `${t.name} was ${t.status === 'running' ? 'idle' : t.status}; it has the message now and resumes.`,
+        : `${t.name} was ${t.status === 'running' ? 'idle' : t.status}; it has the message now${after} and resumes.`,
     }
   })
 
@@ -845,6 +982,9 @@ export const register: Register = (on, options) => {
     if (e.origin.kind === 'task-notification' || isHandBack) {
       // Waited for before anything is read, so what is read has it.
       await settledFor($, e.text)
+      // A thought finished: what waited for its turn to end goes to it now, before the
+      // voice is told.
+      await handOverDue($)
       const t = (await read($, thoughts)).find(one => isAbout(e.text, one.id, one.name))
       if (t === undefined || !(await read($, isOn))) return next(e)
       const relayed = await takeRelay($)
@@ -871,19 +1011,23 @@ export const register: Register = (on, options) => {
     return result
   })
 
-  // The voice's think call was allowed as any call is; the thought it starts is the
-  // mod's own agent type, which the model is never offered, so its start is not put
-  // to a second decider. What the thought then does is checked as any agent's work.
+  // Only this mod starts a thought. The voice's think call was allowed as any call is, so
+  // the thought it starts is not put to a second decider. Anyone else's start of one (the
+  // model's own Agent call, in any loop, or another plugin's) is refused. What a thought
+  // then does is checked as any agent's work.
   on('tool.check', { tool: 'Agent' }, async ($, e, next) => {
     const input = e.input as { subagent_type?: unknown; subagentType?: unknown } | null
     if (input?.subagent_type !== AGENT && input?.subagentType !== AGENT) return next(e)
-    return { decision: 'allow', reason: 'A thought the multitask voice started.' }
+    if (next.origin.plugin === $.plugin.name) return { decision: 'allow', reason: 'A thought the multitask voice started.' }
+    return { decision: 'deny', reason: 'Only the multitask mod starts a thought (the voice\'s think tool); use another agent type.' }
   })
 
   // The voice's messages to its thoughts go by the engine's SendMessage tool, called as
   // this plugin's own call, which the mode's decider would judge as the model's: auto
   // mode refuses a call the model never asked for. This plugin's own send to one of its
-  // thoughts is allowed; any other send is decided as before.
+  // thoughts is allowed; any other send is decided as before. The engine runs this hook
+  // only for a send made while another hook of this plugin runs, so every send is made so
+  // (handOverDue says why).
   on('tool.check', { tool: 'SendMessage' }, async ($, e, next) => {
     if (next.origin.plugin !== $.plugin.name) return next(e)
     const to = (e.input as { to?: unknown } | null)?.to
@@ -891,9 +1035,12 @@ export const register: Register = (on, options) => {
     return { decision: 'allow', reason: 'A message from the multitask voice to its own thought.' }
   })
 
+  // The voice's turns (a subagent's run raises no turn.start) are where what is due to a
+  // thought goes when nothing else handed it over: the voice is woken for that if need be.
   on('turn.start', async ($, e, next) => {
     flushTimer?.cancel()
     await update($, isMainBusy, () => true)
+    await handOverDue($)
     return next(e)
   })
 
@@ -923,6 +1070,7 @@ export const register: Register = (on, options) => {
     const result = await next(e)
     if (e.agentId === undefined) {
       await update($, isMainBusy, () => false)
+      await handOverDue($)
       if (await read($, isOn)) scheduleFlush($)
     } else {
       const t = (await read($, thoughts)).find(one => one.id === e.agentId)
@@ -1002,9 +1150,9 @@ export const register: Register = (on, options) => {
     return <Text dimColor>◦ thought update{names.length > 0 ? `: ${names.join(', ')}` : ''}</Text>
   })
 
-  // The band above the prompt, shared with the other mods of this repository through
-  // ./menu.tsx: while Multitask is on or has thoughts left, `thoughts`; always, the switch
-  // in its `mods` menu that turns Multitask on and off.
+  // The band above the prompt: Multitask's dropdown and, while Multitask is on or has
+  // thoughts left, `thoughts`. They sit after what other mods draw there, keeping their
+  // width while the others give way. The mobile app draws no dropdown: /multitask is there.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const below = await next(e)
     if (e.props.hasSurvey) return below
@@ -1016,26 +1164,43 @@ export const register: Register = (on, options) => {
     const queued = live.reduce((n, t) => n + t.queued.length, 0)
     const thoughtsLabel =
       (running > 0 ? `thoughts ${running}` : 'thoughts') + (queued > 0 ? ` · ${queued} queued` : '')
-    const { Button } = $.ui.resolve(e)
-    // Off with no thoughts left, the band has no `thoughts`: the switch turns Multitask on.
-    const controls =
-      !on_ && live.length === 0
-        ? undefined
-        : {
-            rank: 20,
-            name: 'multitask',
-            element: (
-              <Button key="open-thoughts" label={thoughtsLabel} onPress={() => void $.ui.open({ id: PANE, title: 'Thoughts' })} />
-            ),
-          }
-    return drawBand(below, {
-      ui: $.ui.resolve(e),
-      surface: e.surface,
-      controls,
-      switches: [{ rank: 20, key: SWITCH, label: 'Multitask', isOn: on_, onPress: () => toggle($) }],
-      isOpen: () => read($, menuOpen),
-      onToggle: () => update($, menuOpen, open => !open),
-    })
+    const { Box, Button } = $.ui.resolve(e)
+    let dropdown: RenderElement | undefined
+    if (e.surface !== 'mobile') {
+      const { Select } = $.ui.resolve(e)
+      dropdown = (
+        <Select
+          key={DROPDOWN}
+          options={[
+            { value: MULTITASK_MODE, label: 'Multitask' },
+            { value: FOCUS_MODE, label: 'Focus' },
+          ]}
+          value={on_ ? MULTITASK_MODE : FOCUS_MODE}
+          onSelect={value => pickMode($, value)}
+        />
+      )
+    }
+    // Off with no thoughts left, the band has no `thoughts`.
+    const showsThoughts = on_ || live.length > 0
+    if (dropdown === undefined && !showsThoughts) return below
+
+    const mine = (
+      <Box flexDirection="row" alignItems="center" columnGap={1} flexShrink={0}>
+        {dropdown}
+        {showsThoughts && (
+          <Button key="open-thoughts" label={thoughtsLabel} onPress={() => void $.ui.open({ id: PANE, title: 'Thoughts' })} />
+        )}
+      </Box>
+    )
+    if (below.type === 'engine') return mine
+    return (
+      <Box flexDirection="row" alignItems="center" columnGap={2}>
+        <Box flexDirection="row" alignItems="center" flexGrow={1} flexShrink={1} minWidth={0}>
+          {below}
+        </Box>
+        {mine}
+      </Box>
+    )
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
