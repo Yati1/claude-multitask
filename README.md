@@ -8,7 +8,7 @@ Talk to Claude while it works, keep every topic in its own thread, and get a qui
 - **No waiting, nothing held back.** Ask something new, add a detail or change your mind whenever it occurs to you. The voice passes it to the right piece of work.
 - **Questions come straight away.** Your message isn't queued behind work in progress, so clarifying questions come at once and the right work starts sooner.
 - **Topics stay apart.** With thread-chat, a `# heading` puts a message in its topic's thread: colour-coded, filterable and easy to find later.
-- **A nod, not a speech.** With react, a quick "thanks" or "got it" can get an emoji on your message instead of a reply.
+- **Emoji reactions.** With react, the agent can acknowledge a message with an emoji reaction instead of a reply.
 
 Examples: [docs/why.md](docs/why.md).
 
