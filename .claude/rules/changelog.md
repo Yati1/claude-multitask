@@ -1,6 +1,6 @@
 # Changelog rules
 
-`CHANGELOG.md` tells people who use the thread-chat and multitask mods what changed. It follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+`CHANGELOG.md` tells people who use the thread-chat, multitask and react mods what changed. It follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## What goes in
 
@@ -24,4 +24,4 @@
 ## When
 
 - Update the line in the same commit as the change; when a later change makes a line untrue, fix that line in the same commit.
-- To release, rename `## Unreleased` to `## x.y.z - YYYY-MM-DD` and start a new, empty `## Unreleased` above it. Both mods share one version, set the same in `thread-chat/.claude-plugin/plugin.json` and `multitask/.claude-plugin/plugin.json`.
+- To release, rename `## Unreleased` to `## x.y.z - YYYY-MM-DD` and start a new, empty `## Unreleased` above it. All the mods share one version, set the same in `thread-chat/.claude-plugin/plugin.json`, `multitask/.claude-plugin/plugin.json` and `react/.claude-plugin/plugin.json`.

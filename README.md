@@ -1,6 +1,6 @@
 # claude-multitask
 
-Talk to Claude while it works, and keep every topic in its own thread. Two Claude Code mods: **multitask** and **thread-chat**.
+Talk to Claude while it works, keep every topic in its own thread, and get a quick emoji when a reply would be overkill. Three Claude Code mods: **multitask**, **thread-chat** and **react**.
 
 ## Why
 
@@ -8,6 +8,7 @@ Talk to Claude while it works, and keep every topic in its own thread. Two Claud
 - **No waiting, nothing held back.** Ask something new, add a detail or change your mind whenever it occurs to you. The voice passes it to the right piece of work.
 - **Questions come straight away.** Your message isn't queued behind work in progress, so clarifying questions come at once and the right work starts sooner.
 - **Topics stay apart.** With thread-chat, a `# heading` puts a message in its topic's thread: colour-coded, readable on its own and easy to find later.
+- **Emoji reactions.** With react, the agent can acknowledge a message with an emoji reaction instead of a reply.
 
 Examples: [docs/why.md](docs/why.md).
 
@@ -19,13 +20,14 @@ Requires Claude Code 2.1.290 or later. Made for the Code tab in the Claude deskt
 claude plugin marketplace add othrayte/claude-multitask
 claude plugin install multitask@claude-multitask
 claude plugin install thread-chat@claude-multitask
+claude plugin install react@claude-multitask
 ```
 
-Install either or both.
+Install any or all of them.
 
 ## Use
 
-Multitask has a dropdown, and thread-chat a `Threads` menu, in the band above the prompt with their switches for the chat; thread-chat's thread picker sits beside its menu. The mobile app shows only the thread picker: use the commands there.
+Multitask has a dropdown, and thread-chat a `Threads` menu, in the band above the prompt with their switches for the chat; thread-chat's thread picker sits beside its menu. The mobile app shows only the thread picker: use the commands there. React has no control in the band: `/react` is its switch.
 
 ### Multitask
 
@@ -43,6 +45,12 @@ Multitask has a dropdown, and thread-chat a `Threads` menu, in the band above th
 - The thread picker above the prompt, a dropdown named for the picked thread, picks the thread messages without a heading go to, or `No thread`. A heading still wins.
 - `New thread` in the `Threads` menu starts a thread by name and picks it; `Manage threads` there merges, archives or deletes threads.
 - Archived threads leave the pickers but keep their messages; `Manage threads` brings them back, as does a heading naming one. Deleting a thread takes its tag off its messages.
-- The chat always shows every message. `/thread-view`, or `Open thread view` in the `Threads` menu, opens the thread view: a pane with its own filter buttons, below its newest message, to show `All` threads or only the threads you pick (and `No thread` for messages outside any). The thread picker above the prompt does not change it.
+- `Filter the chat`, in the `Threads` menu while threads are on, is off at first, so the chat shows every message. On, with a thread picked, the chat shows only that thread's messages, and those since your last message that are in no thread. It is per chat, and kept when the chat is restarted.
+- `/thread-view`, or `Open thread view` in the `Threads` menu, opens the thread view: a pane with its own filter buttons, below its newest message, to show `All` threads or only the threads you pick (and `No thread` for messages outside any). The thread picker above the prompt and `Filter the chat` do not change it.
 - `/merge-threads <thread> into <thread>` also merges two threads.
-- `Agent may start threads`, in the `Threads` menu while threads are on, lets the agent start threads itself.
+- `Agent may start threads`, in the `Threads` menu while threads are on, lets the agent start threads itself. It is per chat, and kept when the chat is restarted.
+
+### Reactions
+
+- `/react` turns reactions on in a chat (again to turn them off). It is per chat, and kept when the chat is restarted.
+- While they are on, a reply of a single emoji shows as a reaction on your message, not as a reply.

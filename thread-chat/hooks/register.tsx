@@ -55,8 +55,13 @@ import type { Picture, ViewDeps, ViewGrowth, ViewInputs, ViewPlace, ViewSpan } f
 const isOn = atom({ plugin: 'thread-chat', key: 'isOn' } as const, false)
 const threads = atom({ plugin: 'thread-chat', key: 'threads' } as const, [])
 const aliases = atom({ plugin: 'thread-chat', key: 'aliases' } as const, {})
+// The menu's agent and filter switches, kept with the session's record for its next run;
+// a session that never flipped one starts with the agent kept out and the chat unfiltered.
 const agentMayCreate = atom({ plugin: 'thread-chat', key: 'agentMayCreate' } as const, false)
+const filtersChat = atom({ plugin: 'thread-chat', key: 'filtersChat' } as const, false)
 const snaps = atom({ plugin: 'thread-chat', key: 'snaps' } as const, {})
+const recent = atom({ plugin: 'thread-chat', key: 'recent' } as const, [])
+const recentTexts = atom({ plugin: 'thread-chat', key: 'recentTexts' } as const, [])
 const current = atom({ plugin: 'thread-chat', key: 'current' } as const, '')
 const deleted = atom({ plugin: 'thread-chat', key: 'deleted' } as const, [])
 const sentTo = atom({ plugin: 'thread-chat', key: 'sentTo' } as const, {})
@@ -75,12 +80,14 @@ const menuMode = atom({ plugin: 'thread-chat', key: 'menuMode' } as const, '')
 
 const CREATE_TOOL = 'mcp__thread-chat__create_thread'
 // Thread-chat's menu in the band: a "Threads" button, and a row per switch, which a
-// press flips: threads on in this chat, and, while on, whether the agent may start them.
-// On the desktop the rows are a card shown while the pointer is on the button or it has
-// the focus; on the terminal a press on the button shows or hides them in the band.
+// press flips: threads on in this chat, and, while on, whether the agent may start them
+// and whether the chat is filtered to the picked thread. On the desktop the rows are a
+// card shown while the pointer is on the button or it has the focus; on the terminal a
+// press on the button shows or hides them in the band.
 const MENU = 'threads'
 const THREADS_SWITCH = 'threads-on'
 const AGENT_SWITCH = 'agent-threads'
+const FILTER_SWITCH = 'filter-chat'
 // A switch's hit area over its picture, keyed by this and the switch's key.
 const SWITCH_HIT = 'switch:'
 // The thread view's pane id, which is also its command's name and its menu row's key.
@@ -201,11 +208,20 @@ async function offerCreateTool($: EngineInterface) {
   }
 }
 
-// Flips whether the agent may start threads, offering it the tool as it comes on.
+// Flips whether the agent may start threads, offering it the tool as it comes on, and
+// keeps the switch for the session's next run.
 async function flipAgentSwitch($: EngineInterface) {
   let now = false
   await update($, agentMayCreate, may => (now = !may))
   if (now) await offerCreateTool($)
+  await save($)
+}
+
+// Flips whether the chat is filtered to the picked thread, and keeps it for the
+// session's next run.
+async function flipFilter($: EngineInterface) {
+  await update($, filtersChat, is => !is)
+  await save($)
 }
 
 // Turns threads on or off, as /threads does, and keeps the switch for the session's
@@ -218,11 +234,12 @@ async function flipThreads($: EngineInterface): Promise<boolean> {
   return now
 }
 
-// Flips a switch of the band's menu. The agent's switch while threads are off leaves
-// things be.
+// Flips a switch of the band's menu. The agent's switch or the filter's while threads
+// are off leaves things be.
 async function flipMenuSwitch($: EngineInterface, key: string) {
   if (key === THREADS_SWITCH) await flipThreads($)
   else if (key === AGENT_SWITCH && (await read($, isOn))) await flipAgentSwitch($)
+  else if (key === FILTER_SWITCH && (await read($, isOn))) await flipFilter($)
 }
 
 // What a heading means, by one rule for sending and drawing alike: `+name` a new
@@ -338,9 +355,15 @@ const storeKey = (sessionId: string) => `session:${sessionId}`
 type Saved = {
   // absent from a record kept before /threads
   isOn: boolean
+  // the menu's agent and filter switches; absent from a record kept before they were kept
+  agentMayCreate?: boolean
+  filtersChat?: boolean
   threads: Thread[]
   aliases: Record<string, string>
   snaps: Record<string, string>
+  // absent from a record kept before the filter switch was
+  recent?: string[]
+  recentTexts?: string[]
   // absent from a record kept before the thread picker, whose threads may carry the
   // filter's `isSelected`
   current: string
@@ -353,14 +376,18 @@ type Saved = {
   viewThreads: string[]
 }
 
-// Keeps the session's switch, threads, merges, recorded meanings, picked thread and the
-// thread view's filter for its next run.
+// Keeps the session's switches, threads, merges, recorded meanings, latest rows, picked
+// thread and the thread view's filter for its next run.
 async function save($: EngineInterface) {
   const saved: Saved = {
     isOn: await read($, isOn),
+    agentMayCreate: await read($, agentMayCreate),
+    filtersChat: await read($, filtersChat),
     threads: await read($, threads),
     aliases: await read($, aliases),
     snaps: await read($, snaps),
+    recent: await read($, recent),
+    recentTexts: await read($, recentTexts),
     current: await read($, current),
     deleted: await read($, deleted),
     sentTo: await read($, sentTo),
@@ -434,6 +461,8 @@ async function takeUp($: EngineInterface, saved: Partial<Saved>) {
   await update($, snaps, all => ({ ...(saved.snaps ?? {}), ...all }))
   await update($, sentTo, all => ({ ...(saved.sentTo ?? {}), ...all }))
   await update($, moved, all => ({ ...(saved.moved ?? {}), ...all }))
+  await update($, recent, all => (all.length > 0 ? all : (saved.recent ?? [])))
+  await update($, recentTexts, all => (all.length > 0 ? all : (saved.recentTexts ?? [])))
   await update($, current, key => key || (saved.current ?? pickedByFilter(saved.threads ?? [])))
   await update($, untold, all => [...(saved.untold ?? []).filter(note => !all.includes(note)), ...all])
   await update($, briefed, brief => brief ?? saved.briefed ?? null)
@@ -443,6 +472,77 @@ async function takeUp($: EngineInterface, saved: Partial<Saved>) {
 // A row's id as the screen knows it: blocks of one stored row drawn apart take
 // ids that keep the row's first 24 characters.
 const stemOf = (id: string) => id.slice(0, 24)
+
+// Whether a drawn row (by any of its ids) came since the person's last message.
+async function isRecent($: EngineInterface, ids: string[]): Promise<boolean> {
+  const stems = new Set((await read($, recent)).map(stemOf))
+  return ids.some(id => stems.has(stemOf(id)))
+}
+
+// A reply text's start, as the mark it is matched by: spacing evened out.
+const textMarkOf = (text: string) => text.replace(/\s+/g, ' ').trim().slice(0, 160)
+
+// Whether a drawn reply came since the person's last message: by its id, or by its
+// text where the screen knows it by an id of its own.
+async function isRecentReply($: EngineInterface, id: string, text: string): Promise<boolean> {
+  if (await isRecent($, [id])) return true
+  return (await read($, recentTexts)).includes(textMarkOf(text))
+}
+
+// The marks of a stored reply's text blocks, each as a screen may draw it alone.
+function textMarksOf(content: readonly { type: string; [field: string]: unknown }[]): string[] {
+  return content.flatMap(block => (block.type === 'text' && typeof block.text === 'string' ? [textMarkOf(block.text)] : []))
+}
+
+// The ids of the tool calls a stored row makes; each draws as a row of its own.
+function toolCallIds(content: readonly { type: string; [field: string]: unknown }[]): string[] {
+  return content.flatMap(block => (block.type === 'tool_use' && typeof block.id === 'string' ? [block.id] : []))
+}
+
+// The keys of the threads the chat is filtered to: the picked thread while the menu's
+// filter is on, else none, and the chat shows every row. Read while a row draws, so a
+// flip or a new pick draws it again.
+async function chatFilterKeys($: EngineInterface): Promise<Set<string>> {
+  if (!(await read($, filtersChat))) return new Set()
+  const cur = await read($, current)
+  return cur === '' ? new Set() : new Set([cur])
+}
+
+// Whether a row that belongs to no thread is filtered out: while threads are on and the
+// chat is filtered to a thread, all but those since the person's last message are.
+async function isFilteredOut($: EngineInterface, ids: string[]): Promise<boolean> {
+  if (!(await read($, isOn)) || (await chatFilterKeys($)).size === 0) return false
+  return !(await isRecent($, ids))
+}
+
+// Whether a section stays in view: all of them while the chat is not filtered, else the
+// filtered thread's sections, and unthreaded ones in rows since the person's last message.
+function isShown(
+  s: Section,
+  selected: Set<string>,
+  resolve: (name: string) => Thread | undefined,
+  isRecentRow: boolean,
+): boolean {
+  if (selected.size === 0) return true
+  const thread = s.thread === null ? undefined : resolve(s.thread)
+  if (thread === undefined) return isRecentRow
+  return selected.has(keyOf(thread.name))
+}
+
+// Brings the chat's end into view: the latest row the screen knows by its id.
+// Rows that draw nothing of their own (a tool's result, a reminder) are passed over;
+// where nothing scrolls (the desktop scrolls its chat for no plugin), the chat stays put.
+async function scrollToEnd($: EngineInterface) {
+  const ids = (await read($, recent)).slice(-20).reverse()
+  try {
+    for (const id of ids) {
+      const scrolled = await $.ui.scroll({ to: { requestId: id }, block: 'end' })
+      if (scrolled.deny === undefined || /person|not scrollable/.test(scrolled.deny)) return
+    }
+  } catch {
+    return
+  }
+}
 
 // Messages sent with no heading to one thread (the one picked, or the one a reply's
 // quotes came from), until their rows are stored.
@@ -1015,12 +1115,17 @@ function drawAddThread(
 type MenuSwitch = { key: string; label: string; isOn: boolean }
 
 // The switches of the band's menu: threads on in this chat, and, while they are, whether
-// the agent may start them.
+// the agent may start them and whether the chat is filtered to the picked thread.
 async function menuSwitches($: EngineInterface): Promise<MenuSwitch[]> {
   const isThreadsOn = await read($, isOn)
   return [
     { key: THREADS_SWITCH, label: 'On in this chat', isOn: isThreadsOn },
-    ...(isThreadsOn ? [{ key: AGENT_SWITCH, label: 'Agent may start threads', isOn: await read($, agentMayCreate) }] : []),
+    ...(isThreadsOn
+      ? [
+          { key: AGENT_SWITCH, label: 'Agent may start threads', isOn: await read($, agentMayCreate) },
+          { key: FILTER_SWITCH, label: 'Filter the chat', isOn: await read($, filtersChat) },
+        ]
+      : []),
   ]
 }
 
@@ -1221,10 +1326,12 @@ function drawPicker(
   )
 }
 
-// Picks the thread messages with no heading go to ('' none). The thread view's filter is its own.
+// Picks the thread messages with no heading go to ('' none), and, while the chat is
+// filtered to it, takes the chat back to its end. The thread view's filter is its own.
 async function pickThread($: EngineInterface, key: string) {
   await update($, current, () => key)
   await save($)
+  if (await read($, filtersChat)) await scrollToEnd($)
 }
 
 // A thread's name by its key, for telling the model.
@@ -2223,7 +2330,13 @@ export const register: Register = on => {
     // Threads held on (a reload) stay on; else they are as the session, or the one it
     // came from, kept them. A record kept before /threads, or none, is on where it used them.
     if (!(await read($, isOn)) && (saved?.isOn ?? (await wasInUse($)))) await update($, isOn, () => true)
-    // The agent switch outlives a reload of this code: with threads on, its tool is offered again.
+    // The agent and filter switches are as the record kept them (each flip keeps them, so
+    // a reload's held ones match it); a record without them leaves them as they stand.
+    const keptMayCreate = saved?.agentMayCreate
+    if (keptMayCreate !== undefined) await update($, agentMayCreate, () => keptMayCreate)
+    const keptFilters = saved?.filtersChat
+    if (keptFilters !== undefined) await update($, filtersChat, () => keptFilters)
+    // With threads and the agent switch on, after a reload or a restart, its tool is offered again.
     if ((await read($, isOn)) && (await read($, agentMayCreate))) await offerCreateTool($)
     // A session with threads on keeps the rows it took up from the one it came from;
     // one with them off keeps none on disk. Its record is saved all the same: it stops
@@ -2294,9 +2407,17 @@ export const register: Register = on => {
     return send([`Thread headings in this message, as the user meant them: ${meanings.map(meaningNote).join('; ')}.`])
   })
 
-  // A message sent with no heading to one thread is known by its row once stored.
+  // A message sent with no heading to one thread is known by its row once stored, and the
+  // rows since the person's last message are noted: a filtered chat still shows those of
+  // them that belong to no thread.
   on('session.append', async ($, e, next) => {
     const isPersonMessage = PERSON.has(e.origin.kind) && (e.door === 'prompt' || e.door === 'delivery')
+    if (e.agentId === undefined) {
+      const ids = [e.uuid, ...toolCallIds(e.message.content)]
+      await update($, recent, all => (isPersonMessage ? ids : [...all, ...ids]))
+      const marks = e.message.type === 'assistant' ? textMarksOf(e.message.content) : []
+      if (isPersonMessage || marks.length > 0) await update($, recentTexts, all => (isPersonMessage ? [] : [...all, ...marks]))
+    }
     if (e.agentId === undefined && isPersonMessage && unsent.length > 0) {
       const said = textOf(e.message.content)
       const sent = unsent.findIndex(u => said.includes(u.text))
@@ -2552,14 +2673,20 @@ export const register: Register = on => {
   })
 
   // The person's message stays the engine's own drawing (its images and all):
-  // its thread tags go above it in their colours, and its heading lines go.
+  // its thread tags go above it in their colours, and its heading lines go. A filtered
+  // chat trims its text to the filtered thread's sections.
   on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
-    // Off, every message is the engine's drawing alone.
+    // Off, every message is the engine's drawing alone, filtered before or not.
     if (!(await read($, isOn))) return next(e)
     // A plugin's prompt is never the person's, though a surface may name it as theirs.
     // A row of no words (an image alone) is the engine's drawing alone: no tag or
     // "+ thread" goes round it.
-    if (!PERSON.has(e.props.origin.kind) || isOthersPrompt(e.props.text) || e.props.text.trim() === '') return next(e)
+    if (!PERSON.has(e.props.origin.kind) || isOthersPrompt(e.props.text) || e.props.text.trim() === '') {
+      // Another party's message (a notification, a plugin's) belongs to no thread.
+      if (!(await isFilteredOut($, [e.requestId]))) return next(e)
+      const { Box } = $.ui.resolve(e)
+      return <Box display="none" />
+    }
     const list = await read($, threads)
     const merged = await read($, aliases)
     const snapped = await read($, snaps)
@@ -2577,14 +2704,20 @@ export const register: Register = on => {
     const pickerPlace = open.startsWith(`${e.requestId}|`) ? open.slice(e.requestId.length + 1) : undefined
     // On the desktop, a message of no thread offers "+ thread" where the pointer hovers.
     const canAdd = e.surface === 'desktop'
-    const isPlain = !sections.some(s => s.thread !== null) && pickerPlace === undefined
-    const text = bubbleText(sections, resolve) || e.props.text
+    const selected = await chatFilterKeys($)
+    const isPlain = selected.size === 0 && !sections.some(s => s.thread !== null) && pickerPlace === undefined
     // A message of no thread is the engine's drawing alone, but for a deleted thread's
     // heading line, which goes.
-    if (isPlain && !canAdd) return next(text.trim() === e.props.text.trim() ? e : { ...e, props: { ...e.props, text } })
+    if (isPlain && !canAdd) {
+      const text = bubbleText(sections, resolve) || e.props.text
+      return next(text.trim() === e.props.text.trim() ? e : { ...e, props: { ...e.props, text } })
+    }
 
     const { Box } = $.ui.resolve(e)
-    const shown = sections
+    const isRecentRow = selected.size > 0 && (await isRecent($, [e.requestId]))
+    const shown = sections.filter(s => isShown(s, selected, resolve, isRecentRow))
+    if (shown.length === 0) return <Box display="none" />
+    const text = bubbleText(shown, resolve) || e.props.text
     const message = await next(text === e.props.text ? e : { ...e, props: { ...e.props, text } })
     // A row a plugin beneath draws as nothing stays nothing: no tag or "+ thread" round it.
     if (isBlank(message)) return message
@@ -2630,10 +2763,16 @@ export const register: Register = on => {
     if (!(await read($, isOn))) return next(e)
     // The voice's "(quiet)" (the multitask plugin draws it as nothing) and a block of no
     // words are the engine's drawing alone: no "+ thread", or room for one, round nothing.
-    if (isBlankText(e.props.text)) return next(e)
+    if (isBlankText(e.props.text)) {
+      const isHidden = (await chatFilterKeys($)).size > 0 && !(await isRecentReply($, e.requestId, e.props.text))
+      if (!isHidden) return next(e)
+      const { Box } = $.ui.resolve(e)
+      return <Box display="none" />
+    }
     const list = await read($, threads)
     const merged = await read($, aliases)
     const gone = await read($, deleted)
+    const selected = await chatFilterKeys($)
     const links = linksFor(merged, gone)
     const resolve = (name: string) => threadOf(name, list, links)
     const written = replySectionsOf(e.props.text, list, merged, gone)
@@ -2644,7 +2783,7 @@ export const register: Register = on => {
     const pickerPlace = open.startsWith(`${e.requestId}|`) ? open.slice(e.requestId.length + 1) : undefined
     // On the desktop, a part of no thread offers "+ thread" where the pointer hovers.
     const canAdd = e.surface === 'desktop'
-    const isPlain = !sections.some(s => s.thread !== null) && pickerPlace === undefined
+    const isPlain = selected.size === 0 && !sections.some(s => s.thread !== null) && pickerPlace === undefined
     // A reply of no thread is the engine's drawing alone, but for a deleted thread's
     // heading lines, which go.
     if (isPlain && !canAdd) {
@@ -2654,7 +2793,9 @@ export const register: Register = on => {
     }
 
     const { Box } = $.ui.resolve(e)
-    const shown = sections
+    const isRecentRow = selected.size > 0 && (await isRecentReply($, e.requestId, e.props.text))
+    const shown = sections.filter(s => isShown(s, selected, resolve, isRecentRow))
+    if (shown.length === 0) return <Box display="none" />
 
     // A screen gets one message's text with a drawing, so the engine draws one part
     // of the reply; the other parts are drawn as markdown, as a reply's text is.
@@ -2715,6 +2856,27 @@ export const register: Register = on => {
     }
     if (parts.length === 0) return <Box display="none" />
     return <Box flexDirection="column" rowGap={1}>{parts}</Box>
+  })
+
+  // Tool rows belong to no thread: while the chat is filtered, only those since the
+  // person's last message stay.
+  on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
+    if (!(await isFilteredOut($, [e.requestId]))) return next(e)
+    const { Box } = $.ui.resolve(e)
+    return <Box display="none" />
+  })
+
+  on('ui.render', { component: 'ToolResult' }, async ($, e, next) => {
+    if (!(await isFilteredOut($, [e.requestId]))) return next(e)
+    const { Box } = $.ui.resolve(e)
+    return <Box display="none" />
+  })
+
+  on('ui.render', { component: 'ToolGroup' }, async ($, e, next) => {
+    const ids = [e.requestId, ...e.props.calls.flatMap(call => (call.tool_use_id === undefined ? [] : [call.tool_use_id]))]
+    if (!(await isFilteredOut($, ids))) return next(e)
+    const { Box } = $.ui.resolve(e)
+    return <Box display="none" />
   })
 
   // The band above the prompt: thread-chat's menu, then, while threads are on, the thread

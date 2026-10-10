@@ -1,6 +1,6 @@
 # claude-multitask
 
-Two Claude Code mods, each a plugin in its own folder: `thread-chat` and `multitask`. The repository root is their plugin marketplace (`.claude-plugin/marketplace.json`). `README.md` has the install and test commands.
+Three Claude Code mods, each a plugin in its own folder: `thread-chat`, `multitask` and `react`. The repository root is their plugin marketplace (`.claude-plugin/marketplace.json`). `README.md` has the install and test commands.
 
 ## Editing the mods
 
@@ -16,7 +16,7 @@ For a small, clear fix: no advisor, read only the code the fix touches, add no n
 
 ## Type-check
 
-Run `npm install` once, then `npm run typecheck` checks both mods against the engine's plugin API types committed in `engine-types/claude-code/index.d.ts`; its first line names the Claude Code version they came from. The types Claude Code writes into `<mod>/.claude-plugin/types/` when it loads a mod are not used: they come from whichever version loaded the mod last, and older sessions keep rewriting them. After upgrading Claude Code and reloading the mods, `npm run types:refresh` (from the main checkout or a worktree) copies the newest generated copy over the committed one, never an older one. The built-in and MCP tool types are not committed, as they vary by build and list the connected servers, so tool inputs and every `mcp__*` tool are loosely typed.
+Run `npm install` once, then `npm run typecheck` checks all three mods against the engine's plugin API types in `engine-types/claude-code/index.d.ts`; its first line names the Claude Code version they came from. That file is not committed. To make it, load the mods in Claude Code, which writes the types into each `<mod>/.claude-plugin/types/`, then run `npm run types:refresh` (from the main checkout or a worktree; it also reads the main checkout's mods) to copy the newest of them into `engine-types/`, never an older one over a newer. Do this in a new clone or worktree, where the typecheck otherwise fails with "Cannot find type definition file for 'claude-code'", and again after upgrading Claude Code. The typecheck doesn't read `<mod>/.claude-plugin/types/` itself: those copies come from whichever version loaded the mod last, and older sessions keep rewriting them. The built-in and MCP tool types are left out, as they vary by build and list the connected servers, so tool inputs and every `mcp__*` tool are loosely typed.
 
 ## Running the tests
 
@@ -25,6 +25,7 @@ What works: run each mod's tests with the session's own engine and GrowthBook of
 ```
 DISABLE_GROWTHBOOK=1 "$CLAUDE_CODE_EXECPATH" plugin test multitask
 DISABLE_GROWTHBOOK=1 "$CLAUDE_CODE_EXECPATH" plugin test thread-chat
+DISABLE_GROWTHBOOK=1 "$CLAUDE_CODE_EXECPATH" plugin test react
 ```
 
 In PowerShell: `$env:DISABLE_GROWTHBOOK='1'; & $env:CLAUDE_CODE_EXECPATH plugin test multitask`.
