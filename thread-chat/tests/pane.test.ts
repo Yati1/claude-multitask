@@ -523,6 +523,22 @@ test('a thread view that fails to draw says why rather than going blank', async 
   }
 })
 
+test('/thread-view trace tells how the view was last opened and drawn, step by step', async ($, on) => {
+  engine(on)
+  const trace = async () =>
+    (await $.command.run({ command: 'thread-view', args: 'trace', origin: { kind: 'composer' }, presentation: {} as never })).text
+  expect(await trace()).toBe('The thread view has not been drawn since thread-chat last loaded.')
+  await flipThreads($)
+  await $.prompt.submit(say('# design\nhello'))
+  await $.command.run({ command: 'thread-view', args: '', origin: { kind: 'composer' }, presentation: {} as never })
+  const pane = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...PANE })
+  await pane.drawn()
+  const text = await trace()
+  expect(text).toContain('open answered: {"isPlaced":true}')
+  expect(text).toMatch(/: \d+ms returned a Box, 0 picture cards with 0 characters of picture data/)
+  expect(text).toMatch(/\d+ms threads read: 1, picked 0/)
+})
+
 // A compaction's summary, as the engine stores it and the conversation then reads it.
 const SUMMARY = 'This session is being continued from a previous conversation. Summary: hello, and fast?'
 

@@ -8,6 +8,7 @@ Notable changes to the thread-chat, multitask and react mods. The format is base
 
 - Added a react mod (`/react`) so the agent can acknowledge a message with an emoji reaction, not a reply.
 - Added a `Threads` menu above the prompt to thread-chat with a switch that turns threads on or off.
+- Added `/thread-view trace` to thread-chat to show how the thread view was last opened and drawn.
 
 ### Changed
 

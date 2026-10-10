@@ -1283,8 +1283,11 @@ function placeViewAtEnd() {
 // draws it only later is taken there as it does (settleView).
 async function openView($: EngineInterface) {
   placeViewAtEnd()
+  const { step, end } = traceView('open asked')
   const opened = await $.ui.open({ id: VIEW, title: VIEW_TITLE })
+  step(`open answered: ${JSON.stringify(opened)}`)
   if (opened.isPlaced) await pinViewToEnd($)
+  end('open done')
   return opened
 }
 
@@ -1292,17 +1295,20 @@ async function openView($: EngineInterface) {
 // The rows it kept are the transcript as stored; the conversation as the engine
 // holds it (a compaction's summary in place of what came before) is read only to
 // fill in rows kept without their text, or for a session it kept no rows of.
-async function viewInputs($: EngineInterface): Promise<ViewInputs> {
+async function viewInputs($: EngineInterface, step: (what: string) => void = () => {}): Promise<ViewInputs> {
   const known = await read($, viewRows)
+  step(`rows read: ${known.length}, ${known.filter(row => row.text === undefined).length} without text`)
   let messages: ViewInputs['messages'] = []
   if (needsMessages(known)) {
     try {
       messages = await $.session.messages()
-    } catch {
+      step(`conversation read: ${messages.length} messages`)
+    } catch (error) {
+      step(`conversation not read: ${String(error)}`)
       messages = []
     }
   }
-  return {
+  const inputs = {
     list: await read($, threads),
     merged: await read($, aliases),
     snapped: await read($, snaps),
@@ -1311,7 +1317,32 @@ async function viewInputs($: EngineInterface): Promise<ViewInputs> {
     known,
     messages,
   }
+  step(`threads read: ${inputs.list.length}, picked ${inputs.list.filter(t => t.isSelected).length}`)
+  return inputs
 }
+
+// The thread view's last few drawings, step by step, for `/thread-view trace`: when each
+// began, the time to each step, and how it ended (no end: still running, or cut off).
+type ViewTrace = { at: string; steps: string[]; end?: string }
+const viewTraces: ViewTrace[] = []
+const VIEW_TRACES_KEPT = 10
+
+function traceView(start: string): { step: (what: string) => void; end: (how: string) => void } {
+  const began = Date.now()
+  const trace: ViewTrace = { at: new Date(began).toISOString(), steps: [] }
+  viewTraces.push(trace)
+  if (viewTraces.length > VIEW_TRACES_KEPT) viewTraces.shift()
+  const step = (what: string) => {
+    trace.steps.push(`${Date.now() - began}ms ${what}`)
+  }
+  step(start)
+  return { step, end: how => (trace.end = `${Date.now() - began}ms ${how}`) }
+}
+
+const viewTraceText = () =>
+  viewTraces.length === 0
+    ? 'The thread view has not been drawn since thread-chat last loaded.'
+    : viewTraces.map(t => [`draw at ${t.at}: ${t.end ?? 'NO END (still running, or cut off)'}`, ...t.steps.map(s => `  ${s}`)].join('\n')).join('\n')
 
 // The file beside a session's rows that holds their marks' hashes, a line a row.
 const MARKS_FILE = 'marks.txt'
@@ -1878,7 +1909,8 @@ export const register: Register = on => {
     return result
   })
 
-  on('command.run', { command: VIEW }, async $ => {
+  on('command.run', { command: VIEW }, async ($, e) => {
+    if (e.args.trim() === 'trace') return { text: viewTraceText() }
     if (!(await read($, isOn))) return { text: OFF_TEXT }
     const opened = await openView($)
     return { text: opened.isPlaced ? 'Thread view opened.' : `Thread view not shown: ${opened.reason}` }
@@ -1933,11 +1965,16 @@ export const register: Register = on => {
   // rows must not add to the Clients every overlay on the desktop shares. A failure to
   // draw it says so in the pane: else the engine draws its own, an empty pane.
   on('ui.render', { component: 'Pane', requestId: VIEW }, async ($, e) => {
+    const { step, end } = traceView(`began: ${e.surface}, window at ${e.props.scroll?.offset} of ${e.props.scroll?.bodyRows} rows`)
     try {
       settleView($, e.props.scroll.offset)
       // drawn again as the pictures it waits for are read
-      await read($, picturesRead)
-      return drawView(
+      const read_ = await read($, picturesRead)
+      step(`pictures read so far: ${read_}`)
+      const inputs = await viewInputs($, step)
+      let cards = 0
+      let pictureChars = 0
+      const drawn = drawView(
         {
           surface: e.surface,
           ui: $.ui.resolve(e),
@@ -1946,12 +1983,20 @@ export const register: Register = on => {
           tagRow: thread => drawTagRow($, e, [drawTag($, e, thread, isOnRightOf(e.surface) ? 'end' : 'start')]),
           // its text is markdown, so its tag is not inset, as on the chat's markdown parts
           threadPart: (thread, body) => drawThreadPart($, e, thread, drawTag($, e, thread, 'start'), body),
-          picture: image => pictureFor($, image),
+          picture: image => {
+            const picture = pictureFor($, image)
+            cards += 1
+            if (picture !== undefined && picture !== 'loading') pictureChars += picture.data.length
+            return picture
+          },
         },
-        await viewInputs($),
+        inputs,
         viewDeps,
       )
+      end(`returned a ${(drawn as { type?: string }).type ?? 'tree'}, ${cards} picture cards with ${pictureChars} characters of picture data`)
+      return drawn
     } catch (error) {
+      end(`threw ${String(error)}`)
       return drawViewFailure($.ui.resolve(e), error)
     }
   })
