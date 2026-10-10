@@ -6,7 +6,7 @@ Notable changes to the thread-chat, multitask and react mods. The format is base
 
 ### Added
 
-- Added a thread picker above the prompt to thread-chat, coloured by the thread unheaded messages go to.
+- Added a coloured thread picker above the prompt to thread-chat for unheaded messages, set by headings.
 - Added thread switches to thread-chat's thread view to show only those, or all while none is on.
 
 ### Changed
