@@ -20,6 +20,7 @@ import {
   messagesBefore,
   nudgeOf,
   picturesNear,
+  reactionOn,
   rowsOfChunks,
   rowsUpTo,
   viewMoveOf,
@@ -691,6 +692,150 @@ test("the view draws a thread's tags and borders as the chat does", async ($, on
     }
     for (const drawing of [view, message, reply]) await drawing.unmount()
   }
+})
+
+// The react mod's reactions a drawing shows, in order: each one's emoji and the words of
+// the person's bubble it is on or under (the bubble last drawn before it). On a page a
+// picture named "Reaction: <emoji>"; on the terminal the emoji between dim brackets.
+async function reactionsOf(pane: Drawing) {
+  const found: { on: string; emoji: string }[] = []
+  let words = ''
+  const walk = (node: unknown) => {
+    if (typeof node !== 'object' || node === null) return
+    const { type, props = {}, children = [] } = node as Drawn
+    if (type === 'Box' && props.backgroundColor !== undefined) {
+      words = shownIn(children.filter(child => (child as Drawn).type === 'Text').at(-1))
+    }
+    if (type === 'Svg' && String(props.alt).startsWith('Reaction: ')) found.push({ on: words, emoji: String(props.alt).slice(10) })
+    const texts = children.map(child => child as Drawn)
+    if (type === 'Box' && texts.length === 3 && texts.every(t => t.type === 'Text') && shownIn(texts[0]) === '(' && shownIn(texts[2]) === ')') {
+      expect([texts[0]?.props?.dimColor, texts[2]?.props?.dimColor]).toEqual([true, true])
+      found.push({ on: words, emoji: shownIn(texts[1]) })
+      return
+    }
+    for (const child of children) walk(child)
+  }
+  walk(await pane.drawn())
+  return found
+}
+
+test("the view draws react's reaction on the person's message as the chat does, and not the reply it stands for", async ($, on) => {
+  engine(on)
+  // react's values as the view reads them; none, as without react, until the test sets them
+  let react: { isOn: boolean; reactions: { id: string; mark: string; emoji: string }[] } | undefined
+  on('state.get', { plugin: 'react' }, ($, e) => ({
+    value: {
+      value: react === undefined ? undefined : e.key === 'isOn' ? react.isOn : react.reactions,
+      version: react === undefined ? 0 : 1,
+    },
+  }))
+  await flipThreads($)
+  const typed = '# design\nhello\n# perf\nfast?'
+  await $.prompt.submit(say(typed))
+  const store = (uuid: string, door: 'prompt' | 'response', text: string) =>
+    $.session
+      .append({
+        message:
+          door === 'response'
+            ? { type: 'assistant', role: 'assistant', content: [{ type: 'text', text }] }
+            : { type: 'user', role: 'user', content: [{ type: 'text', text }] },
+        door,
+        origin: door === 'prompt' ? { kind: 'composer' } : model,
+        uuid,
+      })
+      .catch(() => undefined)
+  // the agent's emoji reply, which react kept as a reply of nothing and put on the message
+  await store('p1', 'prompt', typed)
+  await store('a1', 'response', 'No response requested.')
+  await store('p2', 'prompt', 'what now?')
+  await store('a2', 'response', 'next step')
+
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const pane = await $.ui.mount({ plugin: 'thread-chat', surface, ...PANE })
+    const sections = ['you: hello', 'you: fast?', 'you: what now?', 'Claude: next step']
+    // without react: no reaction, and the reply react kept is no section
+    expect(await sectionsOf(pane)).toEqual(sections)
+    expect(await reactionsOf(pane)).toEqual([])
+
+    // react on, with a reaction on the first message: on its last section alone, the
+    // sections as they were
+    react = { isOn: true, reactions: [{ id: 'p1', mark: markOf(typed), emoji: '👍' }] }
+    await pane.redraw()
+    expect(await sectionsOf(pane)).toEqual(sections)
+    expect(await reactionsOf(pane)).toEqual([{ on: 'fast?', emoji: '👍' }])
+    const pill = (await pane.findAll({ type: 'Svg' })).find(p => p.props.alt === 'Reaction: 👍')
+    if (surface === 'desktop') {
+      // a solid pill floating over the bubble's bottom-right corner, a column in and across
+      // its bottom edge; the bubble keeps a row below it for the pill
+      expect(String(pill?.props.source)).toContain('class="base"')
+      const tree = await pane.drawn()
+      const bubbles = boxesIn(tree, props => props.backgroundColor === '#8888881a')
+      expect(bubbles.map(b => pathTo(b, 'Svg')?.map(box => box.props))).toEqual([
+        undefined,
+        [{ position: 'absolute', right: 1, bottom: -1 }],
+        undefined,
+      ])
+      const rows = boxesIn(tree, props => props.justifyContent === 'flex-end' && props.marginBottom !== undefined)
+      expect(rows.map(row => row.props?.marginBottom)).toEqual([1])
+    } else {
+      expect(pill).toBeUndefined()
+    }
+
+    // the filter narrowed to the message's first thread: on the section shown
+    await pressFilter(pane, 'design')
+    expect(await reactionsOf(pane)).toEqual([{ on: 'hello', emoji: '👍' }])
+    await pressFilter(pane, 'design')
+
+    // react off: none, as react draws none in the chat
+    react = { ...react, isOn: false }
+    await pane.redraw()
+    expect(await reactionsOf(pane)).toEqual([])
+    react = undefined
+    await pane.unmount()
+  }
+})
+
+// The Boxes of a drawing whose props pass `is`, in order.
+function boxesIn(node: unknown, is: (props: Record<string, unknown>) => boolean): Drawn[] {
+  if (typeof node !== 'object' || node === null) return []
+  const el = node as Drawn
+  const own = el.type === 'Box' && is(el.props ?? {}) ? [el] : []
+  return [...own, ...(el.children ?? []).flatMap(child => boxesIn(child, is))]
+}
+
+// The elements from an element's child down to its first descendant of `type`, that one
+// left out; none where it holds none.
+function pathTo(node: unknown, type: string): Drawn[] | undefined {
+  const { children = [] } = node as Drawn
+  for (const child of children) {
+    if (typeof child !== 'object' || child === null) continue
+    if ((child as Drawn).type === type) return []
+    const below = pathTo(child, type)
+    if (below !== undefined) return [child as Drawn, ...below]
+  }
+  return undefined
+}
+
+test("a person's message takes react's newest reaction by its row id or stem, else by a start long enough to know it by", () => {
+  const stemOf = (id: string) => id.slice(0, 24)
+  const long = 'please look at the build again'
+  const stem = 'abcdefghijklmnopqrstuvwx'
+  const list = [
+    { id: 'p1', mark: markOf('a first message to react to'), emoji: '👍' },
+    { id: 'p1', mark: markOf('a first message to react to'), emoji: '✅' },
+    { id: `${stem}-0`, mark: '', emoji: '🙏' },
+    { id: 'p3', mark: markOf(long), emoji: '🎉' },
+    { id: 'p4', mark: markOf('ok'), emoji: '👀' },
+  ]
+  expect(reactionOn(list, 'p1', 'anything', stemOf)).toBe('✅')
+  // a long id the screen knows by its first 24 characters; a short one only as it is
+  expect(reactionOn(list, `${stem}-1`, 'anything', stemOf)).toBe('🙏')
+  expect(reactionOn(list, 'p', 'anything', stemOf)).toBeUndefined()
+  // no id, or one with none: by the start of its text, where that is long enough
+  expect(reactionOn(list, undefined, long, stemOf)).toBe('🎉')
+  expect(reactionOn(list, 'p9', `  ${long}\n`, stemOf)).toBe('🎉')
+  expect(reactionOn(list, undefined, 'ok', stemOf)).toBeUndefined()
+  expect(reactionOn([], 'p1', long, stemOf)).toBeUndefined()
 })
 
 test("/thread-view and the Threads menu's row open the view, once threads are on", async ($, on) => {

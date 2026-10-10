@@ -10,8 +10,9 @@ import type { Section } from './parse'
 // rows, no quiet replies or others' prompts. Its filter is its own: the thread picked
 // above the prompt, where messages go, does not change it.
 // It looks as the transcript does: the person's sections in bubbles under the pictures
-// they pasted (read from the files Claude Code saved them to), replies as text, and each
-// thread's tags and borders drawn by the code that draws the transcript's (register.tsx).
+// they pasted (read from the files Claude Code saved them to), with the react mod's
+// reactions on them where it is on, replies as text, and each thread's tags and borders
+// drawn by the code that draws the transcript's (register.tsx).
 //
 // It draws from the rows it kept as the session stored them (`session.append`),
 // each with its id and text: the transcript as the person sees it. A compaction
@@ -533,6 +534,35 @@ export type ViewInputs = {
   deleted: string[]
   known: ViewRow[]
   messages: SessionMessage[]
+  // the react mod's reactions on the person's messages while it draws them in the chat;
+  // none while it is off or not installed
+  reactions: readonly ViewReaction[]
+}
+
+// A reaction of the react mod's, as it keeps it: the emoji the agent answered a
+// person's message with instead of a reply, the message by its stored row id and the
+// start of its text (markOf).
+export type ViewReaction = { id: string; mark: string; emoji: string }
+
+// A start of a text this short ("ok", "thanks") is said too often to know a message by.
+const MIN_REACTION_MARK = 12
+
+// The emoji on a person's message, as the react mod finds it for the chat: the newest
+// reaction kept for its row id or, a long id, for one the screen knows by its stem;
+// failing that, the newest kept for a message whose start is the same and long enough
+// to tell messages apart (a session the view kept no rows of has no ids).
+export function reactionOn(
+  reactions: readonly ViewReaction[],
+  id: string | undefined,
+  text: string,
+  stemOf: (id: string) => string,
+): string | undefined {
+  const newest = (is: (r: ViewReaction) => boolean) => reactions.findLast(is)?.emoji
+  const byId =
+    id === undefined ? undefined : (newest(r => r.id === id) ?? (id.length >= 24 ? newest(r => stemOf(r.id) === stemOf(id)) : undefined))
+  if (byId !== undefined) return byId
+  const mark = markOf(text)
+  return mark.length < MIN_REACTION_MARK ? undefined : newest(r => r.mark === mark)
 }
 
 // Whether the view reads the conversation as `$.session.messages()` has it: for a
@@ -612,8 +642,16 @@ function sourcesOf(known: readonly ViewRow[], messages: readonly SessionMessage[
 }
 
 // One section the view draws; `id` its row's, where one was kept; `images` the
-// pictures pasted with its message, on the first of its sections drawn.
-type Entry = { id: string | undefined; role: 'user' | 'assistant'; thread: Thread | undefined; text: string; images?: ViewImage[] }
+// pictures pasted with its message, on the first of its sections drawn; `reaction` the
+// emoji the react mod put on a person's message, on the last of its sections drawn.
+type Entry = {
+  id: string | undefined
+  role: 'user' | 'assistant'
+  thread: Thread | undefined
+  text: string
+  images?: ViewImage[]
+  reaction?: string
+}
 
 // The conversation's sections, in order, where the person last placed them, kept
 // to what the view's filter picked (all of them while it picked none).
@@ -671,10 +709,16 @@ export function viewEntries(inputs: ViewInputs, deps: ViewDeps) {
     // The pictures pasted with it go with its first section drawn; a message of
     // pictures alone is one section of no words.
     let images = (row?.images?.length ?? 0) > 0 ? row?.images : undefined
+    let last: Entry | undefined
     for (const s of sections.length > 0 ? sections : [{ thread: null, text: '' }]) {
       const placed = at === undefined ? s : deps.placeSection(s, at, moves, resolve, list, merged)
-      if (keep(row?.id, 'user', placed, resolve, images)) images = undefined
+      if (!keep(row?.id, 'user', placed, resolve, images)) continue
+      images = undefined
+      last = entries.at(-1)
     }
+    // its reaction, as the chat draws it on the message, on its last section drawn
+    const reaction = last === undefined ? undefined : reactionOn(inputs.reactions, row?.id, text, deps.stemOf)
+    if (last !== undefined && reaction !== undefined) last.reaction = reaction
   }
   return { entries, offered, picks }
 }
@@ -794,11 +838,63 @@ function bubbleOf(text: string): BubblePart[] {
   return parts
 }
 
+// A reaction of the react mod's as it draws one, 30 by 20px: the emoji in a small faint
+// pill, light or dark with the app. A solid one (`isSolid`) first paints the pill in the
+// page's colour, so the bubble's corner it floats over does not show through.
+const REACTION_WIDTH = 30
+const REACTION_HEIGHT = 20
+
+function reactionPicture(emoji: string, isSolid: boolean): string {
+  const w = REACTION_WIDTH
+  const h = REACTION_HEIGHT
+  const escaped = emoji.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  return [
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">`,
+    '<style>.bg{fill:#ffffff14;stroke:#ffffff38}.base{fill:#151515}',
+    '@media (prefers-color-scheme: light){.bg{fill:#0000000a;stroke:#00000038}.base{fill:#fcfcfb}}</style>',
+    isSolid ? `<rect class="base" x="0.25" y="0.25" width="${w - 0.5}" height="${h - 0.5}" rx="${(h - 0.5) / 2}"/>` : '',
+    `<rect class="bg" x="0.75" y="0.75" width="${w - 1.5}" height="${h - 1.5}" rx="${(h - 1.5) / 2}"/>`,
+    `<text x="${w / 2}" y="${h / 2}" text-anchor="middle" dominant-baseline="central" font-size="12"`,
+    ` font-family="Segoe UI Emoji, Apple Color Emoji, Noto Color Emoji, sans-serif">${escaped}</text>`,
+    '</svg>',
+  ].join('')
+}
+
+// Where the desktop's reaction floats on its bubble: a column in from the bubble's right
+// edge and a row (half a line, about 10px) down, so the pill sits across its bottom edge;
+// the bubble then keeps a row below it, so the pill clears what follows.
+const REACTION_INSET = 1
+const REACTION_DROP = 1
+
+// A reaction on a line of its own, below what it is on: on a page the pill at the right,
+// where the person's messages sit; on the terminal, as react draws it there, the emoji
+// in dim brackets.
+function drawReactionRow(draw: ViewDrawing, isPage: boolean, emoji: string): RenderElement {
+  const { Box, Text } = draw.ui
+  const Svg = isPage ? (draw.ui as Partial<ElementTable<'desktop'>>).Svg : undefined
+  if (Svg === undefined) {
+    return (
+      <Box flexDirection="row" marginLeft={2}>
+        <Text dimColor>(</Text>
+        <Text>{emoji}</Text>
+        <Text dimColor>)</Text>
+      </Box>
+    )
+  }
+  return (
+    <Box flexDirection="row" justifyContent="flex-end">
+      <Svg source={reactionPicture(emoji, false)} alt={`Reaction: ${emoji}`} width={REACTION_WIDTH} height={REACTION_HEIGHT} />
+    </Box>
+  )
+}
+
 // A person's section as the chat's bubble: their words as typed (the chat draws no
 // markdown in them), each selection they replied to a dim line where they quoted it,
 // a row below any words before it. On a page it sits at the right, rounded and a
-// shade off the page; on the terminal it spans the pane in the theme's fill.
-function drawBubble(draw: ViewDrawing, isPage: boolean, text: string): RenderElement {
+// shade off the page; on the terminal it spans the pane in the theme's fill. With the
+// react mod's `reaction` on it, as the chat draws one: on the desktop a solid pill over
+// the bubble's bottom-right corner; elsewhere on the line below it.
+function drawBubble(draw: ViewDrawing, isPage: boolean, text: string, reaction?: string): RenderElement {
   const { Box, Text } = draw.ui
   const body = bubbleOf(text).map((part, at, parts) =>
     part.kind === 'words' ? (
@@ -813,14 +909,23 @@ function drawBubble(draw: ViewDrawing, isPage: boolean, text: string): RenderEle
     ),
   )
   if (!isPage) {
-    return (
+    const bubble = (
       <Box flexDirection="column" backgroundColor={TERMINAL_BUBBLE_FILL} paddingX={1}>
         {body}
       </Box>
     )
+    if (reaction === undefined) return bubble
+    return (
+      <Box flexDirection="column">
+        {bubble}
+        {drawReactionRow(draw, isPage, reaction)}
+      </Box>
+    )
   }
-  return (
-    <Box flexDirection="row" justifyContent="flex-end">
+  const Svg = draw.surface === 'desktop' ? (draw.ui as Partial<ElementTable<'desktop'>>).Svg : undefined
+  const corner = reaction !== undefined && Svg !== undefined
+  const bubble = (
+    <Box flexDirection="row" justifyContent="flex-end" {...(corner ? { marginBottom: REACTION_DROP } : {})}>
       <Box minWidth={BUBBLE_ROOM} flexShrink={0} />
       <Box
         flexDirection="column"
@@ -833,7 +938,19 @@ function drawBubble(draw: ViewDrawing, isPage: boolean, text: string): RenderEle
         paddingY={1}
       >
         {body}
+        {corner && (
+          <Box position="absolute" right={REACTION_INSET} bottom={-REACTION_DROP}>
+            <Svg source={reactionPicture(reaction, true)} alt={`Reaction: ${reaction}`} width={REACTION_WIDTH} height={REACTION_HEIGHT} />
+          </Box>
+        )}
       </Box>
+    </Box>
+  )
+  if (reaction === undefined || corner) return bubble
+  return (
+    <Box flexDirection="column">
+      {bubble}
+      {drawReactionRow(draw, isPage, reaction)}
     </Box>
   )
 }
@@ -921,7 +1038,8 @@ function drawEntry(draw: ViewDrawing, isPage: boolean, entry: Entry, drawn: Draw
     <Box flexDirection="column" marginTop={gap}>
       {thread !== undefined && draw.tagRow(thread)}
       {entry.images !== undefined && drawImages(draw, isPage, entry.images, drawn, hasWords && isPage ? PART_GAP : 0)}
-      {hasWords && drawBubble(draw, isPage, entry.text)}
+      {hasWords && drawBubble(draw, isPage, entry.text, entry.reaction)}
+      {!hasWords && entry.reaction !== undefined && drawReactionRow(draw, isPage, entry.reaction)}
     </Box>
   )
 }
