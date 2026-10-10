@@ -11,6 +11,7 @@ Notable changes to the thread-chat, multitask and react mods. The format is base
 ### Fixed
 
 - Fixed issue where thread-chat left a reply quote unthreaded when a thread heading followed it.
+- Fixed issue where thread-chat's thread view grouped several reply quotes above all your words.
 
 ## 0.2.0 - 2026-10-10
 
