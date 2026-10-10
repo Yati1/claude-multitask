@@ -42,3 +42,7 @@ What doesn't work: running `claude` (or `claude -p`) once turns the cached flag 
 ## Changelog
 
 Update `CHANGELOG.md` in the same commit as any user-visible change to a mod. The rules for it are in `.claude/rules/changelog.md`, which Claude Code loads automatically.
+
+## Pushing and releasing
+
+Push, tag and release only as `.claude/rules/release.md` says, which Claude Code loads automatically.
