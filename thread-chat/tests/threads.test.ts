@@ -320,7 +320,7 @@ test('until /threads turns threads on, a session is left as it is: its rows, its
   expect(prompts.at(-1)).toBe('# design\na')
   // its band holds only the menu, threads off in it, and the model starts no thread
   const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...BAND })
-  expect((await band.findAll({ type: 'Svg' })).map(p => p.props.alt)).toEqual(['menu', 'On in this chat: off'])
+  expect((await band.findAll({ type: 'Svg' })).map(p => p.props.alt)).toEqual(['On in this chat: off'])
   expect(await band.find({ text: /start a thread/ })).toBeUndefined()
   expect(await band.find({ key: MENU })).toBeDefined()
   expect(await switchOf(band, THREADS_SWITCH)).toBe('off')
@@ -929,8 +929,8 @@ test('the move picker starts a new thread from a typed name, even with no thread
   await more.redraw()
   expect(await tagOf(more, 'ideas')).toBeDefined()
   const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...BAND })
-  // after the Threads menu's caret, the pills
-  expect(picturesIn(await band.drawn())).toEqual(['menu', 'ideas', 'later on'])
+  // after the Threads menu, the pills
+  expect(picturesIn(await band.drawn())).toEqual(['ideas', 'later on'])
 
   // the terminal's picker has the "+" and its field too; mobile draws neither
   const terminal = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...assistantRow('# ideas\nx'), requestId: 'r2' })
