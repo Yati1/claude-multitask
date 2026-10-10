@@ -92,14 +92,14 @@ declare module 'claude-code' {
       viewFrom: number | null
       // whether the band's menu shows its switches, on a surface where a press opens it
       menuOpen: boolean
-      // whether the thread picker's menu is open off the desktop, where its button opens and
-      // closes it (the desktop shows it as a card while the pointer or focus is on it)
+      // what the band's menu shows of the threads: '' its first rows (the switches, opening
+      // the thread view, starting a thread, managing them), 'name' the field for a new
+      // thread's name, 'manage' each thread's merge, archive and delete, `merge:<key>` the
+      // threads that one can merge into, `delete:<key>` the question whether to delete it
+      menuMode: string
+      // whether the thread picker's list is open in the mobile app, which draws no Select:
+      // its button opens and closes it
       pickerOpen: boolean
-      // what the thread picker's menu shows: '' the threads to post to, 'name' the field
-      // for a new thread's name, 'manage' each thread's merge, archive and delete,
-      // `merge:<key>` the threads that one can merge into, `delete:<key>` the question
-      // whether to delete it
-      pickerMode: string
     }
   }
 }

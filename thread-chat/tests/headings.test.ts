@@ -82,11 +82,10 @@ async function tagOf(drawing: Drawing, name: string) {
   return texts.find(t => t.text === name.toUpperCase()) ?? pictures.find(p => p.props.alt === name)
 }
 
-// The thread names on the band, as its buttons are keyed.
-async function threadsOn(band: Drawing & { find: (q: { key: string }) => Promise<unknown> }, keys: string[]) {
-  const on: string[] = []
-  for (const key of keys) if ((await band.find({ key: `picker:thread:${key}` })) !== undefined) on.push(key)
-  return on
+// The threads of those keys the band's thread picker offers.
+async function threadsOn(band: Drawing & { find: (q: { key: string }) => Promise<{ props: Record<string, unknown> } | undefined> }, keys: string[]) {
+  const options = ((await band.find({ key: 'thread-picker' }))?.props.options ?? []) as { value: string }[]
+  return keys.filter(key => options.some(o => o.value === `thread:${key}`))
 }
 
 // The note beside the last prompt that says what its headings meant.
@@ -248,7 +247,7 @@ test('the thread view shows the rest of a split heading as the first line of its
   await store('a1', 'assistant', '# Threads\non it')
 
   const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...BAND })
-  await band.press({ key: 'picker:thread:threads' })
+  await band.select({ key: 'thread-picker', value: 'thread:threads' })
   const pane = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...PANE })
   // the person's section a bubble of their words, the reply's markdown
   expect((await pane.findAll({ type: 'Text' })).map(t => t.text)).toContain('Lets fix the view\nand the tags')

@@ -97,12 +97,40 @@ async function flipSwitch(band: Band, key: string) {
   return band.press({ key })
 }
 
+// The band's thread picker: a Select of the threads to post to, then "No thread"; a
+// thread's option is `thread:` and its key. Not drawn while there are no threads to post to.
+const PICKER = 'thread-picker'
+type Option = { value: string; label?: string }
+type Picker = { find: (query: { key: string }) => Promise<{ props: Record<string, unknown> } | undefined> }
+const optionsOf = async (band: Picker) => ((await band.find({ key: PICKER }))?.props.options ?? []) as Option[]
+
+// The keys of the threads the picker offers, in order.
+const choiceKeys = async (band: Picker) =>
+  (await optionsOf(band)).flatMap(o => (o.value.startsWith('thread:') ? [o.value.slice('thread:'.length)] : []))
+
+// The names of the threads the picker offers, in order.
+const choicesIn = async (band: Picker) =>
+  (await optionsOf(band)).flatMap(o => (o.value.startsWith('thread:') ? [String(o.label)] : []))
+
+// The picker's face: the label of the option it shows; undefined where it is not drawn.
+async function pickerLabel(band: Picker) {
+  const value = (await band.find({ key: PICKER }))?.props.value
+  return (await optionsOf(band)).find(o => o.value === value)?.label
+}
+
 // Picks a thread in the band's thread picker ('' no thread): messages with no heading go
-// to it, and the thread view shows it. Its menu's choices are Buttons on every surface,
-// in the tree whether or not the menu shows.
-async function pickIn(band: { press: (query: { key: string }) => Promise<unknown> }, surface: 'terminal' | 'desktop', key: string) {
+// to it, and the thread view shows it.
+async function pickIn(band: { select: (target: { key: string; value: string }) => Promise<unknown> }, surface: 'terminal' | 'desktop', key: string) {
   void surface
-  await band.press({ key: key === '' ? 'picker:none' : `picker:thread:${key}` })
+  await band.select({ key: PICKER, value: key === '' ? 'none' : `thread:${key}` })
+}
+
+// Opens the band's menu where a press opens it (the terminal), at its first rows; the
+// desktop's card is drawn whether or not it shows.
+async function openMenu(band: Band) {
+  if ((await band.find({ key: MENU }))?.props.label !== 'Threads ▾') return
+  await band.press({ key: MENU })
+  await band.redraw()
 }
 
 // The person's /threads, which turns threads on in the chat, or off again.
@@ -169,8 +197,8 @@ test('a mistyped or partial heading means its thread, decided at send and told t
   await $.prompt.submit(say('#+Thread\ne'))
   expect(prompts.at(-1)).toContain('"#+Thread" starts the new thread "Thread"')
   const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...BAND })
-  expect(await band.find({ key: 'picker:thread:thread' })).toBeDefined()
-  expect(await band.find({ key: 'picker:thread:thrads' })).toBeUndefined()
+  expect(await choiceKeys(band)).toContain('thread')
+  expect(await choiceKeys(band)).not.toContain('thrads')
 
   for (const surface of ['terminal', 'desktop'] as const) {
     const row = await $.ui.mount({ plugin: 'thread-chat', surface, ...userRow('#thrads\nc\n#multi\nd') })
@@ -193,7 +221,7 @@ test('a merged thread draws as the one it joined', async ($, on) => {
   expect(merged.text).toContain('Merged thread "perf" into "design"')
 
   const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...BAND })
-  expect(await band.find({ key: 'picker:thread:perf' })).toBeUndefined()
+  expect(await choiceKeys(band)).not.toContain('perf')
   const old = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...assistantRow('# perf\nfast') })
   expect(await tagOf(old, 'design')).toBeDefined()
 })
@@ -282,7 +310,7 @@ test('with no threads the band says how to start one; the agent switch in the me
   expect(made.deny).toBeUndefined()
   await band.redraw()
   expect(await switchOf(band, AGENT_SWITCH)).toBe('on')
-  expect(await band.find({ key: 'picker:thread:ideas' })).toBeDefined()
+  expect(await choiceKeys(band)).toContain('ideas')
   expect(await band.find({ text: /start a thread/ })).toBeUndefined()
 })
 
@@ -324,7 +352,7 @@ test('until /threads turns threads on, a session is left as it is: its rows, its
   expect((await drawnAlone(assistantRow('plain reply'))).hasAdd).toBe(true)
   await band.redraw()
   expect(await band.find({ text: /start a thread with # name/ })).toBeDefined()
-  expect(await band.find({ key: 'picker:thread:design' })).toBeUndefined()
+  expect(await choiceKeys(band)).not.toContain('design')
 
   // the agent switch offers the model create_thread
   expect(await switchOf(band, THREADS_SWITCH)).toBe('on')
@@ -347,7 +375,7 @@ test('/threads again turns threads off, keeping them, and the model is told once
   // Off: no threads in the band, no tags, a heading plain text; the model is told once
   expect((await flipThreads($)).text).toContain('Threads are off')
   for (const site of [band, mine, plain]) await site.redraw()
-  expect(await band.find({ key: 'picker:thread:design' })).toBeUndefined()
+  expect(await choiceKeys(band)).not.toContain('design')
   expect(await tagOf(mine, 'design')).toBeUndefined()
   expect(await mine.find({ text: /# design\nmine/ })).toBeDefined()
   expect(await plain.find({ text: /just chatting/ })).toBeDefined()
@@ -361,8 +389,8 @@ test('/threads again turns threads off, keeping them, and the model is told once
   // On again: the threads and the pick are as they were, and the model is told all again
   await flipThreads($)
   for (const site of [band, mine]) await site.redraw()
-  expect(await band.find({ key: 'picker:thread:design' })).toBeDefined()
-  expect(await band.find({ key: 'picker:thread:perf' })).toBeUndefined()
+  expect(await choiceKeys(band)).toContain('design')
+  expect(await choiceKeys(band)).not.toContain('perf')
   expect(await tagOf(mine, 'design')).toBeDefined()
   await $.prompt.submit(say('back'))
   expect(prompts.at(-1)).toContain('# Conversation threads')
@@ -379,13 +407,13 @@ test("another agent's loop (an engine fork, a subagent) cannot start a thread, t
   await flipSwitch(band, AGENT_SWITCH)
   expect((await $.tool.call({ tool, tool_use_id: 'f2', name: 'stray', agentId: 'fork-1' })).deny).toContain('another agent')
   await band.redraw()
-  expect(await band.find({ key: 'picker:thread:stray' })).toBeUndefined()
+  expect(await choiceKeys(band)).not.toContain('stray')
 
   // The main conversation's own call still starts one.
   expect((await $.tool.call({ tool, tool_use_id: 'm1', name: 'ideas' })).deny).toBeUndefined()
   await band.redraw()
-  expect(await band.find({ key: 'picker:thread:ideas' })).toBeDefined()
-  expect(await band.find({ key: 'picker:thread:stray' })).toBeUndefined()
+  expect(await choiceKeys(band)).toContain('ideas')
+  expect(await choiceKeys(band)).not.toContain('stray')
 })
 
 test("a plugin's prompt is not the person's, though the desktop names its row theirs", async ($, on) => {
@@ -461,14 +489,14 @@ test('a heading snapped at send still draws as its thread where the screen shows
   }
 
   const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...BAND })
-  expect(await band.find({ key: 'picker:thread:thr' })).toBeUndefined()
-  await band.press({ key: 'picker:thread:threads' })
+  expect(await choiceKeys(band)).not.toContain('thr')
+  await band.select({ key: 'thread-picker', value: 'thread:threads' })
   const row = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...userRow('#thr\nwhy so tall?') })
   expect(await row.find({ type: 'Text', text: /tall/ })).toBeDefined()
 
   // a heading naming no thread stays as typed
   const stray = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...userRow('# zz\nhm') })
-  await band.press({ key: 'picker:thread:threads' })
+  await band.select({ key: 'thread-picker', value: 'thread:threads' })
   await stray.redraw()
   expect((await stray.find({ type: 'Text', text: /hm/ }))?.text).toBe('# zz\nhm')
 })
@@ -527,13 +555,13 @@ for (const [isOn, kept] of KEPT_SWITCHES) {
     })
     await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
     const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...BAND })
-    expect((await band.find({ key: 'picker:thread:threads' })) !== undefined).toBe(isOn !== false)
+    expect((await choiceKeys(band)).includes('threads')).toBe(isOn !== false)
     // kept off, the threads come back with /threads
     if (isOn === false) {
       await flipThreads($)
       await band.redraw()
     }
-    expect(await band.find({ key: 'picker:thread:threads' })).toBeDefined()
+    expect(await choiceKeys(band)).toContain('threads')
     const row = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...userRow('#thr\nwhy so tall?') })
     expect(await tagOf(row, 'Threads')).toBeDefined()
   })
@@ -560,14 +588,14 @@ for (const [isOn, kept] of KEPT_SWITCHES) {
     await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
 
     const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...BAND })
-    expect((await band.find({ key: 'picker:thread:threads' })) !== undefined).toBe(isOn !== false)
+    expect((await choiceKeys(band)).includes('threads')).toBe(isOn !== false)
     if (isOn === false) {
       await flipThreads($)
       await band.redraw()
     }
-    expect(await band.find({ key: 'picker:thread:threads' })).toBeDefined()
-    expect(await band.find({ key: 'picker:thread:meta' })).toBeDefined()
-    expect(await band.find({ key: 'picker:thread:elsewhere' })).toBeUndefined()
+    expect(await choiceKeys(band)).toContain('threads')
+    expect(await choiceKeys(band)).toContain('meta')
+    expect(await choiceKeys(band)).not.toContain('elsewhere')
     const row = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...userRow('# Threading\nstill means Threads') })
     expect(await tagOf(row, 'Threads')).toBeDefined()
   })
@@ -731,10 +759,10 @@ test('a reply to a selected part of a reply goes to the thread that part is in',
 
   // a quote wins over the one picked thread
   const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...BAND })
-  await band.press({ key: 'picker:thread:design' })
+  await band.select({ key: 'thread-picker', value: 'thread:design' })
   await $.prompt.submit(say('<!-- reply 1 -->\n> fast enough\n\nreally?'))
   expect(prompts.at(-1)).toContain(note('perf'))
-  await band.press({ key: 'picker:none' })
+  await band.select({ key: 'thread-picker', value: 'none' })
 
   // quotes from different threads speak to both, so the message goes to neither;
   // so does a quote of text in no thread, or found nowhere
@@ -768,34 +796,64 @@ test('a reply of several sections draws one by the engine and the rest as markdo
   expect(await tagOf(reply, 'perf')).toBeDefined()
 })
 
-test("the picker's button names the picked thread, and its menu ticks it", async ($, on) => {
+test('the picker is a Select of the threads and "No thread", its face the picked thread', async ($, on) => {
   engine(on)
   await flipThreads($)
   await $.prompt.submit(say('# design\na\n# perf\nb'))
   const desktop = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...BAND })
   const terminal = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...BAND })
-  const named = async () => {
+  const faces = async () => {
     await desktop.redraw()
     await terminal.redraw()
-    return {
-      desktop: picturesIn(pathTo(await desktop.drawn(), n => n.props?.key === 'thread-picker')?.at(-1)),
-      terminal: (await terminal.find({ key: 'picker:open' }))?.props.label,
-      ticked: (await terminal.findAll({ type: 'Text' })).filter(t => t.text === '✓').length,
-    }
+    return [await pickerLabel(desktop), await pickerLabel(terminal)]
+  }
+  // the dot before the picker, in the picked thread's colour, or hollow for none
+  const dotOf = async (band: { findAll: (query: { type: string }) => Promise<{ text: string; props: Record<string, unknown> }[]> }) => {
+    const dot = (await band.findAll({ type: 'Text' })).find(t => t.text === '●' || t.text === '○')
+    return dot?.text === '○' ? 'none' : dot?.props.color
   }
 
-  expect(await named()).toEqual({ desktop: ['post to: no thread'], terminal: 'no thread ▾', ticked: 1 })
-  await terminal.press({ key: 'picker:thread:perf' })
-  expect(await named()).toEqual({ desktop: ['post to: perf'], terminal: 'perf ▾', ticked: 1 })
-  // the tick sits beside the picked thread's choice
-  const perfRow = pathTo(await terminal.drawn(), n => n.props?.key === 'picker:thread:perf')?.at(-2)
-  expect((perfRow?.children as Drawn[] | undefined)?.some(c => c.type === 'Text' && (c.children ?? []).join('') === '✓')).toBe(true)
+  // the threads to post to, then "No thread"; no label before the face, and no tick of the
+  // mod's own (the desktop ticks the selected row)
+  for (const band of [desktop, terminal]) {
+    const picker = await band.find({ key: PICKER })
+    expect(picker?.type).toBe('Select')
+    expect(picker?.props.options).toEqual([
+      { value: 'thread:design', label: 'design' },
+      { value: 'thread:perf', label: 'perf' },
+      { value: 'none', label: 'No thread' },
+    ])
+    expect(picker?.props.label).toBeUndefined()
+    expect((await band.findAll({ type: 'Text' })).filter(t => t.text.includes('✓'))).toEqual([])
+  }
+  expect(await faces()).toEqual(['No thread', 'No thread'])
+  expect(await dotOf(terminal)).toBe('none')
+  await terminal.select({ key: PICKER, value: 'thread:perf' })
+  expect(await faces()).toEqual(['perf', 'perf'])
+  expect(await dotOf(terminal)).toBe(PALETTE[1])
+  expect(await dotOf(desktop)).toBe(PALETTE[1])
 
-  // one thread is picked at a time: another takes its place, and "no thread" leaves none
-  await desktop.press({ key: 'picker:thread:design' })
-  expect(await named()).toEqual({ desktop: ['post to: design'], terminal: 'design ▾', ticked: 1 })
-  await desktop.press({ key: 'picker:none' })
-  expect(await named()).toEqual({ desktop: ['post to: no thread'], terminal: 'no thread ▾', ticked: 1 })
+  // one thread is picked at a time: another takes its place, and "No thread" leaves none
+  await desktop.select({ key: PICKER, value: 'thread:design' })
+  expect(await faces()).toEqual(['design', 'design'])
+  await desktop.select({ key: PICKER, value: 'none' })
+  expect(await faces()).toEqual(['No thread', 'No thread'])
+
+  // the mobile app, which draws no Select: a button naming the picked thread opens its
+  // choices in the band, the picked one ticked; a pick closes them
+  const mobile = await $.ui.mount({ plugin: 'thread-chat', surface: 'mobile', ...BAND })
+  expect(await mobile.find({ key: PICKER })).toBeDefined()
+  expect((await mobile.find({ key: 'picker:open' }))?.props.label).toBe('No thread ▾')
+  expect(await mobile.find({ key: 'picker:thread:perf' })).toBeUndefined()
+  await mobile.press({ key: 'picker:open' })
+  await mobile.redraw()
+  const noneRow = pathTo(await mobile.drawn(), n => n.props?.key === 'picker:none')?.at(-2)
+  expect((noneRow?.children as Drawn[] | undefined)?.some(c => c.type === 'Text' && (c.children ?? []).join('') === '✓')).toBe(true)
+  await mobile.press({ key: 'picker:thread:perf' })
+  await mobile.redraw()
+  expect((await mobile.find({ key: 'picker:open' }))?.props.label).toBe('perf ▾')
+  expect(await mobile.find({ key: 'picker:thread:perf' })).toBeUndefined()
+  expect(await faces()).toEqual(['perf', 'perf'])
 })
 
 test('a message or a reply part moves to another thread from its tag, and the model is told', async ($, on) => {
@@ -915,10 +973,7 @@ test('the move picker starts a new thread from a typed name, even with no thread
   await more.redraw()
   expect(await tagOf(more, 'ideas')).toBeDefined()
   const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...BAND })
-  expect((await band.findAll({ type: 'Button' })).flatMap(b => (/^picker:thread:/.test(b.key ?? '') ? [b.props.label] : []))).toEqual([
-    'ideas',
-    'later on',
-  ])
+  expect(await choicesIn(band)).toEqual(['ideas', 'later on'])
 
   // the terminal's picker has the "+" and its field too; mobile draws neither
   const terminal = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...assistantRow('# ideas\nx'), requestId: 'r2' })
@@ -1206,7 +1261,7 @@ test('what opens the picker or picks a thread lights under the pointer', async (
   engine(on)
   await flipThreads($)
   await $.prompt.submit(say('# design\na\n# perf\nb'))
-  const [design, perf] = [PALETTE[0], PALETTE[1]]
+  const design = PALETTE[0]
 
   // a tag's "▾" lights in its thread's colour with the pointer anywhere on the tag, its
   // name included (the keyed Box round both); "+ thread" brightens
@@ -1217,28 +1272,6 @@ test('what opens the picker or picks a thread lights under the pointer', async (
   expect(picturesIn(tagPath?.at(-2))).toEqual(['design'])
   const plain = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...userRow('plain words'), requestId: 'u2' })
   expect(pathTo(await plain.drawn(), isAddThread)?.at(-1)?.hover).toEqual({ color: 'text' })
-
-  // the thread picker's pill shows a lit copy of itself over it, in place: the same size,
-  // its fill and outline stronger; picked, its tint deeper
-  const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...BAND })
-  const pickerPill = async () =>
-    pillPicturesOf((pathTo(await band.drawn(), n => n.props?.key === 'thread-picker')?.at(-1)?.children ?? [])[0] as Drawn | undefined)
-  const idle = await pickerPill()
-  expect(idle.isLitOnHover).toBe(true)
-  expect(idle.hot).toMatchObject({ alt: idle.rest?.alt, width: idle.rest?.width, height: idle.rest?.height })
-  expect(String(idle.rest?.source)).toContain('stroke-dasharray')
-  expect([String(idle.rest?.source), String(idle.hot?.source)].map(s => /\.bg\{fill:#ffffff(\w\w)/.exec(s)?.[1])).toEqual([
-    '14',
-    '29',
-  ])
-  await band.press({ key: 'picker:thread:design' })
-  await band.redraw()
-  const picked = await pickerPill()
-  expect(picked.rest?.alt).toBe('post to: design')
-  expect(String(picked.rest?.source)).toContain(`fill="${design}" fill-opacity="0.2"`)
-  expect(String(picked.hot?.source)).toContain(`fill="${design}" fill-opacity="0.32"`)
-  expect(String(picked.hot?.source)).not.toContain(perf)
-  await band.press({ key: 'picker:none' })
 
   // so does each of the move picker's pills, "+" included
   await mine.press({ key: 'tag:design' })
@@ -1327,8 +1360,6 @@ function shareOf(a: Drawn[] | undefined, b: Drawn[] | undefined) {
   return { row: a[at - 1]?.props, a: a[at]?.props, b: b[at]?.props }
 }
 
-const PICKER = 'thread-picker'
-
 test('the band keeps one row with 12 threads beside another mod, and nothing the pointer shows takes room', async ($, on) => {
   // another mod's controls, drawn beneath, as multitask's are
   on('ui.render', { component: 'AbovePrompt' }, ($, e) => {
@@ -1341,19 +1372,18 @@ test('the band keeps one row with 12 threads beside another mod, and nothing the
   await $.prompt.submit(say(names.map(n => `# ${n}\nx`).join('\n')))
   const isOther = (n: Drawn) => n.type === 'Text' && (n.children ?? []).join('') === 'other mod'
   const isPicker = (n: Drawn) => n.props?.key === PICKER
-  const isChoice = (n: Drawn) => /^picker:thread:/.test(String(n.props?.key ?? ''))
 
   for (const surface of ['desktop', 'terminal'] as const) {
     const band = await $.ui.mount({ plugin: 'thread-chat', surface, ...BAND })
     const tree = await band.drawn()
     const all = elementsOf(tree)
-    // one picker, its menu a choice per thread
-    expect(all.filter(isPicker)).toHaveLength(1)
-    expect(all.filter(isChoice)).toHaveLength(12)
+    // one picker, a Select of every thread
+    expect(all.filter(isPicker).map(n => n.type)).toEqual(['Select'])
+    expect(await choiceKeys(band)).toEqual(names)
     const picker = pathTo(tree, isPicker)
     const other = pathTo(tree, isOther)
-    // the menu before the threads, and nothing of thread-chat's after them: on the desktop
-    // the menu is the keyed Box its card hangs from, elsewhere a Button
+    // the menu before the picker, the thread view's row in it: on the desktop the menu is
+    // the keyed Box its card hangs from, elsewhere a Button
     const menuPath = pathTo(tree, n => n.props?.key === MENU)
     expect(menuPath?.at(-1)?.type).toBe(surface === 'desktop' ? 'Box' : 'Button')
     const inMenu = elementsOf(menuPath?.at(-1))
@@ -1362,107 +1392,71 @@ test('the band keeps one row with 12 threads beside another mod, and nothing the
     // the other mod shares the row and keeps its width; the threads' controls give way
     expect(shareOf(picker, other)).toMatchObject({ a: { flexShrink: 1, minWidth: 0 }, b: { flexShrink: 0 } })
     expect(shareOf(picker, other)?.row?.flexWrap).toBeUndefined()
-    // so does the menu, before the threads' controls
+    // so does the menu, before the picker, which keeps its own width beside its dot
     expect(shareOf(picker, menuPath)).toMatchObject({ a: { flexShrink: 1, minWidth: 0 }, b: { flexShrink: 0 } })
+    expect(picker?.at(-2)?.props?.flexShrink).toBe(0)
     // nothing wraps
     expect(all.filter(n => n.props?.flexWrap === 'wrap' || n.props?.flexWrap === 'wrap-reverse')).toEqual([])
-    // the picker is the first keyed Box of the threads' controls, so the desktop finds its
-    // open card again by its place when the band is drawn anew
-    const threadControls = picker?.at(-2)
-    expect(elementsOf(threadControls).filter(n => n.type === 'Box' && n !== threadControls && typeof n.props?.key === 'string')[0]).toBe(
-      picker?.at(-1),
-    )
 
     // every Box the pointer reveals is out of the flow, or in a Box that is, so showing
-    // it moves nothing
+    // it moves nothing: on the desktop, the menu's card alone, which the desktop lifts
     const reveals = all.filter(n => n.hover?.display === 'flex')
     const isPlaced = (n: Drawn) => n.props?.position === 'absolute'
     expect(reveals.filter(n => !pathTo(tree, m => m === n)?.some(isPlaced))).toEqual([])
-    if (surface === 'desktop') {
-      // the cards the desktop lifts: the Threads menu's and the thread picker's menu, which
-      // holds every choice; and the picker's lit pill, revealed in place over it
-      const picturesShown = (n: Drawn) => (n.children ?? []).flatMap(restingPictures).length
-      const cards = reveals.filter(isPlaced)
-      const lit = reveals.filter(n => !isPlaced(n))
-      expect(cards).toHaveLength(2)
-      expect(lit.map(picturesShown)).toEqual([1])
-      const menu = cards.find(n => elementsOf(n).some(isChoice))
-      expect(elementsOf(menu).filter(isChoice)).toHaveLength(12)
-      expect(pathTo(picker?.at(-1), m => m === menu)).toBeDefined()
-      expect(lit).toHaveLength(1)
-      expect(lit.filter(isPlaced)).toEqual([])
-    } else {
-      // the terminal's menu opens in the band, under the picker's button, and closes as a
-      // thread is picked
-      const shown = async () => pathTo(await band.drawn(), isChoice)?.at(-4)?.props?.display
-      expect(await shown()).toBe('none')
-      await band.press({ key: 'picker:open' })
-      await band.redraw()
-      expect(await shown()).toBe('flex')
-      await band.press({ key: 'picker:thread:perf' })
-      await band.redraw()
-      expect(await shown()).toBe('none')
-      expect((await band.find({ key: 'picker:open' }))?.props.label).toBe('perf ▾')
-    }
+    const cards = reveals.filter(isPlaced)
+    expect(cards.map(card => inMenu.includes(card))).toEqual(surface === 'desktop' ? [true] : [])
     await band.unmount()
   }
 })
 
-// The thread picker's button as drawn: the desktop's picture's words, the terminal's label.
-async function pickerLabel(band: { drawn: () => Promise<unknown>; find: (query: { key: string }) => Promise<{ props: Record<string, unknown> } | undefined> }) {
-  const label = (await band.find({ key: 'picker:open' }))?.props.label
-  if (label !== undefined) return label
-  return picturesIn(pathTo(await band.drawn(), n => n.props?.key === 'thread-picker')?.at(-1))[0]
-}
-
-// The threads the picker's menu offers to post to, in order.
-async function choicesIn(band: { findAll: (query: { type: string }) => Promise<{ key: string | undefined; props: Record<string, unknown> }[]> }) {
-  return (await band.findAll({ type: 'Button' })).flatMap(b => (/^picker:thread:/.test(b.key ?? '') ? [String(b.props.label)] : []))
-}
-
-test("the picker's menu starts a thread from a typed name and picks it", async ($, on) => {
+test('the Threads menu starts a thread from a typed name and picks it', async ($, on) => {
   const prompts = engine(on)
   await flipThreads($)
   await $.prompt.submit(say('# design\na'))
   for (const surface of ['desktop', 'terminal'] as const) {
     const band = await $.ui.mount({ plugin: 'thread-chat', surface, ...BAND })
-    // "+ new thread" swaps the menu's list for the move picker's field, focused; "×" goes back
-    await band.press({ key: 'picker:new' })
+    await openMenu(band)
+    // "New thread" swaps the menu's rows for the move picker's field, focused; "×" goes back
+    expect(await band.find({ key: THREADS_SWITCH })).toBeDefined()
+    await band.press({ key: 'threads:new' })
     await band.redraw()
-    expect((await band.find({ key: 'picker-new-thread' }))?.props.autoFocus).toBe(true)
-    expect(await band.find({ key: 'picker:thread:design' })).toBeUndefined()
-    await band.press({ key: 'picker:new-cancel' })
+    expect((await band.find({ key: 'threads:name' }))?.props.autoFocus).toBe(true)
+    expect(await band.find({ key: THREADS_SWITCH })).toBeUndefined()
+    expect(await band.find({ key: 'threads:new' })).toBeUndefined()
+    // the picker stays as it was
+    expect(await choiceKeys(band)).toEqual(['design'])
+    await band.press({ key: 'threads:name-cancel' })
     await band.redraw()
-    expect(await band.find({ key: 'picker-new-thread' })).toBeUndefined()
-    expect(await band.find({ key: 'picker:thread:design' })).toBeDefined()
+    expect(await band.find({ key: 'threads:name' })).toBeUndefined()
+    expect(await band.find({ key: THREADS_SWITCH })).toBeDefined()
     await band.unmount()
   }
 
   const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...BAND })
-  await band.press({ key: 'picker:new' })
+  await band.press({ key: 'threads:new' })
   await band.redraw()
   // a blank name starts nothing and leaves the field open
-  await band.input({ key: 'picker-new-thread', text: '   ' })
+  await band.input({ key: 'threads:name', text: '   ' })
   await band.redraw()
-  expect(await band.find({ key: 'picker-new-thread' })).toBeDefined()
-  // a name starts the thread in the next colour and picks it
-  await band.input({ key: 'picker-new-thread', text: 'ideas' })
+  expect(await band.find({ key: 'threads:name' })).toBeDefined()
+  // a name starts the thread in the next colour and picks it; the menu is back at its rows
+  await band.input({ key: 'threads:name', text: 'ideas' })
   await band.redraw()
-  expect(await band.find({ key: 'picker-new-thread' })).toBeUndefined()
+  expect(await band.find({ key: 'threads:name' })).toBeUndefined()
+  expect(await band.find({ key: 'threads:new' })).toBeDefined()
   expect(await choicesIn(band)).toEqual(['design', 'ideas'])
-  expect(await pickerLabel(band)).toBe('post to: ideas')
-  const picture = pathTo(await band.drawn(), n => n.props?.key === 'thread-picker')
-  expect(String(restingPictures(picture?.at(-1))[0]?.props?.source)).toContain(`fill="${PALETTE[1]}"`)
+  expect(await pickerLabel(band)).toBe('ideas')
+  expect((await band.findAll({ type: 'Text' })).find(t => t.text === '●')?.props.color).toBe(PALETTE[1])
   await $.prompt.submit(say('first thought'))
   expect(prompts.at(-1)).toContain('This message belongs to the thread "ideas"')
 
   // a name that is already a thread's picks it and starts no other
-  await band.press({ key: 'picker:new' })
+  await band.press({ key: 'threads:new' })
   await band.redraw()
-  await band.input({ key: 'picker-new-thread', text: '#Design' })
+  await band.input({ key: 'threads:name', text: '#Design' })
   await band.redraw()
   expect(await choicesIn(band)).toEqual(['design', 'ideas'])
-  expect(await pickerLabel(band)).toBe('post to: design')
+  expect(await pickerLabel(band)).toBe('design')
 })
 
 test('archiving a thread hides it from the pickers but keeps its tags; unarchiving or a heading brings it back', async ($, on) => {
@@ -1472,17 +1466,19 @@ test('archiving a thread hides it from the pickers but keeps its tags; unarchivi
   const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...BAND })
   await pickIn(band, 'terminal', 'perf')
 
-  // "manage" lists each thread's actions; archiving the picked thread leaves none picked
-  await band.press({ key: 'picker:manage' })
+  // "Manage threads", in the menu, lists each thread's actions; archiving the picked thread
+  // leaves none picked
+  await openMenu(band)
+  await band.press({ key: 'threads:manage' })
   await band.redraw()
-  await band.press({ key: 'picker:archive:perf' })
+  await band.press({ key: 'threads:archive:perf' })
   await band.redraw()
-  expect(await band.find({ key: 'picker:unarchive:perf' })).toBeDefined()
-  expect(await band.find({ key: 'picker:archive:perf' })).toBeUndefined()
-  await band.press({ key: 'picker:done' })
+  expect(await band.find({ key: 'threads:unarchive:perf' })).toBeDefined()
+  expect(await band.find({ key: 'threads:archive:perf' })).toBeUndefined()
+  await band.press({ key: 'threads:done' })
   await band.redraw()
   expect(await choicesIn(band)).toEqual(['design'])
-  expect(await pickerLabel(band)).toBe('no thread ▾')
+  expect(await pickerLabel(band)).toBe('No thread')
 
   // its messages keep their tags; the move picker no longer offers it
   const old = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...assistantRow('# perf\nslow\n# design\nq'), requestId: 'r1' })
@@ -1497,11 +1493,11 @@ test('archiving a thread hides it from the pickers but keeps its tags; unarchivi
   expect(prompts.at(-1)).toContain('The user archived the thread "perf": it is hidden from their thread picker but kept.')
 
   // unarchived from the menu, it is offered again, and the model is told
-  await band.press({ key: 'picker:manage' })
+  await band.press({ key: 'threads:manage' })
   await band.redraw()
-  await band.press({ key: 'picker:unarchive:perf' })
-  await band.press({ key: 'picker:archive:design' })
-  await band.press({ key: 'picker:done' })
+  await band.press({ key: 'threads:unarchive:perf' })
+  await band.press({ key: 'threads:archive:design' })
+  await band.press({ key: 'threads:done' })
   await band.redraw()
   expect(await choicesIn(band)).toEqual(['perf'])
   await $.prompt.submit(say('again'))
@@ -1527,21 +1523,22 @@ test('deleting a thread asks first, then drops its tags and heading lines from e
   expect(await tagOf(before.mine, 'perf')).toBeDefined()
 
   // delete asks first; cancel keeps the thread
-  await band.press({ key: 'picker:manage' })
+  await openMenu(band)
+  await band.press({ key: 'threads:manage' })
   await band.redraw()
-  await band.press({ key: 'picker:delete:perf' })
+  await band.press({ key: 'threads:delete:perf' })
   await band.redraw()
   expect(await band.find({ text: 'delete perf?' })).toBeDefined()
-  await band.press({ key: 'picker:cancel' })
+  await band.press({ key: 'threads:cancel' })
   await band.redraw()
-  expect(await band.find({ key: 'picker:delete:perf' })).toBeDefined()
-  await band.press({ key: 'picker:delete:perf' })
+  expect(await band.find({ key: 'threads:delete:perf' })).toBeDefined()
+  await band.press({ key: 'threads:delete:perf' })
   await band.redraw()
-  await band.press({ key: 'picker:delete-yes' })
-  await band.press({ key: 'picker:done' })
+  await band.press({ key: 'threads:delete-yes' })
+  await band.press({ key: 'threads:done' })
   await band.redraw()
   expect(await choicesIn(band)).toEqual(['design', 'perf tools'])
-  expect(await pickerLabel(band)).toBe('no thread ▾')
+  expect(await pickerLabel(band)).toBe('No thread')
 
   for (const surface of ['terminal', 'desktop'] as const) {
     const { mine, reply } = await rows(surface)
@@ -1574,23 +1571,23 @@ test("merging from the picker's menu joins the chosen thread, and the picked thr
   await $.prompt.submit(say('settled'))
   const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...BAND })
   await pickIn(band, 'desktop', 'perf')
-  await band.press({ key: 'picker:manage' })
+  await band.press({ key: 'threads:manage' })
   await band.redraw()
-  await band.press({ key: 'picker:merge:perf' })
+  await band.press({ key: 'threads:merge:perf' })
   await band.redraw()
   // the threads it may join: every other one, and a way back
-  expect((await band.findAll({ type: 'Button' })).flatMap(b => (/^picker:merge-into:/.test(b.key ?? '') ? [b.key] : []))).toEqual([
-    'picker:merge-into:design',
+  expect((await band.findAll({ type: 'Button' })).flatMap(b => (/^threads:merge-into:/.test(b.key ?? '') ? [b.key] : []))).toEqual([
+    'threads:merge-into:design',
   ])
-  await band.press({ key: 'picker:merge-into:design' })
+  await band.press({ key: 'threads:merge-into:design' })
   await band.redraw()
   // back at the threads, where one alone has nothing to merge into
-  expect(await band.find({ key: 'picker:archive:design' })).toBeDefined()
-  expect(await band.find({ key: 'picker:merge:design' })).toBeUndefined()
-  await band.press({ key: 'picker:done' })
+  expect(await band.find({ key: 'threads:archive:design' })).toBeDefined()
+  expect(await band.find({ key: 'threads:merge:design' })).toBeUndefined()
+  await band.press({ key: 'threads:done' })
   await band.redraw()
   expect(await choicesIn(band)).toEqual(['design'])
-  expect(await pickerLabel(band)).toBe('post to: design')
+  expect(await pickerLabel(band)).toBe('design')
   const old = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...assistantRow('# perf\nfast') })
   expect(await tagOf(old, 'design')).toBeDefined()
   await $.prompt.submit(say('next'))

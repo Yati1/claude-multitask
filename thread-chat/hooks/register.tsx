@@ -69,7 +69,7 @@ const picturesRead = atom({ plugin: 'thread-chat', key: 'picturesRead' } as cons
 const viewFrom = atom({ plugin: 'thread-chat', key: 'viewFrom' } as const, null)
 const menuOpen = atom({ plugin: 'thread-chat', key: 'menuOpen' } as const, false)
 const pickerOpen = atom({ plugin: 'thread-chat', key: 'pickerOpen' } as const, false)
-const pickerMode = atom({ plugin: 'thread-chat', key: 'pickerMode' } as const, '')
+const menuMode = atom({ plugin: 'thread-chat', key: 'menuMode' } as const, '')
 
 const CREATE_TOOL = 'mcp__thread-chat__create_thread'
 // Thread-chat's menu in the band: a "Threads" button, and a row per switch, which a
@@ -716,38 +716,6 @@ function chipPicture(
   return { source, width }
 }
 
-// The SVG of the thread picker's button: the picked thread's pill, its dot and name
-// tinted and outlined in its colour, or "no thread" in a dashed outline, then a chevron
-// saying it opens a menu. Hot, it is the same under the pointer, its fill and outline
-// stronger, as the desktop lights its own controls.
-function pickerPicture(thread: Thread | undefined, isHot: boolean) {
-  const label = (thread?.name ?? 'no thread').toUpperCase()
-  const text = tagWidth(label, PILL_TAG_SIZE * 1.03)
-  const textAt = thread === undefined ? 9 : 19
-  const chevronAt = textAt + text + 6
-  const width = chevronAt + 8 + 9
-  const h = CHIP_HEIGHT
-  const fill =
-    thread === undefined
-      ? 'class="bg" stroke-dasharray="3 2"'
-      : `fill="${thread.color}" fill-opacity="${isHot ? 0.32 : 0.2}" stroke="${thread.color}" stroke-width="1.5"`
-  const [dark, light] = isHot
-    ? ['fill:#ffffff29;stroke:#ffffff73', 'fill:#00000014;stroke:#00000073']
-    : ['fill:#ffffff14;stroke:#ffffff38', 'fill:#0000000a;stroke:#00000038']
-  const source = [
-    `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${h}" viewBox="0 0 ${width} ${h}">`,
-    `<style>.bg{${dark}}.t{fill:#e6e6e6}.c{stroke:#e6e6e6}`,
-    `@media (prefers-color-scheme: light){.bg{${light}}.t{fill:#1f1f1f}.c{stroke:#1f1f1f}}</style>`,
-    `<rect ${fill} x="0.75" y="0.75" width="${width - 1.5}" height="${h - 1.5}" rx="${(h - 1.5) / 2}"/>`,
-    thread === undefined ? '' : `<circle cx="10.5" cy="${h / 2}" r="3" fill="${thread.color}"/>`,
-    `<text class="t" x="${textAt}" y="${h / 2 + 3.8}" ${TAG_FONT} font-size="${PILL_TAG_SIZE}"`,
-    ` font-weight="700" letter-spacing="${TAG_SPACING}">${escapeXml(label)}</text>`,
-    `<path class="c" d="M${chevronAt} ${h / 2 - 2}l4 4l4 -4" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>`,
-    '</svg>',
-  ].join('')
-  return { source, width }
-}
-
 // A pill that is a switch on the desktop, in the keyed Box `key`: its picture, the
 // hot one laid over it while the pointer is on the pill, and a hit area over both.
 // The light is the surface's own hover, so it adds no Client: still one per pill.
@@ -1068,17 +1036,24 @@ function drawMenuRow($: EngineInterface, elements: Elements['desktop'], s: MenuS
 // The menu's row that opens the thread view, as /thread-view does; only while threads are on.
 const VIEW_ROW = 'Open thread view'
 
-// The band's "Threads" menu. On the desktop, a button drawn as the desktop draws a
-// Select: the field's fill and its ring, stronger under the pointer, the radius, one
-// line high, the caret. The keyed Box it is holds the switches, then the thread view's
-// row, in a card the desktop lifts over the band while the pointer is on the button or
-// the card, or the focus is in them. Elsewhere, a Button that shows or hides them beside it.
+// The band's "Threads" menu: its switches, then, while threads are on, the thread actions
+// (opening the thread view, starting a thread, managing the threads), which take the
+// switches' place past their first rows. On the desktop, a button drawn as the desktop
+// draws a Select: the field's fill and its ring, stronger under the pointer, the radius,
+// one line high, the caret. The keyed Box it is holds them in a card the desktop lifts
+// over the band while the pointer is on the button or the card, or the focus is in them.
+// Elsewhere, a Button that shows or hides them beside it.
 async function drawMenu($: EngineInterface, e: Parameters<EngineInterface['ui']['resolve']>[0]): Promise<RenderElement> {
-  const switches = await menuSwitches($)
   const isThreadsOn = await read($, isOn)
+  // past its first rows (a new thread's name, managing the threads), the thread actions alone
+  const mode = isThreadsOn ? await read($, menuMode) : ''
+  const switches = mode === '' ? await menuSwitches($) : []
+  const ui = $.ui.resolve(e)
+  const menuUi = { Box: ui.Box, Text: ui.Text, Button: ui.Button, Input: 'Input' in ui ? ui.Input : undefined }
+  const actions = isThreadsOn ? drawThreadActions($, menuUi, e.surface, await read($, threads), mode) : []
   if (e.surface === 'desktop') {
     const desktop = $.ui.resolve(e)
-    const { Box, Text, Svg, Button } = desktop
+    const { Box, Text, Svg } = desktop
     return (
       <Box
         key={MENU}
@@ -1095,11 +1070,7 @@ async function drawMenu($: EngineInterface, e: Parameters<EngineInterface['ui'][
         <Svg source={CARET_PICTURE} alt="menu" width={CARET_GAP + CARET_SIZE} height={CARET_SIZE} />
         <Box position="absolute" display="none" hover={{ display: 'flex' }} flexDirection="column" rowGap={2}>
           {switches.map(s => drawMenuRow($, desktop, s))}
-          {isThreadsOn && (
-            <Box flexDirection="row" alignItems="center">
-              <Button key={VIEW} label={VIEW_ROW} plain onPress={() => openView($)} />
-            </Box>
-          )}
+          {actions}
         </Box>
       </Box>
     )
@@ -1112,7 +1083,7 @@ async function drawMenu($: EngineInterface, e: Parameters<EngineInterface['ui'][
         key={MENU}
         label={isOpen ? 'Threads ▴' : 'Threads ▾'}
         variant="secondary"
-        onPress={() => update($, menuOpen, open => !open)}
+        onPress={() => toggleMenu($)}
       />
       {isOpen &&
         switches.map(s => (
@@ -1127,7 +1098,7 @@ async function drawMenu($: EngineInterface, e: Parameters<EngineInterface['ui'][
             />
           </Box>
         ))}
-      {isOpen && isThreadsOn && <Button key={VIEW} label={VIEW_ROW} variant="secondary" onPress={() => openView($)} />}
+      {isOpen && actions}
     </Box>
   )
 }
@@ -1143,7 +1114,7 @@ async function setNaming($: EngineInterface, isNaming: boolean) {
 }
 
 // The field a new thread's name is typed in, focused as it shows, and the "×" beside it
-// that goes back: the move picker's and the thread picker's alike, under keys of each's own.
+// that goes back: the move picker's and the Threads menu's alike, under keys of each's own.
 function drawNameField(
   ui: { Input: Elements['terminal']['Input']; Button: Elements['terminal']['Button'] },
   keys: { field: string; cancel: string },
@@ -1880,50 +1851,66 @@ async function resizeElsewhere($: EngineInterface, job: ThumbJob): Promise<boole
 
 const THUMBS_README = 'Smaller copies of pictures pasted in Claude Code sessions, drawn in the thread view. Safe to delete: they are made again.\n'
 
-// The thread picker in the band: its keyed Box, which the desktop opens its menu's card
-// from, and the field in its menu for a new thread's name. The menu's controls are keyed
-// under `picker:`.
+// The thread picker in the band, keyed PICKER: a Select whose face is the picked thread,
+// where a message with no heading goes. Its options are the threads to post to, then
+// "No thread"; a thread's value is THREAD_OPTION and its key, which "No thread"'s is not.
+// The mobile app, which draws no Select, has a Button that opens the same choices in the
+// band, keyed under `picker:`.
 const PICKER = 'thread-picker'
-const PICKER_FIELD = 'picker-new-thread'
+const THREAD_OPTION = 'thread:'
+const NO_THREAD = 'none'
 
-// The elements the picker's menu is drawn with, alike on the terminal and the desktop.
-type PickerUi = Pick<Elements['terminal'], 'Box' | 'Text' | 'Button'> & { Input?: Elements['terminal']['Input'] }
+// The field in the Threads menu for a new thread's name; the menu's thread actions are
+// keyed under `threads:`.
+const NAME_FIELD = 'threads:name'
 
-async function setPickerMode($: EngineInterface, mode: string) {
-  await update($, pickerMode, () => mode)
+// The elements the Threads menu's thread actions are drawn with, alike on every surface.
+type MenuUi = Pick<Elements['terminal'], 'Box' | 'Text' | 'Button'> & { Input?: Elements['terminal']['Input'] }
+
+async function setMenuMode($: EngineInterface, mode: string) {
+  await update($, menuMode, () => mode)
 }
 
-// Opens the picker's menu off the desktop, at its list of threads, or closes it.
+// Opens or closes the Threads menu where a press does (the terminal), at its first rows.
+async function toggleMenu($: EngineInterface) {
+  await update($, menuMode, () => '')
+  await update($, menuOpen, open => !open)
+}
+
+// Opens or closes the mobile app's picker, at its list of threads.
 async function togglePickerOpen($: EngineInterface) {
-  await update($, pickerMode, () => '')
+  await update($, menuMode, () => '')
   await update($, pickerOpen, open => !open)
 }
 
-// Picks a thread from the menu ('' none). Off the desktop the menu closes, as a dropdown
-// does; the desktop's card closes as the pointer leaves it.
-async function pickFromMenu($: EngineInterface, key: string) {
-  await update($, pickerMode, () => '')
+// Picks a thread from the mobile app's picker ('' none), which closes, as a dropdown does.
+async function pickFromList($: EngineInterface, key: string) {
   await update($, pickerOpen, () => false)
   await pickThread($, key)
 }
 
-// Starts the thread named in the picker's field, as a heading would (the next colour),
-// and picks it. A name already a thread's picks that one; an empty or long one does nothing.
+// Starts the thread named in the menu's field, as a heading would (the next colour), and
+// picks it; the menu goes back to its first rows. A name already a thread's picks that
+// one; an empty or long one does nothing.
 async function startFromMenu($: EngineInterface, typed: string) {
   const name = nameOf(typed.replace(/^#+/, ''))
   if (name === '' || name.length > 48) return
   await addThreads($, [name], 'user')
-  await pickFromMenu($, keyOf(name))
+  await setMenuMode($, '')
+  await pickThread($, keyOf(name))
 }
 
-// The picker's menu, as `mode` has it (pickerMode): the threads to post to, the field for
-// a new thread's name, or each thread's merge, archive and delete. Its rows are Boxes of no
-// key, as a keyed Box in the desktop's card would start a hover scope of its own.
-function drawPickerMenu($: EngineInterface, ui: PickerUi, list: Thread[], cur: string, mode: string): RenderElement {
+// The Threads menu's thread actions while threads are on, as `mode` (menuMode) has them:
+// at first, rows that open the thread view, start a thread (where a field can be drawn)
+// and manage the threads; then the field for a new thread's name, or each thread's merge,
+// archive and delete. Rows are Boxes of no key, as a keyed Box in the desktop's card would
+// start a hover scope of its own; on the desktop the first rows are plain, as the card's
+// switches are, and elsewhere they are Buttons in the band's row.
+function drawThreadActions($: EngineInterface, ui: MenuUi, surface: RenderSurface, list: Thread[], mode: string): RenderElement[] {
   const { Box, Text, Button, Input } = ui
   const active = list.filter(t => t.isArchived !== true)
   const archived = list.filter(t => t.isArchived === true)
-  const dot = (t: Thread | undefined) => (t === undefined ? <Text dimColor>○</Text> : <Text color={t.color}>●</Text>)
+  const dot = (t: Thread) => <Text color={t.color}>●</Text>
   const row = (children: (RenderElement | false)[]) => (
     <Box flexDirection="row" columnGap={1} alignItems="center">
       {children}
@@ -1936,127 +1923,120 @@ function drawPickerMenu($: EngineInterface, ui: PickerUi, list: Thread[], cur: s
   )
   const byKey = (key: string) => list.find(t => keyOf(t.name) === key)
 
+  if (mode === '') {
+    const action = (key: string, label: string, onPress: () => unknown) =>
+      surface === 'desktop' ? (
+        row([<Button key={key} label={label} plain onPress={() => void onPress()} />])
+      ) : (
+        <Button key={key} label={label} variant="secondary" onPress={() => void onPress()} />
+      )
+    return [
+      action(VIEW, VIEW_ROW, () => openView($)),
+      ...(Input === undefined ? [] : [action('threads:new', 'New thread', () => setMenuMode($, 'name'))]),
+      ...(list.length === 0 ? [] : [action('threads:manage', 'Manage threads', () => setMenuMode($, 'manage'))]),
+    ]
+  }
+
   if (mode === 'name' && Input !== undefined) {
-    return column([
-      <Text dimColor>new thread</Text>,
-      row(
-        drawNameField(
-          { Input, Button },
-          { field: PICKER_FIELD, cancel: 'picker:new-cancel' },
-          'start',
-          value => startFromMenu($, value),
-          () => setPickerMode($, ''),
+    return [
+      column([
+        <Text dimColor>new thread</Text>,
+        row(
+          drawNameField(
+            { Input, Button },
+            { field: NAME_FIELD, cancel: 'threads:name-cancel' },
+            'start',
+            value => startFromMenu($, value),
+            () => setMenuMode($, ''),
+          ),
         ),
-      ),
-    ])
+      ]),
+    ]
   }
 
   const merging = mode.startsWith('merge:') ? byKey(mode.slice('merge:'.length)) : undefined
   if (merging !== undefined) {
     const from = keyOf(merging.name)
-    return column([
-      <Text dimColor>{`merge ${merging.name} into`}</Text>,
-      ...active
-        .filter(t => keyOf(t.name) !== from)
-        .map(t =>
-          row([
-            dot(t),
-            <Button
-              key={`picker:merge-into:${keyOf(t.name)}`}
-              label={t.name}
-              plain
-              onPress={async () => {
-                await mergeThreads($, from, keyOf(t.name))
-                await setPickerMode($, 'manage')
-              }}
-            />,
-          ]),
-        ),
-      <Button key="picker:cancel" label="cancel" plain dimColor onPress={() => setPickerMode($, 'manage')} />,
-    ])
+    return [
+      column([
+        <Text dimColor>{`merge ${merging.name} into`}</Text>,
+        ...active
+          .filter(t => keyOf(t.name) !== from)
+          .map(t =>
+            row([
+              dot(t),
+              <Button
+                key={`threads:merge-into:${keyOf(t.name)}`}
+                label={t.name}
+                plain
+                onPress={async () => {
+                  await mergeThreads($, from, keyOf(t.name))
+                  await setMenuMode($, 'manage')
+                }}
+              />,
+            ]),
+          ),
+        <Button key="threads:cancel" label="cancel" plain dimColor onPress={() => setMenuMode($, 'manage')} />,
+      ]),
+    ]
   }
 
   const deleting = mode.startsWith('delete:') ? byKey(mode.slice('delete:'.length)) : undefined
   if (deleting !== undefined) {
     const key = keyOf(deleting.name)
-    return column([
-      <Text>{`delete ${deleting.name}?`}</Text>,
-      <Text dimColor>Its messages stay, without its tag.</Text>,
-      row([
-        <Button
-          key="picker:delete-yes"
-          label="delete"
-          variant="primary"
-          onPress={async () => {
-            await deleteThread($, key)
-            await setPickerMode($, 'manage')
-          }}
-        />,
-        <Button key="picker:cancel" label="cancel" plain dimColor onPress={() => setPickerMode($, 'manage')} />,
+    return [
+      column([
+        <Text>{`delete ${deleting.name}?`}</Text>,
+        <Text dimColor>Its messages stay, without its tag.</Text>,
+        row([
+          <Button
+            key="threads:delete-yes"
+            label="delete"
+            variant="primary"
+            onPress={async () => {
+              await deleteThread($, key)
+              await setMenuMode($, 'manage')
+            }}
+          />,
+          <Button key="threads:cancel" label="cancel" plain dimColor onPress={() => setMenuMode($, 'manage')} />,
+        ]),
       ]),
-    ])
+    ]
   }
 
-  if (mode === 'manage' || mode.startsWith('merge:') || mode.startsWith('delete:')) {
-    const actions = (t: Thread) => {
-      const key = keyOf(t.name)
-      const isArchived = t.isArchived === true
-      return [
-        !isArchived && active.length > 1 && (
-          <Button key={`picker:merge:${key}`} label="merge" plain dimColor onPress={() => setPickerMode($, `merge:${key}`)} />
-        ),
-        <Button
-          key={`picker:${isArchived ? 'unarchive' : 'archive'}:${key}`}
-          label={isArchived ? 'unarchive' : 'archive'}
-          plain
-          dimColor
-          onPress={() => setArchived($, key, !isArchived)}
-        />,
-        <Button key={`picker:delete:${key}`} label="delete" plain dimColor onPress={() => setPickerMode($, `delete:${key}`)} />,
-      ]
-    }
-    return column([
-      row([<Text dimColor>threads</Text>, <Button key="picker:done" label="done" plain dimColor onPress={() => setPickerMode($, '')} />]),
+  // Each thread's merge, archive and delete, the archived threads apart (also where the
+  // thread a mode named has gone).
+  const actions = (t: Thread) => {
+    const key = keyOf(t.name)
+    const isArchived = t.isArchived === true
+    return [
+      !isArchived && active.length > 1 && (
+        <Button key={`threads:merge:${key}`} label="merge" plain dimColor onPress={() => setMenuMode($, `merge:${key}`)} />
+      ),
+      <Button
+        key={`threads:${isArchived ? 'unarchive' : 'archive'}:${key}`}
+        label={isArchived ? 'unarchive' : 'archive'}
+        plain
+        dimColor
+        onPress={() => setArchived($, key, !isArchived)}
+      />,
+      <Button key={`threads:delete:${key}`} label="delete" plain dimColor onPress={() => setMenuMode($, `delete:${key}`)} />,
+    ]
+  }
+  return [
+    column([
+      row([<Text dimColor>threads</Text>, <Button key="threads:done" label="done" plain dimColor onPress={() => setMenuMode($, '')} />]),
       ...(active.length === 0 ? [<Text dimColor>none</Text>] : active.map(t => row([dot(t), <Text>{t.name}</Text>, ...actions(t)]))),
       ...(archived.length === 0
         ? []
         : [<Text dimColor>archived</Text>, ...archived.map(t => row([dot(t), <Text dimColor>{t.name}</Text>, ...actions(t)]))]),
-    ])
-  }
-
-  // The threads to post to, the picked one ticked, then "no thread".
-  const choice = (t: Thread | undefined) => {
-    const key = t === undefined ? '' : keyOf(t.name)
-    return row([
-      dot(t),
-      <Button
-        key={t === undefined ? 'picker:none' : `picker:thread:${key}`}
-        label={t?.name ?? 'no thread'}
-        plain
-        {...(t === undefined ? { dimColor: true } : {})}
-        onPress={() => pickFromMenu($, key)}
-      />,
-      key === cur && <Text dimColor>✓</Text>,
-    ])
-  }
-  return column([
-    <Text dimColor>post to</Text>,
-    ...active.map(t => choice(t)),
-    choice(undefined),
-    row([
-      Input !== undefined && <Button key="picker:new" label="+ new thread" plain onPress={() => setPickerMode($, 'name')} />,
-      list.length > 0 && <Button key="picker:manage" label="manage" plain dimColor onPress={() => setPickerMode($, 'manage')} />,
     ]),
-  ])
+  ]
 }
 
-// Threads' controls in the band: the thread picker. Its button names
-// the picked thread, where a message with no heading goes; its menu picks another, starts
-// one, and merges, archives and deletes them. On the desktop the menu is a card the desktop
-// lifts out of the band while the pointer or the focus is on the button or the card; on
-// the terminal the button opens and closes it in the band. The picker's keyed Box comes
-// first, so the desktop finds its open card again when the band is drawn anew. They take
-// the room the band has left and give way first; nothing the pointer shows takes room.
+// Threads' controls in the band: the thread picker after a dot of the picked thread's
+// colour, or, with no threads to post to, how to start one. They take the room the band
+// has left and give way first.
 async function drawThreadControls(
   $: EngineInterface,
   e: Parameters<EngineInterface['ui']['resolve']>[0],
@@ -2065,60 +2045,82 @@ async function drawThreadControls(
   const active = list.filter(t => t.isArchived !== true)
   const cur = await read($, current)
   const picked = active.find(t => keyOf(t.name) === cur)
-  const mode = await read($, pickerMode)
   const ui = $.ui.resolve(e)
   const { Box, Text, Button } = ui
-  const Input = 'Input' in ui ? ui.Input : undefined
-  const menu = drawPickerMenu($, { Box, Text, Button, Input }, list, cur, mode)
-  const hint = active.length === 0 && (
-    <Text dimColor wrap="truncate-end">
-      start a thread with # name
-    </Text>
-  )
+  const dot = (t: Thread | undefined) => (t === undefined ? <Text dimColor>○</Text> : <Text color={t.color}>●</Text>)
 
-  if (e.surface === 'desktop') {
-    const { Svg } = $.ui.resolve(e)
-    const rest = pickerPicture(picked, false)
-    const hot = pickerPicture(picked, true)
-    const alt = `post to: ${picked?.name ?? 'no thread'}`
+  if (active.length === 0) {
     return (
-      <Box flexDirection="row" columnGap={1} alignItems="center" flexGrow={1} flexShrink={1} minWidth={0}>
-        <Box key={PICKER} flexShrink={0}>
-          <Box>
-            <Svg source={rest.source} alt={alt} width={rest.width} height={CHIP_HEIGHT} />
-            {/* lit in place under the pointer, as drawPillSwitch's pills are */}
-            <Box position="absolute" top={0} left={0}>
-              <Box display="none" hover={{ display: 'flex' }}>
-                <Svg source={hot.source} alt={alt} width={hot.width} height={CHIP_HEIGHT} />
-              </Box>
-            </Box>
-          </Box>
-          <Box position="absolute" display="none" hover={{ display: 'flex' }}>
-            {menu}
-          </Box>
-        </Box>
-        {hint}
+      <Box flexDirection="row" alignItems="center" flexGrow={1} flexShrink={1} minWidth={0}>
+        <Text dimColor wrap="truncate-end">
+          start a thread with # name
+        </Text>
       </Box>
     )
   }
+
+  if (e.surface !== 'mobile') {
+    const { Select } = $.ui.resolve(e)
+    return (
+      <Box flexDirection="row" alignItems="center" flexGrow={1} flexShrink={1} minWidth={0}>
+        <Box flexDirection="row" alignItems="center" columnGap={1} flexShrink={0}>
+          {dot(picked)}
+          <Select
+            key={PICKER}
+            options={[...active.map(t => ({ value: THREAD_OPTION + keyOf(t.name), label: t.name })), { value: NO_THREAD, label: 'No thread' }]}
+            value={picked === undefined ? NO_THREAD : THREAD_OPTION + keyOf(picked.name)}
+            onSelect={value => pickThread($, value.startsWith(THREAD_OPTION) ? value.slice(THREAD_OPTION.length) : '')}
+          />
+        </Box>
+      </Box>
+    )
+  }
+
+  // The mobile app: a Button that opens the choices in the band, then the threads' actions.
   const isOpen = await read($, pickerOpen)
+  const mode = await read($, menuMode)
+  const choice = (t: Thread | undefined) => {
+    const key = t === undefined ? '' : keyOf(t.name)
+    return (
+      <Box flexDirection="row" columnGap={1} alignItems="center">
+        {dot(t)}
+        <Button
+          key={t === undefined ? 'picker:none' : `picker:thread:${key}`}
+          label={t?.name ?? 'No thread'}
+          plain
+          {...(t === undefined ? { dimColor: true } : {})}
+          onPress={() => pickFromList($, key)}
+        />
+        {key === cur && <Text dimColor>✓</Text>}
+      </Box>
+    )
+  }
+  const choices =
+    mode === ''
+      ? [
+          ...active.map(t => choice(t)),
+          choice(undefined),
+          <Button key="threads:manage" label="Manage threads" plain dimColor onPress={() => setMenuMode($, 'manage')} />,
+        ]
+      : drawThreadActions($, { Box, Text, Button }, e.surface, list, mode)
   return (
-    <Box flexDirection="row" columnGap={1} alignItems="flex-start" flexGrow={1} flexShrink={1} minWidth={0}>
+    <Box flexDirection="row" alignItems="flex-start" flexGrow={1} flexShrink={1} minWidth={0}>
       <Box key={PICKER} flexDirection="column" flexShrink={0}>
         <Box flexDirection="row">
-          {picked === undefined ? <Text dimColor>○</Text> : <Text color={picked.color}>●</Text>}
+          {dot(picked)}
           <Button
             key="picker:open"
-            label={`${picked?.name ?? 'no thread'} ▾`}
+            label={`${picked?.name ?? 'No thread'} ▾`}
             variant={isOpen ? 'primary' : 'secondary'}
             onPress={() => togglePickerOpen($)}
           />
         </Box>
-        <Box flexDirection="column" display={isOpen ? 'flex' : 'none'}>
-          {menu}
-        </Box>
+        {isOpen && (
+          <Box flexDirection="column" alignItems="flex-start">
+            {choices}
+          </Box>
+        )}
       </Box>
-      {hint}
     </Box>
   )
 }
