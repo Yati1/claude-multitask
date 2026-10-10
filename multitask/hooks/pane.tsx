@@ -38,6 +38,9 @@ const REPORT_MAX = 10_000
 // Cells the labels at a card's left take, the gap after them included.
 const LABEL_COLUMNS = 7
 
+// How a thought's colour is drawn: as it is, or dim (see drawThoughts).
+type Tint = { color: Color; dimColor?: true }
+
 // The key of a card's field to tell its thought something: this, then the thought's id.
 export const TELL_FIELD = 'tell-field:'
 
@@ -133,6 +136,10 @@ export function drawThoughts(draw: ThoughtsDrawing, list: readonly Thought[]): R
     .filter(c => c.count > 0)
     .map(c => `${c.count} ${STATUS_WORD[c.status]}`)
   const summary = list.length === 0 ? 'No thoughts yet.' : counts.join(' · ')
+  // Only running thoughts hold their colours: one that ended keeps its own, dimmed while a
+  // running thought has taken it, so the two are not mistaken for each other.
+  const held = new Set(list.filter(t => t.status === 'running').map(t => t.color))
+  const tintOf = (t: Thought): Tint => ({ color: t.color, ...(t.status !== 'running' && held.has(t.color) && { dimColor: true }) })
   return (
     <Box flexDirection="column">
       <Box marginBottom={1}>
@@ -141,7 +148,7 @@ export function drawThoughts(draw: ThoughtsDrawing, list: readonly Thought[]): R
         </Text>
       </Box>
       {orderOf(list).map(t =>
-        t.status !== 'running' && !draw.opened.includes(t.id) ? drawLine(draw, t) : drawCard(draw, t),
+        t.status !== 'running' && !draw.opened.includes(t.id) ? drawLine(draw, t, tintOf(t)) : drawCard(draw, t, tintOf(t)),
       )}
     </Box>
   )
@@ -166,15 +173,15 @@ function drawStatus(draw: ThoughtsDrawing, t: Thought): RenderElement {
 
 // A thought that is not running, folded to one line: its name, status, its report's
 // first line, and stop.
-function drawLine(draw: ThoughtsDrawing, t: Thought): RenderElement {
+function drawLine(draw: ThoughtsDrawing, t: Thought, tint: Tint): RenderElement {
   const { Box, Text, Button } = draw.ui
   return (
     <Box key={`line:${t.id}`} flexDirection="row" columnGap={1} alignItems="center">
       <Box flexShrink={0}>
-        <Text color={t.color}>{GLYPH[t.status]}</Text>
+        <Text {...tint}>{GLYPH[t.status]}</Text>
       </Box>
       <Box flexShrink={0}>
-        <Button key={`expand:${t.id}`} plain label={t.name} hover={{ color: t.color }} onPress={() => draw.toggleExpanded(t.id)} />
+        <Button key={`expand:${t.id}`} plain label={t.name} hover={tint} onPress={() => draw.toggleExpanded(t.id)} />
       </Box>
       <Box flexShrink={0}>{drawStatus(draw, t)}</Box>
       <Box flexGrow={1} flexShrink={1} minWidth={0}>
@@ -186,7 +193,7 @@ function drawLine(draw: ThoughtsDrawing, t: Thought): RenderElement {
       </Box>
       {t.status !== 'stopped' && (
         <Box flexShrink={0}>
-          <Button key={`stop:${t.id}`} plain dimColor hover={{ color: t.color }} label="stop" onPress={() => draw.stop(t.id)} />
+          <Button key={`stop:${t.id}`} plain dimColor hover={tint} label="stop" onPress={() => draw.stop(t.id)} />
         </Box>
       )}
     </Box>
@@ -194,13 +201,13 @@ function drawLine(draw: ThoughtsDrawing, t: Thought): RenderElement {
 }
 
 // One kind of a card's lines under its label: the label on the first line alone, dim
-// or in `color`, the lines beside it, `gap` rows below what is above.
-function drawSection(draw: ThoughtsDrawing, label: string, lines: RenderElement[], gap: number, color?: Color): RenderElement {
+// or in `tint`, the lines beside it, `gap` rows below what is above.
+function drawSection(draw: ThoughtsDrawing, label: string, lines: RenderElement[], gap: number, tint?: Tint): RenderElement {
   const { Box, Text } = draw.ui
   return (
     <Box flexDirection="row" marginTop={gap}>
       <Box width={LABEL_COLUMNS} flexShrink={0}>
-        <Text {...(color === undefined ? { dimColor: true } : { color })}>{label}</Text>
+        <Text {...(tint ?? { dimColor: true })}>{label}</Text>
       </Box>
       <Box flexDirection="column" flexGrow={1} flexShrink={1} minWidth={0}>
         {lines}
@@ -211,7 +218,7 @@ function drawSection(draw: ThoughtsDrawing, label: string, lines: RenderElement[
 
 // A thought's card: its name, status and controls; then its task, its notes, its
 // report and its queue, each kind under its label.
-function drawCard(draw: ThoughtsDrawing, t: Thought): RenderElement {
+function drawCard(draw: ThoughtsDrawing, t: Thought, tint: Tint): RenderElement {
   const { Box, Text, Button, Markdown } = draw.ui
   const Input = t.status === 'stopped' ? undefined : tellFieldOf(draw)
   const isTelling = Input !== undefined && draw.tellingTo === t.id
@@ -224,7 +231,7 @@ function drawCard(draw: ThoughtsDrawing, t: Thought): RenderElement {
   const taskColumns = draw.bodyColumns - 4 - LABEL_COLUMNS
   const task = firstLine(t.task)
   const hasMore = isRunning && (t.task.trim() !== task || task.length > taskColumns)
-  const control = { plain: true, dimColor: true, hover: { color: t.color } } as const
+  const control = { plain: true, dimColor: true, hover: tint } as const
 
   const notes = (t.notes ?? []).slice(isOpened ? -NOTES_OPENED : -NOTES_FOLDED)
   const quiet = isRunning ? quietFor(t, draw.now) : undefined
@@ -280,7 +287,7 @@ function drawCard(draw: ThoughtsDrawing, t: Thought): RenderElement {
             key={`report:${t.id}`}
             plain
             dimColor
-            hover={{ color: t.color }}
+            hover={tint}
             label={isReportShown ? 'less' : 'more'}
             onPress={() => draw.toggleReport(t.id)}
           />
@@ -308,18 +315,19 @@ function drawCard(draw: ThoughtsDrawing, t: Thought): RenderElement {
       key={`card:${t.id}`}
       flexDirection="column"
       borderStyle="round"
-      borderColor={t.color}
+      borderColor={tint.color}
+      {...(tint.dimColor && { borderDimColor: true })}
       {...(draw.surface === 'desktop' ? DESKTOP_CARD_PADDING : CARD_PADDING)}
       marginBottom={1}
     >
       <Box flexDirection="row" columnGap={1} alignItems="center">
         <Box flexShrink={0}>
-          <Text color={t.color} bold>
+          <Text {...tint} bold>
             {GLYPH[t.status]}
           </Text>
         </Box>
         <Box flexShrink={0}>
-          <Button key={`expand:${t.id}`} plain label={t.name} hover={{ color: t.color }} onPress={() => draw.toggleExpanded(t.id)} />
+          <Button key={`expand:${t.id}`} plain label={t.name} hover={tint} onPress={() => draw.toggleExpanded(t.id)} />
         </Box>
         <Box flexGrow={1} flexShrink={1} minWidth={0}>
           {drawStatus(draw, t)}
@@ -356,7 +364,7 @@ function drawCard(draw: ThoughtsDrawing, t: Thought): RenderElement {
         gap,
       )}
       {noteLines.length > 0 && drawSection(draw, 'notes', noteLines, gap)}
-      {report !== false && drawSection(draw, 'report', [report], gap, t.color)}
+      {report !== false && drawSection(draw, 'report', [report], gap, tint)}
       {queued.length > 0 && drawSection(draw, 'queued', queued, gap)}
       {isTelling &&
         drawSection(
@@ -372,7 +380,7 @@ function drawCard(draw: ThoughtsDrawing, t: Thought): RenderElement {
             />,
           ],
           gap,
-          t.color,
+          tint,
         )}
     </Box>
   )
