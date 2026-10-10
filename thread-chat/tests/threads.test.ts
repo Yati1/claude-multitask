@@ -352,7 +352,8 @@ test("with the menu's filter on, the chat keeps to the picked thread, and rows o
       (await oldReply.find({ text: /top line/ })) !== undefined &&
       (await tagOf(oldReply, 'perf')) !== undefined
 
-    // the filter on with no thread picked: every row shows
+    // the filter on with no thread picked (the message's last heading picked perf): every row shows
+    await pickIn(band, surface, '')
     await flipSwitch(band, FILTER_SWITCH)
     await band.redraw()
     expect(await switchOf(band, FILTER_SWITCH)).toBe('on')
@@ -390,7 +391,6 @@ test("with the menu's filter on, the chat keeps to the picked thread, and rows o
     await redraw()
     expect(await isWhole()).toBe(true)
 
-    await pickIn(band, surface, '')
     for (const site of [...rows, band]) await site.unmount()
   }
 })
@@ -404,12 +404,14 @@ test('the model is told how threads work once they are on, of merges and the age
   await flipThreads($)
   await $.prompt.submit(say('# design\na\n# perf\nb'))
   expect(prompts.at(-1)).toContain('\n--\n# Conversation threads\n')
+  // its last heading picked perf; with no thread picked, nothing goes beside a message with no heading
+  const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...BAND })
+  await pickIn(band, 'terminal', '')
   await $.prompt.submit(say('more'))
   expect(prompts.at(-1)).toBe('more')
 
   // A merge and the agent switch reach the model beside the next message, once.
   await $.command.run({ command: 'merge-threads', args: 'perf into design', origin: { kind: 'composer' }, presentation: {} as never })
-  const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...BAND })
   await flipSwitch(band, AGENT_SWITCH)
   await $.prompt.submit(say('next'))
   const changed = prompts.at(-1) ?? ''
@@ -952,6 +954,51 @@ test('with a thread picked, a message with no heading goes to it; a heading stil
   expect(prompts.at(-1)).toBe('both?')
 })
 
+test("a message's last thread heading picks its thread for the next message with no heading, and is kept", async ($, on) => {
+  const kept: Record<string, unknown> = {}
+  on('store.get', ($, e) => ({ value: kept[e.key] }))
+  on('store.set', ($, e) => {
+    kept[e.key] = e.value
+    return { value: undefined }
+  })
+  on('store.keys', () => ({ value: Object.keys(kept) }))
+  const prompts = engine(on, null)
+  await flipThreads($)
+  const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...BAND })
+  // The picked thread as the band's picker shows it and as the session's record keeps it.
+  const picked = async () => {
+    await band.redraw()
+    return [await pickerLabel(band), (kept['session:session-1'] as { current: string }).current]
+  }
+
+  // by its exact name
+  await $.prompt.submit(say('# design\na\n# perf\nb'))
+  expect(await picked()).toEqual(['perf', 'perf'])
+  // a message with no heading goes there, and leaves the pick
+  await $.prompt.submit(say('and the cache?'))
+  expect(prompts.at(-1)).toContain('This message belongs to the thread "perf"')
+  expect(await picked()).toEqual(['perf', 'perf'])
+
+  // a mistyped or abbreviated heading picks the thread it means
+  await $.prompt.submit(say('# dezign\nc'))
+  expect(await picked()).toEqual(['design', 'design'])
+  await $.prompt.submit(say('# per\nd'))
+  expect(await picked()).toEqual(['perf', 'perf'])
+
+  // the last heading counts, even where its thread had an earlier one in the message
+  await $.prompt.submit(say('# design\ne\n# perf\nf\n# design\ng'))
+  expect(await picked()).toEqual(['design', 'design'])
+
+  // `#+name` picks the thread it starts
+  await $.prompt.submit(say('#+ideas\nh'))
+  expect(await picked()).toEqual(['ideas', 'ideas'])
+
+  // headings of no thread (deeper ones, or in code) leave the pick
+  await $.prompt.submit(say('## perf\ni\n```\n# perf\n```'))
+  expect(prompts.at(-1)).toContain('This message belongs to the thread "ideas"')
+  expect(await picked()).toEqual(['ideas', 'ideas'])
+})
+
 test('a reply to a selected part of a reply goes to the thread that part is in', async ($, on) => {
   const prompts = engine(on)
   // The transcript the plugin reads replies from, oldest first; the desktop's
@@ -1129,6 +1176,9 @@ test('the picker is a Select of the threads and "No thread", its face the picked
     expect(picker?.props.label).toBeUndefined()
     expect((await band.findAll({ type: 'Text' })).filter(t => t.text.includes('✓'))).toEqual([])
   }
+  // the message's last heading picked perf; "No thread" leaves none picked
+  expect(await faces()).toEqual(['perf', 'perf'])
+  await desktop.select({ key: PICKER, value: 'none' })
   const none = { mark: 'none', tint: undefined, flexShrink: 0 }
   expect(await faces()).toEqual(['No thread', 'No thread'])
   for (const band of [desktop, terminal]) expect(await lookOf(band)).toEqual(none)
@@ -1227,7 +1277,7 @@ test('a message or a reply part moves to another thread from its tag, and the mo
   expect(prompts.at(-1)).toContain('The user moved their message "plain words" from no thread to the thread "design".')
   expect(prompts.at(-1)).toContain('The user moved part of your reply "use a queue" from the thread "design" to no thread.')
   await $.prompt.submit(say('again'))
-  expect(prompts.at(-1)).toBe('again')
+  expect(prompts.at(-1)).not.toContain('The user moved')
 })
 
 test('the move picker starts a new thread from a typed name, even with no threads yet', async ($, on) => {

@@ -310,13 +310,14 @@ function replySectionsOf(text: string, list: Thread[], merged: Record<string, st
 
 type Meaning = { typed: string; meant: string; isRunOn?: boolean }
 
-// What the headings of a prompt mean: the thread names, in order, and each
-// heading not written as its thread's exact name (a typo, a start of a name,
-// `+name`, a name with the first line on its line) as typed with the thread it
-// means. A heading may also mean a thread introduced earlier in the same prompt.
+// What the headings of a prompt mean: the thread names, in order, the name its last
+// heading means, and each heading not written as its thread's exact name (a typo, a
+// start of a name, `+name`, a name with the first line on its line) as typed with the
+// thread it means. A heading may also mean a thread introduced earlier in the same prompt.
 function decideHeadings(text: string, list: Thread[], links: Record<string, string>, merged: Record<string, string>) {
   let known = list
   const meanings: Meaning[] = []
+  const meant: string[] = []
   // A heading with its first line on its line becomes its thread's heading by its
   // exact name, so the headings after are read as they would be on their own.
   const split = splitRunOns(text, typed => {
@@ -327,12 +328,13 @@ function decideHeadings(text: string, list: Thread[], links: Record<string, stri
     return { name: thread.name, rest: runOn.rest }
   })
   const resolved = rewriteHeadings(split, raw => {
-    const meant = resolveHeading(raw, known, links)
-    if (raw.startsWith('+') || keyOf(nameOf(raw)) !== keyOf(meant)) meanings.push({ typed: raw, meant })
-    known = withThreads(known, [meant], 'user')
-    return meant
+    const name = resolveHeading(raw, known, links)
+    if (raw.startsWith('+') || keyOf(nameOf(raw)) !== keyOf(name)) meanings.push({ typed: raw, meant: name })
+    known = withThreads(known, [name], 'user')
+    meant.push(name)
+    return name
   })
-  return { names: headingsIn(resolved), meanings }
+  return { names: headingsIn(resolved), last: meant.at(-1), meanings }
 }
 
 // The thread a name means: the thread by that name, else the one a merge or a
@@ -2451,7 +2453,7 @@ export const register: Register = on => {
     const merged = await read($, aliases)
     const links = linksFor(merged, await read($, deleted), await read($, snaps))
     const list = await read($, threads)
-    const { names, meanings } = decideHeadings(e.text, list, links, merged)
+    const { names, last, meanings } = decideHeadings(e.text, list, links, merged)
     if (names.length === 0) {
       // A reply to parts of earlier replies goes to the thread they came from, even
       // while another is picked: the person pointed at that thread's text.
@@ -2472,6 +2474,9 @@ export const register: Register = on => {
       ])
     }
     await addThreads($, names, 'user')
+    // The picker follows the thread of the message's last heading, so the person's next
+    // message with no heading goes on in it.
+    if (last !== undefined) await update($, current, () => keyOf(last))
     const decided = linksOf(meanings)
     if (Object.keys(decided).length > 0) await update($, snaps, all => ({ ...all, ...decided }))
     await save($)
