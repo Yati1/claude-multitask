@@ -45,6 +45,10 @@ export type Update = {
   isFromPerson?: boolean
 }
 
+// A session's thoughts as kept in the store between runs of the app: when they were kept,
+// and the list, its oldest ended thoughts dropped past a bound.
+export type KeptThoughts = { at: number; thoughts: Thought[] }
+
 // What the voice was last told of a thought, by a relay or a what's-new note: its status,
 // its report and its latest progress note as they were then
 export type Heard = { status: ThoughtStatus; report: string; note: string }
@@ -71,6 +75,9 @@ declare module 'claude-code' {
       paneTick: number
       // the thought whose card in the Thoughts pane has its field open to tell it something; '' none
       tellingTo: string
+      // whether the Thoughts pane lists every thought that is not running, not only the
+      // most recently ended (the person pressed `N more`)
+      showsAllEnded: boolean
       // where the turn through the palette's first colours stands: the index of the next a
       // thought takes, unless a running thought holds it
       colorTurn: number
