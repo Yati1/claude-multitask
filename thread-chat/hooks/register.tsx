@@ -878,13 +878,15 @@ function drawPillSwitch(
 }
 
 // A thread's name as a tag: small capitals in its colour, a picture where the
-// surface draws one, its capitals alone on the terminal.
+// surface draws one (`alt` its name, the thread's unless given), its capitals alone
+// on the terminal.
 function drawTag(
   $: EngineInterface,
   e: Parameters<EngineInterface['ui']['resolve']>[0],
   thread: { name: string; color: string },
   align: 'start' | 'end',
   inset = 0,
+  alt = thread.name,
 ): RenderElement {
   if (e.surface === 'terminal') {
     const { Text } = $.ui.resolve(e)
@@ -892,7 +894,7 @@ function drawTag(
   }
   const { Svg } = $.ui.resolve(e)
   const tag = tagPicture(thread.name, thread.color, align, inset)
-  return <Svg source={tag.source} alt={thread.name} width={tag.width} height={tag.height} />
+  return <Svg source={tag.source} alt={alt} width={tag.width} height={tag.height} />
 }
 
 // Whether the surface puts the person's messages, and so their tags, on the right.
@@ -1169,7 +1171,7 @@ function drawMenuRow($: EngineInterface, elements: Elements['desktop'], s: MenuS
 // The thread view's filter: one thread (by its key) picked, or left out where it was.
 const toggleViewThread = ($: EngineInterface, key: string) => filterView($, (keys, list) => toggledShown(list, keys, key))
 
-// The desktop's hit area over a thread's name in the thread view's filter, as over a menu
+// The desktop's hit area over a thread's tag in the thread view's filter, as over a menu
 // switch: a click on it posts, and the post toggles the thread.
 const filterHitOf = (elements: Elements['desktop']) => (key: string, isPicked: boolean) => {
   const { Client } = elements
@@ -2671,6 +2673,7 @@ export const register: Register = on => {
           markdown: text => drawMarkdown($, e, text),
           // the chat's tags without its move button: the picker it opens is the chat's row's
           tagRow: thread => drawTagRow($, e, [drawTag($, e, thread, isOnRightOf(e.surface) ? 'end' : 'start')]),
+          tag: (thread, alt) => drawTag($, e, thread, 'start', 0, alt),
           // its text is markdown, so its tag is not inset, as on the chat's markdown parts
           threadPart: (thread, body) => drawThreadPart($, e, thread, drawTag($, e, thread, 'start'), body),
           picture: image => pictureFor($, image),

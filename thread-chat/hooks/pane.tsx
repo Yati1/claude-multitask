@@ -58,7 +58,7 @@ export const SECTIONS_MORE = 30
 // The key of that line, a Button.
 export const EARLIER_KEY = 'thread-view-earlier'
 // The keys of the filter's switches, each thread's by its key: a Button, or on the desktop
-// the hit area laid over its name.
+// the hit area laid over its tag.
 export const FILTER_THREAD_KEY = 'thread-view-filter:thread:'
 const MARK_LENGTH = 80
 
@@ -688,6 +688,8 @@ export type ViewDrawing = {
   ui: ElementTable
   markdown: (text: string) => RenderElement
   tagRow: (thread: Thread) => RenderElement
+  // a thread's tag as the chat draws it, set against the start; `alt` names its picture
+  tag: (thread: Thread, alt: string) => RenderElement
   threadPart: (thread: Thread, body: RenderElement) => RenderElement
   // a pasted picture's bytes to draw, read from its file (or a smaller copy of it):
   // `loading` while they are read, none where they cannot be
@@ -703,7 +705,8 @@ export type ViewDrawing = {
   // left out where it was picked
   toggleShown: (key: string) => void
   // where the surface has one, an invisible hit area under FILTER_THREAD_KEY and the
-  // thread's key, as wide and high as its parent, whose press does as `toggleShown` does
+  // thread's key, as wide and high as its parent, whose press does as `toggleShown` does;
+  // the filter then draws each thread's `tag` under it
   filterHit?: (key: string, isPicked: boolean) => RenderElement
 }
 
@@ -923,37 +926,54 @@ function drawEntry(draw: ViewDrawing, isPage: boolean, entry: Entry, drawn: Draw
   )
 }
 
-// One thread of the view's filter, a switch, its thread's name: in its colour, bold while
-// picked and dim while not, in full colour and bold under the pointer. A Button's label
-// takes no colour at rest, so where the surface has a hit area (the desktop) the name is
-// a Text with the hit area laid over it. Elsewhere it is a Button, at full strength while
-// picked and dim while not, in its colour and bold under the pointer.
+// A switch of the view's filter on the desktop: a round border, the same picked or not,
+// its own padding set to about 3px above and below the tag and a column either side, so
+// with the tag's 12px it is about as high as the chat's pills (20px). Its colour while
+// not picked is clear, and under the pointer the thread's colour at about 45%.
+const FILTER_SHAPE = { borderStyle: 'round', paddingX: 1, paddingY: 0.3 }
+const FILTER_HOVER_ALPHA = '73'
+// Rows between the desktop's rows of switches, once they wrap: about 5px, so two picked
+// switches' borders do not touch.
+const FILTER_ROW_GAP = 0.5
+
+// One thread of the view's filter, a switch. Where the surface has a hit area (the
+// desktop) it is the thread's tag, as the chat draws it, in a round border of the
+// thread's colour while picked; while not, the same border drawn clear, so picking
+// moves nothing, and faint under the pointer; the hit area laid over it. Elsewhere it is
+// a Button, whose label takes no colour at rest: the name in capitals, as the terminal
+// draws a tag, in brackets while picked and between spaces, dim, while not; in the
+// thread's colour under the pointer.
 function drawFilterChoice(draw: ViewDrawing, thread: Thread, isPicked: boolean): RenderElement {
-  const { Box, Text, Button } = draw.ui
+  const { Box, Button } = draw.ui
   const key = keyOf(thread.name)
   const boxKey = `thread-view-filter-box:${key}`
-  const hover = { color: thread.color, bold: true }
   if (draw.filterHit !== undefined) {
     // kept whole, as a Button is, so a long name moves to the next row rather than wrap
     return (
-      <Box key={boxKey} flexDirection="row" flexShrink={0}>
-        <Text color={thread.color} {...(isPicked ? { bold: true } : { dimColor: true })} hover={{ ...hover, dimColor: false }}>
-          {thread.name}
-        </Text>
+      <Box
+        key={boxKey}
+        flexDirection="row"
+        flexShrink={0}
+        {...FILTER_SHAPE}
+        borderColor={isPicked ? thread.color : CLEAR}
+        {...(isPicked ? {} : { hover: { borderColor: thread.color + FILTER_HOVER_ALPHA } })}
+      >
+        {draw.tag(thread, `${thread.name}: ${isPicked ? 'on' : 'off'}`)}
         <Box position="absolute" top={0} left={0} width="100%" height="100%">
           {draw.filterHit(key, isPicked)}
         </Box>
       </Box>
     )
   }
+  const name = thread.name.toUpperCase()
   return (
     <Box key={boxKey} flexDirection="row">
       <Button
         key={FILTER_THREAD_KEY + key}
-        label={thread.name}
+        label={isPicked ? `[${name}]` : ` ${name} `}
         plain
         {...(isPicked ? {} : { dimColor: true })}
-        hover={hover}
+        hover={{ color: thread.color }}
         onPress={() => draw.toggleShown(key)}
       />
     </Box>
@@ -966,7 +986,13 @@ function drawFilterChoice(draw: ViewDrawing, thread: Thread, isPicked: boolean):
 function drawFilter(draw: ViewDrawing, offered: readonly Thread[], picks: ReadonlySet<string>): RenderElement {
   const { Box } = draw.ui
   return (
-    <Box flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={1}>
+    <Box
+      flexDirection="row"
+      flexWrap="wrap"
+      alignItems="center"
+      columnGap={1}
+      rowGap={draw.filterHit !== undefined ? FILTER_ROW_GAP : 0}
+    >
       {offered.map(t => drawFilterChoice(draw, t, picks.has(keyOf(t.name))))}
     </Box>
   )
