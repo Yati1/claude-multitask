@@ -25,7 +25,7 @@ Install either or both.
 
 ## Use
 
-Multitask has a dropdown, and thread-chat a `Threads` menu, in the band above the prompt with their switches for the chat. The mobile app shows neither: use the commands there.
+Multitask has a dropdown, and thread-chat a `Threads` menu, in the band above the prompt with their switches for the chat; thread-chat's thread picker sits beside its menu. The mobile app shows only the thread picker: use the commands there.
 
 ### Multitask
 
