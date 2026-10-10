@@ -55,8 +55,9 @@ import type { Picture, ViewDeps, ViewGrowth, ViewInputs, ViewPlace, ViewSpan } f
 const isOn = atom({ plugin: 'thread-chat', key: 'isOn' } as const, false)
 const threads = atom({ plugin: 'thread-chat', key: 'threads' } as const, [])
 const aliases = atom({ plugin: 'thread-chat', key: 'aliases' } as const, {})
+// The menu's agent and filter switches, kept with the session's record for its next run;
+// a session that never flipped one starts with the agent kept out and picks filtering.
 const agentMayCreate = atom({ plugin: 'thread-chat', key: 'agentMayCreate' } as const, false)
-// Held for the session as the agent switch is, never kept on disk: a new run filters again.
 const filtersChat = atom({ plugin: 'thread-chat', key: 'filtersChat' } as const, true)
 const snaps = atom({ plugin: 'thread-chat', key: 'snaps' } as const, {})
 const recent = atom({ plugin: 'thread-chat', key: 'recent' } as const, [])
@@ -144,11 +145,19 @@ async function offerCreateTool($: EngineInterface) {
   }
 }
 
-// Flips whether the agent may start threads, offering it the tool as it comes on.
+// Flips whether the agent may start threads, offering it the tool as it comes on, and
+// keeps the switch for the session's next run.
 async function flipAgentSwitch($: EngineInterface) {
   let now = false
   await update($, agentMayCreate, may => (now = !may))
   if (now) await offerCreateTool($)
+  await save($)
+}
+
+// Flips whether picking threads filters the chat, and keeps it for the session's next run.
+async function flipFilter($: EngineInterface) {
+  await update($, filtersChat, is => !is)
+  await save($)
 }
 
 // Turns threads on or off, as /threads does, and keeps the switch for the session's
@@ -166,7 +175,7 @@ async function flipThreads($: EngineInterface): Promise<boolean> {
 async function flipMenuSwitch($: EngineInterface, key: string) {
   if (key === THREADS_SWITCH) await flipThreads($)
   else if (key === AGENT_SWITCH && (await read($, isOn))) await flipAgentSwitch($)
-  else if (key === FILTER_SWITCH && (await read($, isOn))) await update($, filtersChat, is => !is)
+  else if (key === FILTER_SWITCH && (await read($, isOn))) await flipFilter($)
 }
 
 // What a heading means, by one rule for sending and drawing alike: `+name` a new
@@ -270,6 +279,9 @@ const storeKey = (sessionId: string) => `session:${sessionId}`
 type Saved = {
   // absent from a record kept before /threads
   isOn: boolean
+  // the menu's agent and filter switches; absent from a record kept before they were kept
+  agentMayCreate?: boolean
+  filtersChat?: boolean
   threads: Thread[]
   aliases: Record<string, string>
   snaps: Record<string, string>
@@ -281,10 +293,12 @@ type Saved = {
   briefed: Brief | null
 }
 
-// Keeps the session's switch, threads, merges, recorded meanings and latest rows for its next run.
+// Keeps the session's switches, threads, merges, recorded meanings and latest rows for its next run.
 async function save($: EngineInterface) {
   const saved: Saved = {
     isOn: await read($, isOn),
+    agentMayCreate: await read($, agentMayCreate),
+    filtersChat: await read($, filtersChat),
     threads: await read($, threads),
     aliases: await read($, aliases),
     snaps: await read($, snaps),
@@ -1901,7 +1915,13 @@ export const register: Register = on => {
     // Threads held on (a reload) stay on; else they are as the session, or the one it
     // came from, kept them. A record kept before /threads, or none, is on where it used them.
     if (!(await read($, isOn)) && (saved?.isOn ?? (await wasInUse($)))) await update($, isOn, () => true)
-    // The agent switch outlives a reload of this code: with threads on, its tool is offered again.
+    // The agent and filter switches are as the record kept them (each flip keeps them, so
+    // a reload's held ones match it); a record without them leaves them as they stand.
+    const keptMayCreate = saved?.agentMayCreate
+    if (keptMayCreate !== undefined) await update($, agentMayCreate, () => keptMayCreate)
+    const keptFilters = saved?.filtersChat
+    if (keptFilters !== undefined) await update($, filtersChat, () => keptFilters)
+    // With threads and the agent switch on, after a reload or a restart, its tool is offered again.
     if ((await read($, isOn)) && (await read($, agentMayCreate))) await offerCreateTool($)
     // A session with threads on keeps the rows it took up from the one it came from;
     // one with them off keeps none on disk. Its record is saved all the same: it stops

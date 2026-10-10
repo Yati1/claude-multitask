@@ -36,6 +36,7 @@ Notable changes to the thread-chat, multitask and react mods. The format is base
 - Fixed issue where thread-chat's thread view went blank, without saying why, when it failed to draw.
 - Fixed issue where thread-chat's thread view drew nothing once it held a dozen or so pasted pictures.
 - Fixed issue where multitask's Thoughts pane showed only the end of a long report when opened.
+- Fixed issue where thread-chat's `Agent may start threads` switch turned off when a chat restarted.
 
 ## 0.1.0 - 2026-10-09
 
