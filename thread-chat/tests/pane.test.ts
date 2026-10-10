@@ -2,9 +2,10 @@ import type { On, SessionMessage } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 
-import type { ViewRow } from '../types'
+import type { ViewImage, ViewRow } from '../types'
 import { PALETTE } from '../hooks/parse'
 import {
+  PICTURE_CHARS_DRAWN,
   chunksOf,
   dataFolderOf,
   fingerprintOf,
@@ -12,6 +13,7 @@ import {
   isNearEnd,
   markOf,
   marksOf,
+  picturesNear,
   rowsOfChunks,
   rowsUpTo,
   viewMoveOf,
@@ -535,7 +537,7 @@ test('/thread-view trace tells how the view was last opened and drawn, step by s
   await pane.drawn()
   const text = await trace()
   expect(text).toContain('open answered: {"isPlaced":true}')
-  expect(text).toMatch(/: \d+ms returned a Box, 0 picture cards with 0 characters of picture data/)
+  expect(text).toMatch(/: \d+ms returned a Box near 1\.00: 0 picture cards, 0 with 0 characters of picture data/)
   expect(text).toMatch(/\d+ms threads read: 1, picked 0/)
 })
 
@@ -1056,6 +1058,63 @@ test('the pictures pasted with a message draw above it from their files: thumbna
     }
     await pane.unmount()
   }
+})
+
+// A PNG of the given size in pixels whose file comes to `chars` base64 characters.
+const pngOfChars = (width: number, height: number, chars: number) => {
+  const word = (n: number) => String.fromCharCode((n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255)
+  const head = `\x89PNG\r\n\x1a\n${word(13)}IHDR${word(width)}${word(height)}\x08\x06\x00\x00\x00`
+  return btoa(head + '\x00'.repeat(Math.floor((chars * 3) / 4) - head.length))
+}
+
+// The desktop draws nothing of a view whose drawing holds too much picture data, saying
+// only that the plugin has not drawn there: the view went blank once it drew a dozen.
+test('the view draws the pictures nearest its window within what the desktop draws, the rest as empty cards', async ($, on) => {
+  const { bytes } = engine(on)
+  waitNot(on)
+  await flipThreads($)
+  const shot = pngOfChars(400, 300, 24_000)
+  const append = (uuid: string, content: Block[], isMeta?: true) =>
+    $.session
+      .append({ message: { type: 'user', role: 'user', content, ...(isMeta && { isMeta }) }, door: 'prompt', origin: { kind: 'composer' }, uuid })
+      .catch(() => undefined)
+  for (let i = 0; i < 6; i++) {
+    bytes[`/pics/${i}.png`] = shot
+    await append(`p${i}`, [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: shot } }, { type: 'text', text: `look ${i}` }])
+    await append(`m${i}`, [{ type: 'text', text: `[Image: source: C:\\pics\\${i}.png]` }], true)
+  }
+
+  const pane = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...PANE })
+  // at its end: the newest three fit, oldest first in the view
+  expect(await picturesIn(pane)).toEqual([
+    '200x150 empty',
+    '200x150 empty',
+    '200x150 empty',
+    '200x150 image/png',
+    '200x150 image/png',
+    '200x150 image/png',
+  ])
+  const drawn = (await pane.findAll({ type: 'Svg' })).map(svg => /base64,([^"]*)"/.exec(String(svg.props.source))?.[1]?.length ?? 0)
+  expect(drawn.reduce((sum, n) => sum + n, 0)).toBeLessThanOrEqual(PICTURE_CHARS_DRAWN)
+})
+
+test('the pictures nearest the window draw first, and those past the room are not read', () => {
+  const images = [0, 1, 2, 3].map(i => ({ type: 'image/png', path: `C:\\pics\\${i}.png` }))
+  const sections = images.map(image => [image])
+  const read: string[] = []
+  const pictureOf = (image: ViewImage) => {
+    read.push(image.path ?? '')
+    return { type: 'image/png', data: 'A'.repeat(40) }
+  }
+  const at = (near: number) => {
+    read.length = 0
+    const drawn = picturesNear(sections, near, 80, pictureOf)
+    return images.map(image => (drawn.get(image) === 'loading' ? 'empty' : 'drawn'))
+  }
+  expect(at(1)).toEqual(['empty', 'empty', 'drawn', 'drawn'])
+  expect(read).toEqual(['C:\\pics\\3.png', 'C:\\pics\\2.png'])
+  expect(at(0)).toEqual(['drawn', 'drawn', 'empty', 'empty'])
+  expect(at(1 / 3)).toEqual(['empty', 'drawn', 'drawn', 'empty'])
 })
 
 test('pictures kept by an earlier version draw from their bytes; files a repair noted in the kept rows are taken up', async ($, on) => {

@@ -18,7 +18,6 @@ import {
 } from './parse'
 import type { RunOn, Section } from './parse'
 import {
-  IMAGE_DATA_MAX,
   chunksOf,
   dataFolderOf,
   drawView,
@@ -1197,6 +1196,15 @@ let viewReturn: number | undefined
 let viewReturning: number | undefined
 // The person's moves of the window so far: one made while a move back waits stands.
 let personMoves = 0
+// The rows of the view's tree as its window last moved over it; none before it moved.
+let viewContentRows: number | undefined
+
+// Where the window stands over the thread view, `offset` rows down: 0 at its top, 1 at its
+// end. At its end while it keeps to the end, or before its rows are known.
+function viewNearOf(offset: number, bodyRows: number): number {
+  if (viewPlace === 'end' || viewContentRows === undefined || viewContentRows <= bodyRows) return 1
+  return Math.min(1, Math.max(0, (offset + bodyRows / 2) / viewContentRows))
+}
 
 // How long a move back waits after a surface draws the view afresh: for it to measure
 // its rows, and for a move of the person's it drew for to be seen first.
@@ -1339,6 +1347,22 @@ function traceView(start: string): { step: (what: string) => void; end: (how: st
   return { step, end: how => (trace.end = `${Date.now() - began}ms ${how}`) }
 }
 
+// The picture cards a drawing of the view holds, those with bytes, and their bytes' length.
+function picturesIn(node: unknown, counts = { cards: 0, filled: 0, chars: 0 }) {
+  if (typeof node !== 'object' || node === null) return counts
+  const { type, props, children } = node as { type?: unknown; props?: { alt?: unknown; source?: unknown }; children?: unknown[] }
+  if (type === 'Svg' && props?.alt === 'Pasted image') {
+    counts.cards += 1
+    const data = /base64,([^"]*)"/.exec(String(props.source))?.[1]
+    if (data !== undefined) {
+      counts.filled += 1
+      counts.chars += data.length
+    }
+  }
+  for (const child of children ?? []) picturesIn(child, counts)
+  return counts
+}
+
 const viewTraceText = () =>
   viewTraces.length === 0
     ? 'The thread view has not been drawn since thread-chat last loaded.'
@@ -1432,10 +1456,12 @@ const pictures = new Map<string, Picture | 'loading' | 'failed'>()
 const pictureQueue: string[] = []
 let isReadingPictures = false
 
-// A picture too large to draw is drawn from a smaller copy: a JPEG at most this many
-// pixels across and down (twice a card's bounds, sharp on a dense screen), of this quality.
-const THUMB_BOX = { width: 400, height: 600 }
-const THUMB_QUALITY = 80
+// A picture whose file's base64 is longer than this is drawn from a smaller copy, so
+// several fit in what one drawing of the view holds (PICTURE_CHARS_DRAWN): a JPEG at
+// most this many pixels across and down (a card's bounds and a fifth), of this quality.
+const PICTURE_FILE_CHARS = 40_000
+const THUMB_BOX = { width: 240, height: 360 }
+const THUMB_QUALITY = 70
 // The pictures one run of PowerShell makes smaller, by the characters their job list takes:
 // it goes in an environment variable, which takes 32767 at most.
 const THUMB_JOBS_CHARS = 16_000
@@ -1488,11 +1514,12 @@ async function readPictures($: EngineInterface) {
           pictures.set(path, 'failed')
           continue
         }
-        if (Math.ceil(stat.size / 3) * 4 <= IMAGE_DATA_MAX) {
+        if (Math.ceil(stat.size / 3) * 4 <= PICTURE_FILE_CHARS) {
           pictures.set(path, (await pictureFile($, path)) ?? 'failed')
           continue
         }
-        const thumb = folder === undefined ? undefined : `${folder}/thumbs/${thumbNameOf(path, stat.size, stat.mtimeMs)}`
+        const name = thumbNameOf(path, stat.size, stat.mtimeMs, THUMB_BOX.width)
+        const thumb = folder === undefined ? undefined : `${folder}/thumbs/${name}`
         const made = thumb === undefined ? undefined : await pictureFile($, thumb)
         if (thumb === undefined || made !== undefined || !canResize) pictures.set(path, made ?? 'failed')
         else toMake.push({ from: path, to: thumb })
@@ -1936,6 +1963,7 @@ export const register: Register = on => {
     }
     const result = await next(move)
     if (result.deny === undefined) viewPlace = viewPlaceOf(move)
+    viewContentRows = move.contentRows
     return result
   })
 
@@ -1972,8 +2000,7 @@ export const register: Register = on => {
       const read_ = await read($, picturesRead)
       step(`pictures read so far: ${read_}`)
       const inputs = await viewInputs($, step)
-      let cards = 0
-      let pictureChars = 0
+      const near = viewNearOf(e.props.scroll.offset, e.props.scroll.bodyRows)
       const drawn = drawView(
         {
           surface: e.surface,
@@ -1983,17 +2010,14 @@ export const register: Register = on => {
           tagRow: thread => drawTagRow($, e, [drawTag($, e, thread, isOnRightOf(e.surface) ? 'end' : 'start')]),
           // its text is markdown, so its tag is not inset, as on the chat's markdown parts
           threadPart: (thread, body) => drawThreadPart($, e, thread, drawTag($, e, thread, 'start'), body),
-          picture: image => {
-            const picture = pictureFor($, image)
-            cards += 1
-            if (picture !== undefined && picture !== 'loading') pictureChars += picture.data.length
-            return picture
-          },
+          picture: image => pictureFor($, image),
+          near,
         },
         inputs,
         viewDeps,
       )
-      end(`returned a ${(drawn as { type?: string }).type ?? 'tree'}, ${cards} picture cards with ${pictureChars} characters of picture data`)
+      const { cards, filled, chars } = picturesIn(drawn)
+      end(`returned a ${(drawn as { type?: string }).type ?? 'tree'} near ${near.toFixed(2)}: ${cards} picture cards, ${filled} with ${chars} characters of picture data`)
       return drawn
     } catch (error) {
       end(`threw ${String(error)}`)
