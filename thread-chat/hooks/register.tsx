@@ -2216,8 +2216,9 @@ const PICKER_TINT = '26'
 
 // The desktop's tint has the picker's own small rounded corners. Only a border gives a Box
 // corners there, so it has one, clear, and that border's padding put back to a little room
-// either side and none above or below: the desktop sets the picker's height.
-const PICKER_TINT_SHAPE = { borderStyle: 'single', borderColor: '#00000000', paddingX: 0.5, paddingY: 0 }
+// on the left for the dot and none elsewhere, so past the picker the tint shows only the
+// border's width, the same on the right as above and below: the desktop sets the height.
+const PICKER_TINT_SHAPE = { borderStyle: 'single', borderColor: '#00000000', paddingLeft: 0.5, paddingRight: 0, paddingY: 0 }
 
 // The desktop's mark before the picker, 8px across: a dot of the picked thread's colour,
 // or with none a ring in the dimmed text colour. A picture, so the band centres it on the

@@ -1135,20 +1135,21 @@ test('the picker is a Select of the threads and "No thread", its face the picked
   // the desktop's tint keeps its shape, clear, with no thread, so picking one moves nothing
   const shapeOf = async () => {
     const props = pathTo(await desktop.drawn(), n => n.props?.key === PICKER)?.at(-2)?.props
-    return [props?.borderStyle, props?.borderColor, props?.paddingX, props?.paddingY]
+    return [props?.borderStyle, props?.borderColor, props?.paddingLeft, props?.paddingRight, props?.paddingY]
   }
   const unpicked = await shapeOf()
-  expect(unpicked).toEqual(['single', '#00000000', 0.5, 0])
+  expect(unpicked).toEqual(['single', '#00000000', 0.5, 0, 0])
   await terminal.select({ key: PICKER, value: 'thread:perf' })
   expect(await faces()).toEqual(['perf', 'perf'])
   expect(await lookOf(terminal)).toEqual({ mark: { cell: PALETTE[1], text: ' ' }, tint: undefined, flexShrink: 0 })
   expect(await lookOf(desktop)).toEqual({ mark: { dot: PALETTE[1] }, tint: `${PALETTE[1]}26`, flexShrink: 0 })
   expect(await shapeOf()).toEqual(unpicked)
-  // the tint has rounded corners from a clear border, keeps a little room either side and
-  // no more, and leaves the height to the desktop, which sets the picker's own; the dot is
+  // the tint has rounded corners from a clear border, keeps a little room on the left for
+  // the dot and none on the right, and leaves the height to the desktop, which sets the picker's own; the dot is
   // a fixed size, so the desktop centres it on the picker
   const tinted = pathTo(await desktop.drawn(), n => n.props?.key === PICKER)?.at(-2)
-  expect(tinted?.props).toMatchObject({ borderStyle: 'single', borderColor: '#00000000', paddingX: 0.5, paddingY: 0 })
+  expect(tinted?.props).toMatchObject({ borderStyle: 'single', borderColor: '#00000000', paddingLeft: 0.5, paddingRight: 0, paddingY: 0 })
+  expect(tinted?.props?.paddingX).toBeUndefined()
   expect(tinted?.props?.height).toBeUndefined()
   expect(tinted?.props?.alignItems).toBe('center')
   expect((tinted?.children as Drawn[] | undefined)?.[0]?.props).toMatchObject({ width: 8, height: 8, alt: 'perf thread' })
