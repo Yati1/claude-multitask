@@ -991,11 +991,19 @@ function drawMenuRow($: EngineInterface, elements: Elements['desktop'], s: MenuS
 // The menu's row that opens the thread view, as /thread-view does; only while threads are on.
 const VIEW_ROW = 'Open thread view'
 
+// The fill of the desktop's Select field: white at 5% over the band in the dark theme
+// (no theme colour names it). The light theme's is white at 50%, over a near-white band.
+const FIELD_FILL = 'rgba(255,255,255,0.05)'
+// The Select's 6px either side of its text and caret, from its outer edge: 5px inside
+// the Box's 1px border, in the band's ch.
+const FIELD_PADDING = 0.7
+
 // The band's "Threads" menu. On the desktop, a button drawn as the desktop draws a
-// Select: the field's fill and its ring, stronger under the pointer, the radius, one
-// line high, the caret. The keyed Box it is holds the switches, then the thread view's
-// row, in a card the desktop lifts over the band while the pointer is on the button or
-// the card, or the focus is in them. Elsewhere, a Button that shows or hides them beside it.
+// Select (as Multitask's dropdown beside it): the field's fill and its ring, stronger
+// under the pointer, the radius, the padding, one line high, the caret. The keyed Box it
+// is holds the switches, then the thread view's row, in a card the desktop lifts over the
+// band while the pointer is on the button or the card, or the focus is in them.
+// Elsewhere, a Button that shows or hides them beside it.
 async function drawMenu($: EngineInterface, e: Parameters<EngineInterface['ui']['resolve']>[0]): Promise<RenderElement> {
   const switches = await menuSwitches($)
   const isThreadsOn = await read($, isOn)
@@ -1008,10 +1016,10 @@ async function drawMenu($: EngineInterface, e: Parameters<EngineInterface['ui'][
         flexDirection="row"
         alignItems="center"
         height={1}
-        paddingX={1}
+        paddingX={FIELD_PADDING}
         paddingY={0}
         borderStyle="single"
-        backgroundColor="userMessageBackground"
+        backgroundColor={FIELD_FILL}
         hover={{ borderColor: 'promptBorder' }}
       >
         <Text color="text">Threads</Text>
