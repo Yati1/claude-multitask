@@ -7,10 +7,13 @@ Notable changes to the thread-chat, multitask and react mods. The format is base
 ### Changed
 
 - Changed multitask's thoughts to take four main colours in turn, dimming an ended thought's when reused.
+- Changed a done thought's mark in multitask's Thoughts pane to a solid dot in its colour.
+- Changed multitask's Thoughts pane to list the 16 latest ended thoughts, the rest behind `N more`.
 
 ### Fixed
 
 - Fixed issue where thread-chat left a reply quote unthreaded when a thread heading followed it.
+- Fixed issue where multitask's Thoughts pane lost its thoughts when the chat was restarted.
 
 ## 0.2.0 - 2026-10-10
 

@@ -4,7 +4,8 @@ import type { Thought, ThoughtStatus } from '../types'
 import { oneLine } from './prompts'
 
 // The Thoughts pane: running thoughts first, each a card in its colour's border; the
-// rest one line each, the one most recently ended first, until opened. A card sets
+// rest one line each, the one most recently ended first, until opened, the
+// ENDED_SHOWN most recently ended alone until `N more` shows them all. A card sets
 // each kind of line apart by a label at its left: the task, the progress notes (the
 // latest at full strength with its age, in the warning colour once the thought has
 // been quiet a while), the report, and the messages queued for its turn's end. A card's
@@ -15,7 +16,7 @@ import { oneLine } from './prompts'
 // with. A plugin hooks an event once without a matcher, and the engine follows `$`
 // only into functions of the file that uses it.
 
-const GLYPH: Record<ThoughtStatus, string> = { running: '◐', idle: '○', stopped: '×', failed: '!' }
+const GLYPH: Record<ThoughtStatus, string> = { running: '◐', idle: '●', stopped: '×', failed: '!' }
 
 // What each status reads as: a turn that ended is done, though a message resumes it.
 const STATUS_WORD: Record<ThoughtStatus, string> = { running: 'running', idle: 'done', stopped: 'stopped', failed: 'failed' }
@@ -27,6 +28,10 @@ const RANK: Record<ThoughtStatus, number> = { running: 0, failed: 1, idle: 2, st
 // How long a running thought may go without a note, or since its turn started, before
 // its age is drawn in the warning colour.
 export const QUIET_MS = 5 * 60_000
+
+// How many thoughts that are not running the pane lists, the most recently ended, until
+// `N more` shows them all.
+export const ENDED_SHOWN = 16
 
 // Notes a card shows, at most: folded, and opened.
 const NOTES_FOLDED = 3
@@ -83,6 +88,16 @@ export function orderOf(list: readonly Thought[]): Thought[] {
     .map(({ t }) => t)
 }
 
+// The thoughts not running beyond the ENDED_SHOWN most recently ended, by id, but those
+// opened: what the pane lists only once `N more` is pressed.
+export function endedBeyond(list: readonly Thought[], opened: readonly string[]): Set<string> {
+  const ended = list
+    .map((t, i) => ({ t, i }))
+    .filter(({ t }) => t.status !== 'running')
+    .sort((a, b) => (b.t.endedAt ?? 0) - (a.t.endedAt ?? 0) || b.i - a.i)
+  return new Set(ended.slice(ENDED_SHOWN).map(({ t }) => t.id).filter(id => !opened.includes(id)))
+}
+
 // Whether a thought's report is shown: once it has one and has stopped working, and
 // unless it wrote notes since (an old report would read as the result of new work).
 export const showsReport = (t: Thought) => t.lastText !== '' && t.status !== 'running' && t.notedSinceReport !== true
@@ -118,6 +133,9 @@ export type ThoughtsDrawing = {
   tellingTo: string
   toggleTell: (id: string) => void
   tell: (id: string, text: string) => void
+  // whether every thought not running is listed (`N more` pressed), and what toggles it
+  showsAllEnded: boolean
+  toggleShowsAllEnded: () => void
 }
 
 // The field a card's thought is told something in, where the surface draws one (the
@@ -128,9 +146,10 @@ function tellFieldOf(draw: ThoughtsDrawing) {
   return draw.ui.Input
 }
 
-// The pane's body: a line of how many thoughts there are, by status, then each one.
+// The pane's body: a line of how many thoughts there are, by status, then each one, and,
+// with more ended than ENDED_SHOWN, `N more` (or `less`) at the end.
 export function drawThoughts(draw: ThoughtsDrawing, list: readonly Thought[]): RenderElement {
-  const { Box, Text } = draw.ui
+  const { Box, Text, Button } = draw.ui
   const counts = (['running', 'failed', 'idle', 'stopped'] as const)
     .map(status => ({ status, count: list.filter(t => t.status === status).length }))
     .filter(c => c.count > 0)
@@ -140,6 +159,8 @@ export function drawThoughts(draw: ThoughtsDrawing, list: readonly Thought[]): R
   // running thought has taken it, so the two are not mistaken for each other.
   const held = new Set(list.filter(t => t.status === 'running').map(t => t.color))
   const tintOf = (t: Thought): Tint => ({ color: t.color, ...(t.status !== 'running' && held.has(t.color) && { dimColor: true }) })
+  const beyond = endedBeyond(list, draw.opened)
+  const shown = draw.showsAllEnded ? orderOf(list) : orderOf(list).filter(t => !beyond.has(t.id))
   return (
     <Box flexDirection="column">
       <Box marginBottom={1}>
@@ -147,8 +168,19 @@ export function drawThoughts(draw: ThoughtsDrawing, list: readonly Thought[]): R
           Multitask is {draw.isOn ? 'on' : 'off'} · {summary}
         </Text>
       </Box>
-      {orderOf(list).map(t =>
+      {shown.map(t =>
         t.status !== 'running' && !draw.opened.includes(t.id) ? drawLine(draw, t, tintOf(t)) : drawCard(draw, t, tintOf(t)),
+      )}
+      {beyond.size > 0 && (
+        <Box key="ended-more" flexDirection="row">
+          <Button
+            key="more-ended"
+            plain
+            dimColor
+            label={draw.showsAllEnded ? 'less' : `${beyond.size} more`}
+            onPress={() => draw.toggleShowsAllEnded()}
+          />
+        </Box>
       )}
     </Box>
   )

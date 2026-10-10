@@ -10,7 +10,7 @@ import type {
   TurnCompleteReason,
 } from 'claude-code'
 
-import type { Thought, ThoughtStatus, Update } from '../types'
+import type { KeptThoughts, Thought, ThoughtStatus, Update } from '../types'
 import type { HookStream, TurnStepChunk, TurnStepResult } from 'claude-code'
 import {
   NO_RESPONSE,
@@ -48,6 +48,7 @@ const heard = atom({ plugin: 'multitask', key: 'heard' } as const, {})
 const paneTick = atom({ plugin: 'multitask', key: 'paneTick' } as const, 0)
 const tellingTo = atom({ plugin: 'multitask', key: 'tellingTo' } as const, '')
 const colorTurn = atom({ plugin: 'multitask', key: 'colorTurn' } as const, 0)
+const showsAllEnded = atom({ plugin: 'multitask', key: 'showsAllEnded' } as const, false)
 
 const PANE = 'multitask-thoughts'
 // Multitask's dropdown in the band. Its face is the mode the chat is in, Multitask or
@@ -99,6 +100,21 @@ const NOTE_MAX = 500
 // How long the engine's notice that a thought's turn ended waits, at most, for that end
 // to be settled.
 const NOTICE_WAIT_MS = 1000
+// How long after a change to the thoughts they are kept in the store, changes meanwhile
+// going with it. A progress note alone keeps nothing: it goes with the next change, or as
+// the session ends.
+const KEEP_MS = 2000
+// What of a session's thoughts the store keeps: those running, and of the rest the most
+// recently ended, to this many in all and this many characters of JSON; each one's task and
+// report cut to this length.
+const THOUGHTS_KEPT = 200
+const THOUGHTS_KEPT_CHARS = 256 * 1024
+const TEXT_KEPT = 4000
+// Of the sessions whose thoughts the store keeps, those kept last, to this many and this
+// many characters of JSON in all; the rest are dropped as a session starts. The store
+// holds 4 MiB at most, the switches of every session included.
+const SESSIONS_KEPT = 20
+const SESSIONS_KEPT_CHARS = 2 * 1024 * 1024
 // What marks the engine's own hand-back of an agent's final report to the session that
 // started it ("Another Claude session sent a message: ... [Subagent hand-back] ...").
 const HANDBACK = '[Subagent hand-back]'
@@ -109,6 +125,8 @@ const OFF = {
 const NOT_VOICE = { deny: 'Only the voice starts, steers or lists thoughts; this call came from another agent.' }
 
 let flushTimer: Timer | undefined
+// What keeps the thoughts in the store KEEP_MS after a change, while one is pending.
+let keepTimer: Timer | undefined
 // What draws the Thoughts pane's ages afresh, AGE_TICK_MS after it was last drawn.
 let ageTick: Timer | undefined
 const AGE_TICK_MS = 60_000
@@ -307,10 +325,12 @@ async function updateThoughts($: EngineInterface, fn: (list: readonly Thought[],
     })
   })
   if (turn !== start) await update($, colorTurn, () => turn)
+  scheduleKeep($)
 }
 
 async function patchThought($: EngineInterface, id: string, fn: (t: Thought) => Thought) {
   await update($, thoughts, list => list.map(t => (t.id === id ? fn(t) : t)))
+  scheduleKeep($)
 }
 
 // Patches a thought as patchThought does, for a change that may pick it a colour.
@@ -387,26 +407,133 @@ async function keepSwitch($: EngineInterface) {
   }
 }
 
-// The switch a session kept, or for one rewound or forked, which starts under a new id
-// with copies of the messages it kept, that of the session it came from: the kept one
-// that knows the most of its messages, else, of those near that, the one kept last (the
-// one it was just in). None when no session is known.
-async function keptSwitch($: EngineInterface): Promise<boolean | undefined> {
-  const own = (await $.store.get(switchKey(await $.session.id()))) as Partial<KeptSwitch> | undefined
-  if (own !== undefined) return own.isOn === true
+// The session whose kept switch and thoughts a session takes up: its own, once it has kept
+// its switch; for one rewound or forked, which starts under a new id with copies of the
+// messages it kept, the session it came from: the kept one that knows the most of its
+// messages, else, of those near that, the one kept last (the one it was just in). None
+// when no session is known.
+async function keptSession($: EngineInterface): Promise<string | undefined> {
+  const own = await $.session.id()
+  if ((await $.store.get(switchKey(own))) !== undefined) return own
   const mine = new Set(marksOf(await $.session.messages()))
   if (mine.size === 0) return undefined
-  const scored: { kept: Partial<KeptSwitch>; score: number }[] = []
+  const scored: { id: string; at: number; score: number }[] = []
   for (const key of await $.store.keys()) {
     if (!key.startsWith('session:')) continue
     const kept = ((await $.store.get(key)) ?? {}) as Partial<KeptSwitch>
     const score = new Set((kept.marks ?? []).filter(mark => mine.has(mark))).size
-    if (score > 0) scored.push({ kept, score })
+    if (score > 0) scored.push({ id: key.slice('session:'.length), at: kept.at ?? 0, score })
   }
   const best = Math.max(0, ...scored.map(s => s.score))
   if (best < 3) return undefined
-  const near = scored.filter(s => s.score * 2 > best).sort((a, b) => (b.kept.at ?? 0) - (a.kept.at ?? 0))
-  return near[0]?.kept.isOn === true
+  return scored.filter(s => s.score * 2 > best).sort((a, b) => b.at - a.at)[0]?.id
+}
+
+// Whether the switch the session `from` kept is on.
+async function keptSwitch($: EngineInterface, from: string): Promise<boolean> {
+  return ((await $.store.get(switchKey(from))) as Partial<KeptSwitch> | undefined)?.isOn === true
+}
+
+// Where a session's thoughts are kept between runs of the app (KeptThoughts).
+const thoughtsKey = (sessionId: string) => `thoughts:${sessionId}`
+
+// The thoughts as the store keeps them: each one's task and report cut to TEXT_KEPT, and,
+// past THOUGHTS_KEPT of them or THOUGHTS_KEPT_CHARS of JSON, those that ended longest ago
+// dropped; running ones are never dropped.
+function keptList(list: readonly Thought[]): Thought[] {
+  const all = list.map((t, i) => {
+    const kept = { ...t, task: t.task.slice(0, TEXT_KEPT), lastText: t.lastText.slice(0, TEXT_KEPT) }
+    return { t: kept, i, chars: JSON.stringify(kept).length + 1 }
+  })
+  let count = all.length
+  let chars = all.reduce((n, one) => n + one.chars, 0)
+  const oldestFirst = all
+    .filter(one => one.t.status !== 'running')
+    .sort((a, b) => (a.t.endedAt ?? 0) - (b.t.endedAt ?? 0) || a.i - b.i)
+  const dropped = new Set<number>()
+  for (const one of oldestFirst) {
+    if (count <= THOUGHTS_KEPT && chars <= THOUGHTS_KEPT_CHARS) break
+    dropped.add(one.i)
+    count--
+    chars -= one.chars
+  }
+  return all.filter(one => !dropped.has(one.i)).map(one => one.t)
+}
+
+// Keeps the thoughts in the store under the session's id (or `sessionId`), for its next
+// run. A session with none keeps nothing. Best effort: a store that cannot be written
+// (it holds 4 MiB at most) keeps what it kept.
+async function keepThoughts($: EngineInterface, sessionId?: string) {
+  keepTimer?.cancel()
+  keepTimer = undefined
+  try {
+    const list = await read($, thoughts)
+    if (list.length === 0) return
+    const kept: KeptThoughts = { at: (await timeNow($)) ?? 0, thoughts: keptList(list) }
+    await $.store.set(thoughtsKey(sessionId ?? (await $.session.id())), kept)
+  } catch {
+    // kept as it was
+  }
+}
+
+// Keeps the thoughts KEEP_MS from now, unless that is pending already: changes in a burst,
+// or one after another without pause, are kept together, at most each KEEP_MS.
+function scheduleKeep($: EngineInterface) {
+  if (keepTimer !== undefined) return
+  keepTimer = $.clock.after(KEEP_MS, () => {
+    keepTimer = undefined
+    void keepThoughts($)
+  })
+}
+
+// Takes up the thoughts the session `from` kept, unless the session has thoughts already
+// (this code was reloaded, which state outlives). A thought that was running when they were
+// kept is running still only if its agent is; else its turn ended with the run that held it,
+// and what waited for that end falls due, as when a turn ends (settleThought), though the
+// voice is not told it ended. The voice has heard of each as it is taken up, so what is new
+// from the thoughts tells it only what changes after.
+async function takeUpThoughts($: EngineInterface, from: string) {
+  if ((await read($, thoughts)).length > 0) return
+  const kept = (await $.store.get(thoughtsKey(from))) as Partial<KeptThoughts> | undefined
+  const list = Array.isArray(kept?.thoughts) ? kept.thoughts : []
+  if (list.length === 0) return
+  const agents = await $.agent.list()
+  const endedAt = kept?.at ?? (await timeNow($))
+  const taken = list.map((t): Thought => {
+    if (t.status !== 'running') return t
+    const status = statusOf(agents.find(a => a.id === t.id)?.status ?? 'completed')
+    if (status === 'running') return t
+    const queued = status === 'stopped' ? [] : withInterruption(t)
+    return { ...t, status, turnId: null, queued, interruptWith: null, isHandOverDue: queued.length > 0, endedAt }
+  })
+  await update($, thoughts, now => (now.length > 0 ? now : taken))
+  await update($, heard, was => ({ ...Object.fromEntries(taken.map(t => [t.id, heardOf(t)])), ...was }))
+  if (await read($, isOn)) for (const t of taken) if (isDue(t)) scheduleDueWake($, t.id, 0)
+  // Under this session's id too, for its next run, should it have come from another.
+  if (from !== (await $.session.id())) await keepThoughts($)
+}
+
+// Drops from the store the thoughts of sessions kept longest ago, past SESSIONS_KEPT of
+// them or SESSIONS_KEPT_CHARS of JSON, this session's own aside. Best effort.
+async function dropOldThoughts($: EngineInterface) {
+  try {
+    const own = thoughtsKey(await $.session.id())
+    const others: { key: string; at: number; chars: number }[] = []
+    for (const key of await $.store.keys()) {
+      if (!key.startsWith('thoughts:') || key === own) continue
+      const kept = await $.store.get(key)
+      const at = (kept as Partial<KeptThoughts> | undefined)?.at
+      others.push({ key, at: typeof at === 'number' ? at : 0, chars: JSON.stringify(kept ?? null).length })
+    }
+    others.sort((a, b) => b.at - a.at)
+    let chars = 0
+    for (const [i, one] of others.entries()) {
+      chars += one.chars
+      if (i >= SESSIONS_KEPT || chars > SESSIONS_KEPT_CHARS) await $.store.delete(one.key)
+    }
+  } catch {
+    // left as they were
+  }
 }
 
 function scheduleFlush($: EngineInterface) {
@@ -447,12 +574,14 @@ async function noteThoughtSaid($: EngineInterface, id: string, text: string) {
   // The turn's report, should its row land after the turn ended, has been relayed already.
   if (t === undefined || text === '' || text === t.lastText) return
   const now = await timeNow($)
-  await patchThought($, id, one => ({
-    ...one,
-    notes: [...(one.notes ?? []), text.slice(0, NOTE_MAX)].slice(-NOTES_KEPT),
-    notedSinceReport: true,
-    notedAt: now,
-  }))
+  // Not through patchThought: a note alone is not kept in the store straight away (KEEP_MS).
+  await update($, thoughts, list =>
+    list.map(one =>
+      one.id !== id
+        ? one
+        : { ...one, notes: [...(one.notes ?? []), text.slice(0, NOTE_MAX)].slice(-NOTES_KEPT), notedSinceReport: true, notedAt: now },
+    ),
+  )
   if (RELAY_NOTES) await relay($, list => [...list, { thought: t.name, text }])
 }
 
@@ -917,15 +1046,30 @@ export const register: Register = (on, options) => {
       prompt: THOUGHT,
       disallowedTools: Object.values(TOOL),
     })
-    // A restarted or resumed session takes up the switch it kept; a rewound or forked
-    // one, that of the session it came from. One that holds it on (a reload) stays on.
-    if ((await keptSwitch($).catch(() => undefined)) === true) await update($, isOn, () => true)
+    // A restarted or resumed session takes up the switch and the thoughts it kept; a
+    // rewound or forked one, those of the session it came from. Found before the switch
+    // is kept below, which would make the session its own. One that holds the switch on
+    // or has thoughts (a reload of this code, which state outlives) keeps them.
+    const from = await keptSession($).catch(() => undefined)
+    if (from !== undefined) {
+      if (await keptSwitch($, from).catch(() => false)) await update($, isOn, () => true)
+      await takeUpThoughts($, from).catch(() => undefined)
+    }
     await keepSwitch($)
-    // The switch and the thoughts outlive a reload of this code or a restart of the
-    // session: the tools they had are offered again. Never switched on, the session gets none.
+    await dropOldThoughts($)
+    // So the switch and the thoughts outlive a reload of this code (state) and a restart of
+    // the session (the store): the tools they had are offered again. Never switched on, the
+    // session gets none.
     if ((await read($, isOn)) || (await read($, thoughts)).length > 0) await offerVoiceTools($)
     await $.command.register({ name: 'multitask', description: 'Turn Multitask on or off' })
     await $.command.register({ name: 'thoughts', description: 'Show the multitasking thoughts in a pane' })
+    return next(e)
+  })
+
+  // The thoughts are kept in the store as the session ends, with any progress notes since
+  // they were last kept, under the id of the session ending.
+  on('session.end', async ($, e, next) => {
+    await keepThoughts($, e.sessionId)
     return next(e)
   })
 
@@ -1351,6 +1495,8 @@ export const register: Register = (on, options) => {
         tellingTo: await read($, tellingTo),
         toggleTell: id => void toggleTell($, id),
         tell: (id, text) => void tellFromPane($, id, text),
+        showsAllEnded: await read($, showsAllEnded),
+        toggleShowsAllEnded: () => void update($, showsAllEnded, was => !was),
       },
       list,
     )
