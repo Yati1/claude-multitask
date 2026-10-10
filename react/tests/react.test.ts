@@ -124,10 +124,20 @@ async function badgeOf($: Engine, surface: 'terminal' | 'desktop', requestId: st
 // drawing is refused whole and the engine's drawn alone.
 const CONCEALING = ['display', 'overflow', 'position', 'width', 'height', 'minWidth', 'minHeight', 'top', 'left', 'right', 'bottom']
 
+// Whether a reaction's picture is solid: before its faint pill it paints a shape in an
+// opaque colour, in the dark scheme and the light, so what it floats over can't show
+// through.
+function isSolid(source: string): boolean {
+  const [dark = '', light = ''] = source.split('@media')
+  const isOpaque = (style: string) => /\.base\{fill:#[0-9a-f]{6}\}/i.test(style)
+  const base = source.indexOf('class="base"')
+  return isOpaque(dark) && isOpaque(light) && base !== -1 && base < source.indexOf('class="bg"')
+}
+
 // Where a person's message's reaction sits by it, read from the drawing: the way the box
 // holding both runs, their order, and the edge the reaction keeps to in its own row, or
-// where it floats over the message's row. Any prop the engine refuses on a box round its
-// message is named after.
+// where it floats over the message's row (and whether it is solid). Any prop the engine
+// refuses on a box round its message is named after.
 async function placeOf($: Engine, surface: 'terminal' | 'desktop', requestId: string, said: string) {
   const row = await $.ui.mount({
     plugin: 'react',
@@ -148,7 +158,11 @@ async function placeOf($: Engine, surface: 'terminal' | 'desktop', requestId: st
         : []
     const parts = (tree.children ?? []).filter(isDrawn).map(child => {
       if (holdsEngine(child)) return 'message'
-      if (child.props?.position === 'absolute') return `reaction floating at bottom ${child.props.bottom}, right ${child.props.right}`
+      if (child.props?.position === 'absolute') {
+        const picture = (child.children ?? []).filter(isDrawn).find(node => node.type === 'Svg')
+        const solid = isSolid(String(picture?.props?.source ?? '')) ? 'solid ' : ''
+        return `${solid}reaction floating at bottom ${child.props.bottom}, right ${child.props.right}`
+      }
       const edge = child.props?.justifyContent
       return edge === undefined ? 'reaction' : `reaction at ${edge}`
     })
@@ -225,10 +239,10 @@ test("a reply of one emoji goes on as \"No response requested.\" and draws as a 
       badge: surface === 'desktop' ? 'Reaction: 👍🏽' : '(👍🏽)',
     })
   }
-  // On the desktop it floats on the bubble's bottom-right corner, a line up from the room
-  // kept under the bubble for its time and copy buttons, nothing round the message; on the
-  // terminal it is the line under the message.
-  expect(await placeOf($, 'desktop', 'p1', 'thanks, that fixed the build')).toBe('column: message, reaction floating at bottom 1, right 0')
+  // On the desktop it floats, solid, on the bubble's bottom-right corner: a line up from
+  // the room kept under the bubble for its time and copy buttons and a column in from its
+  // right edge, nothing round the message. On the terminal it is the line under the message.
+  expect(await placeOf($, 'desktop', 'p1', 'thanks, that fixed the build')).toBe('column: message, solid reaction floating at bottom 1, right 1')
   expect(await placeOf($, 'terminal', 'p1', 'thanks, that fixed the build')).toBe('column: message, reaction')
   // A message with no reaction is the engine's drawing alone; one drawn under another id
   // is known by its text, where that is long enough to tell it from others.
@@ -306,11 +320,11 @@ test('/react place moves the desktop\'s reaction between the bubble\'s corner an
 
   // On the corner until the person chooses; `/react place` says where.
   expect(await placeReactions($, 'place')).toContain("on your message's bottom-right corner")
-  expect(await placeOf($, 'desktop', 'p1', said)).toBe('column: message, reaction floating at bottom 1, right 0')
+  expect(await placeOf($, 'desktop', 'p1', said)).toBe('column: message, solid reaction floating at bottom 1, right 1')
 
   // Under it, in the room the desktop keeps for the time and copy buttons, kept for later sessions.
   expect(await placeReactions($, 'place under')).toBe('On the desktop, reactions now sit under your message, where its time and copy buttons show.')
-  expect(await placeOf($, 'desktop', 'p1', said)).toBe('column: message, reaction floating at bottom 0, right 0')
+  expect(await placeOf($, 'desktop', 'p1', said)).toBe('column: message, solid reaction floating at bottom 0, right 1')
   expect(store.place).toBe('under')
   // The terminal's reaction stays on the line under the message.
   expect(await placeOf($, 'terminal', 'p1', said)).toBe('column: message, reaction')
@@ -319,7 +333,7 @@ test('/react place moves the desktop\'s reaction between the bubble\'s corner an
   expect(await placeReactions($, 'place sideways')).toBe('"sideways" is not a place for reactions. Use `/react place corner` or `/react place under`.')
   expect(store.place).toBe('under')
   expect(await placeReactions($, 'Place Corner')).toBe("On the desktop, reactions now sit on your message's bottom-right corner.")
-  expect(await placeOf($, 'desktop', 'p1', said)).toBe('column: message, reaction floating at bottom 1, right 0')
+  expect(await placeOf($, 'desktop', 'p1', said)).toBe('column: message, solid reaction floating at bottom 1, right 1')
   expect(store.place).toBe('corner')
 
   // Choosing a place leaves reactions on; a bare `/react` still turns them off.
@@ -334,7 +348,7 @@ test('a new session draws reactions where the person last chose', async ($, on) 
   await flip($)
   await storePrompt($, 'p1', 'can you rerun the deploy')
   await step($, seen, [text('✅'), stop])
-  expect(await placeOf($, 'desktop', 'p1', 'can you rerun the deploy')).toBe('column: message, reaction floating at bottom 0, right 0')
+  expect(await placeOf($, 'desktop', 'p1', 'can you rerun the deploy')).toBe('column: message, solid reaction floating at bottom 0, right 1')
 })
 
 test('with a row a mod beneath draws above the message (thread tags), the reaction floats on the corner, adding no row', async ($, on) => {
@@ -345,7 +359,7 @@ test('with a row a mod beneath draws above the message (thread tags), the reacti
   await step($, seen, [text('👍'), stop])
   // The mod's drawing, its tag row with the message, is the one thing in the flow; the
   // reaction floats over the row's bottom-right corner, round nothing.
-  expect(await placeOf($, 'desktop', 'p1', 'tagged by a plugin')).toBe('column: message, reaction floating at bottom 1, right 0')
+  expect(await placeOf($, 'desktop', 'p1', 'tagged by a plugin')).toBe('column: message, solid reaction floating at bottom 1, right 1')
 })
 
 // A conversation's messages as the engine lists them, and the record a session kept.

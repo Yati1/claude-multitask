@@ -227,15 +227,19 @@ const BADGE_HEIGHT = 20
 const BADGE_WIDTH = 30
 
 // The SVG of a reaction: the emoji in a small faint pill, as thread-chat draws its
-// filter pills, light or dark with the app.
-function badgePicture(emoji: string): string {
+// filter pills, light or dark with the app. A solid one (`isSolid`) first paints the
+// pill, its outline included, in the desktop's transcript colour, so what it floats over
+// (the bubble's corner) does not show through and it looks as it does on the bare page.
+// The desktop draws an Svg as an image, so it takes no colour from the page around it.
+function badgePicture(emoji: string, isSolid = false): string {
   const escaped = emoji.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
   const h = BADGE_HEIGHT
   const w = BADGE_WIDTH
   return [
     `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">`,
-    '<style>.bg{fill:#ffffff14;stroke:#ffffff38}',
-    '@media (prefers-color-scheme: light){.bg{fill:#0000000a;stroke:#00000038}}</style>',
+    '<style>.bg{fill:#ffffff14;stroke:#ffffff38}.base{fill:#151515}',
+    '@media (prefers-color-scheme: light){.bg{fill:#0000000a;stroke:#00000038}.base{fill:#fcfcfb}}</style>',
+    isSolid ? `<rect class="base" x="0.25" y="0.25" width="${w - 0.5}" height="${h - 0.5}" rx="${(h - 0.5) / 2}"/>` : '',
     `<rect class="bg" x="0.75" y="0.75" width="${w - 1.5}" height="${h - 1.5}" rx="${(h - 1.5) / 2}"/>`,
     `<text x="${w / 2}" y="${h / 2}" text-anchor="middle" dominant-baseline="central" font-size="12"`,
     ` font-family="Segoe UI Emoji, Apple Color Emoji, Noto Color Emoji, sans-serif">${escaped}</text>`,
@@ -248,16 +252,20 @@ function badgePicture(emoji: string): string {
 // time and copy buttons (shown on hover), so one line up sits on the bubble's corner.
 const RISE: Record<Place, number> = { corner: 1, under: 0 }
 
-// A message with its reaction. On the desktop, a small pill floating over the message's
-// row at its right edge, on the bubble's bottom-right corner or under it (`where`): the
-// desktop draws the bubble and the time and copy buttons under it as one piece, so a pill
-// drawn after it in the flow would sit below those buttons, away from the bubble. It
-// floats beside the message, never round it: the engine refuses a drawing that puts
-// position or size on a box holding its message. On the terminal, the emoji in faint
-// brackets on the line under the message. Elsewhere, a pill on the line above the bubble,
-// at the edge the person's messages keep to. Never beside the bubble in the flow: the
-// desktop sizes its bubble to a share of the row it is drawn in, and a row shared with
-// the badge shrinks to the message, so the bubble would narrow and its words wrap.
+// How far in from the right edge of the message's row the desktop's reaction floats, in
+// columns: off the bubble's right edge, so the pill sits on its corner, not flush with it.
+const INSET = 1
+
+// A message with its reaction. On the desktop, a small solid pill floating over the
+// message's row near its right edge, on the bubble's bottom-right corner or under it
+// (`where`): the desktop draws the bubble and the time and copy buttons under it as one
+// piece, so a pill drawn after it in the flow would sit below those buttons, away from
+// the bubble. It floats beside the message, never round it: the engine refuses a drawing
+// that puts position or size on a box holding its message. On the terminal, the emoji in
+// faint brackets on the line under the message. Elsewhere, a pill on the line above the
+// bubble, at the edge the person's messages keep to. Never beside the bubble in the flow:
+// the desktop sizes its bubble to a share of the row it is drawn in, and a row shared
+// with the badge shrinks to the message, so the bubble would narrow and its words wrap.
 function withBadge(
   $: EngineInterface,
   e: Parameters<EngineInterface['ui']['resolve']>[0],
@@ -270,8 +278,8 @@ function withBadge(
     return (
       <Box flexDirection="column">
         {message}
-        <Box position="absolute" right={0} bottom={RISE[where]}>
-          <Svg source={badgePicture(emoji)} alt={`Reaction: ${emoji}`} width={BADGE_WIDTH} height={BADGE_HEIGHT} />
+        <Box position="absolute" right={INSET} bottom={RISE[where]}>
+          <Svg source={badgePicture(emoji, true)} alt={`Reaction: ${emoji}`} width={BADGE_WIDTH} height={BADGE_HEIGHT} />
         </Box>
       </Box>
     )
