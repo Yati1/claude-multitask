@@ -18,6 +18,7 @@ Notable changes to the thread-chat, multitask and react mods. The format is base
 - Changed thread-chat's thread view to match the chat, with its bubbles, image thumbnails, thread tags and borders.
 - Changed thread-chat's thread view to show only your messages and each turn's final reply.
 - Changed thread-chat's thread view to open at the bottom and keep your place across tabs and new messages.
+- Changed thread-chat's thread view to load earlier messages as you scroll up or press its top line.
 
 ### Fixed
 

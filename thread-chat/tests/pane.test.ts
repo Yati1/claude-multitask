@@ -5,14 +5,19 @@ import type { Engine } from 'claude-code/testing'
 import type { ViewImage, ViewRow } from '../types'
 import { PALETTE } from '../hooks/parse'
 import {
+  EARLIER_KEY,
   PICTURE_CHARS_DRAWN,
   chunksOf,
   dataFolderOf,
+  drawnFromOf,
   fingerprintOf,
+  grownOffsetOf,
   isKeptView,
   isNearEnd,
   markOf,
   marksOf,
+  messagesBefore,
+  nudgeOf,
   picturesNear,
   rowsOfChunks,
   rowsUpTo,
@@ -537,7 +542,7 @@ test('/thread-view trace tells how the view was last opened and drawn, step by s
   await pane.drawn()
   const text = await trace()
   expect(text).toContain('open answered: {"isPlaced":true}')
-  expect(text).toMatch(/: \d+ms returned a Box near 1\.00: 0 picture cards, 0 with 0 characters of picture data/)
+  expect(text).toMatch(/: \d+ms returned a Box near 1\.00 of sections 0 on of 0: 0 picture cards, 0 with 0 characters of picture data/)
   expect(text).toMatch(/\d+ms threads read: 1, picked 0/)
 })
 
@@ -609,10 +614,10 @@ test('a restarted session draws every message it kept, from its files', async ($
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
 
   const pane = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...PANE })
-  // all of them are there; the pane draws the newest 200 sections at once
-  expect((await pane.find({ type: 'Text', text: /earlier sections not shown/ }))?.text).toBe('1000 earlier sections not shown')
+  // all of them are there; the pane draws the newest 30 sections at first
+  expect((await pane.find({ key: EARLIER_KEY }))?.text).toBe('1170 earlier messages')
   const shown = await sectionsOf(pane)
-  expect([shown.length, shown[0], shown[shown.length - 1]]).toEqual([200, 'you: message 1000', 'Claude: message 1199'])
+  expect([shown.length, shown[0], shown[shown.length - 1]]).toEqual([30, 'you: message 1170', 'Claude: message 1199'])
 })
 
 test('a restarted session draws the rows an earlier version kept; those without text draw while the conversation holds them', async ($, on) => {
@@ -970,6 +975,96 @@ test('the view at its end stays there as the desktop draws it shorter', async ($
   await reply('a4', 'Fixed.')
   await advance()
   expect(await moveBy(-6)).toBe(34)
+})
+
+test('the view draws from the start of a message, and keeps its window on what it showed as earlier ones come above', () => {
+  // a message of two sections, then 41 of one
+  const ids = ['a', 'a', ...Array.from({ length: 41 }, (_, i) => `m${i}`)]
+  // the newest 30; from a place asked for, back to the start of its message; never fewer
+  expect([drawnFromOf(ids, undefined), drawnFromOf(ids, 1), drawnFromOf(ids, 5), drawnFromOf(ids, 40)]).toEqual([13, 0, 5, 13])
+  expect(drawnFromOf(['a', 'a', 'a'], undefined)).toBe(0)
+  // the messages before them, a message of several sections once; one with no row each
+  expect([messagesBefore(ids, 13), messagesBefore([undefined, undefined, 'x', 'x'], 4)]).toEqual([12, 3])
+  // a window at row 14 over 120 rows, sections drawn above it: where it stays, once the
+  // surface says the rows they added (240 in all), less a row it was nudged by meanwhile
+  expect(grownOffsetOf({ rows: 120, nudge: 0 }, 14, 120)).toBeUndefined()
+  expect(grownOffsetOf({ rows: 120, nudge: 0 }, 14, 240)).toBe(134)
+  expect(grownOffsetOf({ rows: 120, nudge: 1 }, 15, 240)).toBe(134)
+  // the nudge that has a desktop say its rows: down where it can, else up short of the
+  // top, else none
+  expect([nudgeOf(5, 120, 20), nudgeOf(0, 120, 20), nudgeOf(100, 120, 20), nudgeOf(1, 21, 20), nudgeOf(0, 15, 20)]).toEqual([1, 1, -1, 0, 0])
+})
+
+// (The kit answers none of the plugin's own scrolls, and the test holds every wait the
+// plugin asks the clock for, so the plugin's moves to keep the window where it was go
+// unseen here; the person's moves show where the plugin passes them on. Each is a wheel's,
+// which a surface drawing the view shorter does not make.)
+function lazyView($: Engine, on: On) {
+  const { scrolls } = engine(on)
+  on('clock.after', () => new Promise(() => {}))
+  const settle = () => new Promise<void>(resolve => later(resolve, 10))
+  const moveTo = async (offset: number, by: number, contentRows: number) => {
+    const pointer = { column: 1, row: 1 }
+    await $.ui.scroll({ component: 'Pane', requestId: 'thread-view', offset, by, bodyRows: 20, contentRows, origin: { kind: 'person' }, pointer })
+    await settle()
+    return scrolls.at(-1)?.offset
+  }
+  return { moveTo, settle }
+}
+
+test('the view draws its newest messages, and earlier ones as the person scrolls near its top or presses the line of them', async ($, on) => {
+  const { moveTo, settle } = lazyView($, on)
+  await flipThreads($)
+  const { person } = storer($)
+  for (let i = 0; i < 70; i++) await person(`p${i}`, `message ${i}`)
+  const pane = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...PANE })
+  const shown = async () => {
+    const sections = await sectionsOf(pane)
+    return [sections.length, sections[0], (await pane.find({ key: EARLIER_KEY }))?.text]
+  }
+
+  // the newest 30, under a line saying how many messages come before them
+  expect(await shown()).toEqual([30, 'you: message 40', '40 earlier messages'])
+  // scrolled up, short of the top: as it was
+  expect(await moveTo(50, -50, 120)).toBe(50)
+  expect(await shown()).toEqual([30, 'you: message 40', '40 earlier messages'])
+  // within a window of the top: 30 more above
+  expect(await moveTo(15, -35, 120)).toBe(15)
+  expect(await shown()).toEqual([60, 'you: message 10', '10 earlier messages'])
+  // once the surface says the rows they added, the person's move goes down by them, then
+  // as it comes
+  expect(await moveTo(14, -1, 240)).toBe(134)
+  expect(await moveTo(130, -4, 240)).toBe(130)
+  // the line pressed: the rest
+  await pane.press({ key: EARLIER_KEY })
+  await settle()
+  expect(await shown()).toEqual([70, 'you: message 0', undefined])
+  // opened again: the newest 30
+  await $.command.run({ command: 'thread-view', args: '', origin: { kind: 'composer' }, presentation: {} as never })
+  await settle()
+  expect(await shown()).toEqual([30, 'you: message 40', '40 earlier messages'])
+})
+
+test('scrolled up, the view keeps what it draws as messages come; at its end, the newest', async ($, on) => {
+  const { moveTo, settle } = lazyView($, on)
+  await flipThreads($)
+  const { person } = storer($)
+  for (let i = 0; i < 40; i++) await person(`p${i}`, `message ${i}`)
+  const pane = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...PANE })
+  const shown = async () => {
+    const sections = await sectionsOf(pane)
+    return [sections.length, sections[0]]
+  }
+  expect(await shown()).toEqual([30, 'you: message 10'])
+  // at its end, a message: the newest 30
+  await person('p40', 'message 40')
+  await settle()
+  expect(await shown()).toEqual([30, 'you: message 11'])
+  // scrolled up: those drawn stay, new ones below them
+  await moveTo(40, -20, 120)
+  await person('p41', 'message 41')
+  await settle()
+  expect(await shown()).toEqual([31, 'you: message 11'])
 })
 
 // A PNG's first bytes, base64: its signature and the header naming its size.

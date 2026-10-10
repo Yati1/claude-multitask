@@ -48,8 +48,12 @@ const CHUNK_CHARS = 1_000_000
 // A long text is kept in pieces of this many characters, a line each, so one line
 // fits a file however its characters are escaped.
 const PIECE_CHARS = 100_000
-// Sections drawn at once; the newest are drawn.
-const SECTIONS_DRAWN = 200
+// Sections the view draws at first, the newest, and how many earlier ones it draws above
+// them each time the person scrolls near its top or presses its line of earlier messages.
+export const SECTIONS_FIRST = 30
+export const SECTIONS_MORE = 30
+// The key of that line, a Button.
+export const EARLIER_KEY = 'thread-view-earlier'
 const MARK_LENGTH = 80
 
 // The person's sections are bubbles, as the chat draws their messages. On a page
@@ -85,6 +89,46 @@ export const isNearEnd = (move: WindowMove) => move.contentRows - move.bodyRows 
 export type ViewPlace = 'end' | number
 
 export const viewPlaceOf = (move: WindowMove): ViewPlace => (isNearEnd(move) ? 'end' : move.offset)
+
+// Earlier sections drawn above the view's window, to be kept out of it: the rows the view
+// had before them (`rows`), and the rows the window was moved by meanwhile to have the
+// surface say how many it has now (`nudge`).
+export type ViewGrowth = { rows: number; nudge: number }
+
+// Where a move to row `at` goes while earlier sections are drawn above the window, the view
+// `contentRows` rows as the surface last said: down by the rows they added, less the nudge,
+// so the window shows what it showed. None until the surface says it has more rows: a
+// desktop keeps its window as many pixels down as it was, and says so only as it moves.
+export function grownOffsetOf(growth: ViewGrowth, at: number, contentRows: number): number | undefined {
+  const added = contentRows - growth.rows
+  return added > 0 ? Math.max(0, at - growth.nudge + added) : undefined
+}
+
+// The row's move from `at` that has a surface say how many rows the view has (a desktop says
+// so as its window moves): down where it can, else up but not to the top (where a surface
+// draws the view afresh, viewMoveOf); none where the window cannot move.
+export const nudgeOf = (at: number, contentRows: number, bodyRows: number): -1 | 0 | 1 =>
+  at < contentRows - bodyRows ? 1 : at > 1 ? -1 : 0
+
+// Where the drawn sections start among the view's (by their rows' ids, in order): at `from`,
+// or the newest SECTIONS_FIRST where none is given, never fewer than those; taken back to the
+// start of the message it falls in.
+export function drawnFromOf(ids: readonly (string | undefined)[], from: number | undefined): number {
+  const newest = Math.max(0, ids.length - SECTIONS_FIRST)
+  let at = Math.max(0, Math.min(from ?? newest, newest))
+  while (at > 0 && ids[at] !== undefined && ids[at] === ids[at - 1]) at -= 1
+  return at
+}
+
+// How many messages the sections before `from` hold: a message's sections share its row's id.
+export function messagesBefore(ids: readonly (string | undefined)[], from: number): number {
+  let count = 0
+  for (let i = 0; i < from && i < ids.length; i++) if (i === 0 || ids[i] === undefined || ids[i] !== ids[i - 1]) count += 1
+  return count
+}
+
+// The sections a drawing of the view drew: from `from` on, of `count`.
+export type ViewSpan = { from: number; count: number }
 
 // How the view's window is put back where the person left it, as a surface draws the
 // view with its window `offset` rows down; `back` a row it is still to go back to. A
@@ -606,6 +650,11 @@ export type ViewDrawing = {
   picture: (image: ViewImage) => Picture | 'loading' | undefined
   // where the window stands over the view: 0 at its top, 1 at its end (when not given)
   near?: number
+  // the first section drawn, by its place among the view's sections; none: the newest
+  // SECTIONS_FIRST (drawnFromOf)
+  from?: number
+  // what a press of the line of earlier messages does: draw some of them
+  showEarlier: () => void
 }
 
 // The most picture data one drawing of the view holds, in base64 characters. The desktop
@@ -812,12 +861,16 @@ function drawEntry(draw: ViewDrawing, isPage: boolean, entry: Entry, drawn: Draw
   )
 }
 
-// The pane's body: the picked threads' sections, oldest first, the newest at the bottom.
-export function drawView(draw: ViewDrawing, inputs: ViewInputs, deps: ViewDeps): RenderElement {
-  const { Box, Text } = draw.ui
+// The pane's body: the picked threads' sections, oldest first, the newest at the bottom;
+// those from `draw.from` on, under a line saying how many messages come before them, which
+// draws some of them when pressed. With the sections it drew.
+export function drawView(draw: ViewDrawing, inputs: ViewInputs, deps: ViewDeps): { tree: RenderElement; span: ViewSpan } {
+  const { Box, Text, Button } = draw.ui
   const { entries, picked } = viewEntries(inputs, deps)
-  const shown = entries.slice(-SECTIONS_DRAWN)
-  const hidden = entries.length - shown.length
+  const ids = entries.map(entry => entry.id)
+  const from = drawnFromOf(ids, draw.from)
+  const shown = entries.slice(from)
+  const earlier = messagesBefore(ids, from)
   const names = picked.map(t => t.name).join(', ')
   // An app lays the view out as a page (the desktop, the phone, an editor), a row
   // there half a line; the terminal lays it out in cells.
@@ -838,14 +891,23 @@ export function drawView(draw: ViewDrawing, inputs: ViewInputs, deps: ViewDeps):
       )
     : new Map<ViewImage, undefined>()
 
-  return (
+  const tree = (
     <Box flexDirection="column" rowGap={1}>
       {picked.length === 0 && <Text dimColor>All threads. Pick threads above the prompt to follow just those.</Text>}
-      {hidden > 0 && <Text dimColor>{`${hidden} earlier sections not shown`}</Text>}
+      {earlier > 0 && (
+        <Button
+          key={EARLIER_KEY}
+          label={`${earlier} earlier ${earlier === 1 ? 'message' : 'messages'}`}
+          plain
+          dimColor
+          onPress={() => draw.showEarlier()}
+        />
+      )}
       {shown.length === 0 && <Text dimColor>{picked.length === 0 ? 'Nothing here yet.' : `Nothing in ${names} yet.`}</Text>}
       {shown.length > 0 && <Box flexDirection="column">{shown.map((entry, i) => drawEntry(draw, isPage, entry, drawn, gapBefore(entry, i)))}</Box>}
     </Box>
   )
+  return { tree, span: { from, count: entries.length } }
 }
 
 // What the pane says when drawing it failed: the failure, so the view never goes blank

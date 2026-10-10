@@ -18,11 +18,13 @@ import {
 } from './parse'
 import type { RunOn, Section } from './parse'
 import {
+  SECTIONS_MORE,
   chunksOf,
   dataFolderOf,
   drawView,
   drawViewFailure,
   fingerprintOf,
+  grownOffsetOf,
   hasToolCall,
   imagePathsOf,
   imageSizeOf,
@@ -34,6 +36,7 @@ import {
   marksOf,
   needsMessages,
   noteDrawnReply,
+  nudgeOf,
   pickedOf,
   rowsOfChunks,
   rowsUpTo,
@@ -47,7 +50,7 @@ import {
   withKeptPaths,
   withViewRow,
 } from './pane'
-import type { Picture, ViewDeps, ViewInputs, ViewPlace } from './pane'
+import type { Picture, ViewDeps, ViewGrowth, ViewInputs, ViewPlace, ViewSpan } from './pane'
 
 const isOn = atom({ plugin: 'thread-chat', key: 'isOn' } as const, false)
 const threads = atom({ plugin: 'thread-chat', key: 'threads' } as const, [])
@@ -64,6 +67,7 @@ const untold = atom({ plugin: 'thread-chat', key: 'untold' } as const, [])
 const briefed = atom({ plugin: 'thread-chat', key: 'briefed' } as const, null)
 const viewRows = atom({ plugin: 'thread-chat', key: 'viewRows' } as const, [])
 const picturesRead = atom({ plugin: 'thread-chat', key: 'picturesRead' } as const, 0)
+const viewFrom = atom({ plugin: 'thread-chat', key: 'viewFrom' } as const, null)
 const menuOpen = atom({ plugin: 'thread-chat', key: 'menuOpen' } as const, false)
 
 const CREATE_TOOL = 'mcp__thread-chat__create_thread'
@@ -1214,7 +1218,7 @@ const VIEW_SETTLE_MS = 100
 // lay out its markdown and pictures: a move it reports meanwhile may be its own.
 const VIEW_REDRAW_MS = 500
 // The plugin's keys the thread view is drawn from (viewInputs, and the pictures read).
-const VIEW_KEYS: ReadonlySet<string> = new Set(['viewRows', 'picturesRead', 'threads', 'aliases', 'snaps', 'sentTo', 'moved'])
+const VIEW_KEYS: ReadonlySet<string> = new Set(['viewRows', 'picturesRead', 'viewFrom', 'threads', 'aliases', 'snaps', 'sentTo', 'moved'])
 // Changes to what the thread view shows so far; the one the surface may yet report a
 // move of its own for as it draws it, until the person's next move or VIEW_REDRAW_MS.
 let viewChanges = 0
@@ -1281,16 +1285,102 @@ function settleView($: EngineInterface, offset: number) {
   })
 }
 
-// The person's place in the thread view from now on: its newest rows.
-function placeViewAtEnd() {
+// The person's place in the thread view from now on: its newest rows, the newest sections
+// drawn.
+async function placeViewAtEnd($: EngineInterface) {
   viewPlace = 'end'
   viewReturn = undefined
+  viewGrowth = undefined
+  try {
+    await update($, viewFrom, () => null)
+  } catch {
+    // drawn from where it was
+  }
+}
+
+// The sections the thread view last drew: its first, of how many; none before it drew.
+let viewSpan: ViewSpan | undefined
+// Earlier sections drawn above the window, to be kept out of it (ViewGrowth): the first
+// section drawn before them (`from`), whether a drawing holds them yet, when they were
+// asked for, and the moves left to keep the window off them.
+type Growth = ViewGrowth & { from: number; isDrawn: boolean; at: number; tries: number }
+let viewGrowth: Growth | undefined
+// Whether this plugin's move to the window's top is one keeping it off them (keepViewPlace).
+let viewKeeping = false
+// How many moves try to keep the window off them, VIEW_SETTLE_MS apart, before it is left
+// be; and how long they hold off more earlier sections.
+const KEEP_TRIES = 6
+const VIEW_GROW_MS = 3000
+
+// A step of the thread view's own for `/thread-view trace`, beside its drawings.
+const noteView = (what: string) => traceView(what).end('noted')
+
+// Draws SECTIONS_MORE earlier sections above those the thread view draws, the window kept
+// on the rows it shows: `rows` the view's rows as the window last moved over it. A view at
+// its end is kept there, as the surface keeps to its end.
+async function showEarlier($: EngineInterface, rows: number | undefined) {
+  const span = viewSpan
+  if (span === undefined || span.from === 0) return
+  if (viewGrowth !== undefined && Date.now() - viewGrowth.at < VIEW_GROW_MS) return
+  const isAtEnd = viewPlace === 'end' || rows === undefined
+  const from = Math.max(0, span.from - SECTIONS_MORE)
+  viewGrowth = isAtEnd ? undefined : { rows, nudge: 0, from: span.from, isDrawn: false, at: Date.now(), tries: KEEP_TRIES }
+  noteView(`earlier sections asked for: from ${span.from} to ${from} of ${span.count}, ${isAtEnd ? 'at the end' : `over ${rows} rows`}`)
+  if (isAtEnd) await pinViewToEnd($)
+  try {
+    await update($, viewFrom, () => from)
+  } catch {
+    viewGrowth = undefined
+  }
+}
+
+// Keeps the sections the thread view draws while the person reads it scrolled up: new ones
+// come below them, and none goes from above.
+async function holdViewFrom($: EngineInterface) {
+  const span = viewSpan
+  if (span === undefined) return
+  try {
+    if ((await read($, viewFrom)) === null) await update($, viewFrom, from => from ?? span.from)
+  } catch {
+    // drawn as it was
+  }
+}
+
+// Keeps the thread view's window off the earlier sections drawn above it: a move to its top
+// that its scroll hook carries down by the rows they added (keptMoveOf), tried again until
+// the surface has said them.
+async function keepViewPlace($: EngineInterface) {
+  const growth = viewGrowth
+  if (growth === undefined) return
+  growth.tries -= 1
+  viewKeeping = true
+  try {
+    await $.ui.scroll({ in: VIEW, to: 'start' })
+  } catch {
+    // tried again while tries are left
+  } finally {
+    viewKeeping = false
+  }
+  if (viewGrowth !== growth) return
+  if (growth.tries > 0) $.clock.after(VIEW_SETTLE_MS, () => void keepViewPlace($))
+  else viewGrowth = undefined
+}
+
+// Where keepViewPlace's move goes, from the window's row (`at`): down by the rows the earlier
+// sections added, or, before the surface has said them, a row up or down, which has a desktop
+// say them. None where the window cannot move: the view fitted it.
+function keptMoveOf(growth: ViewGrowth, e: { offset: number; by: number; bodyRows: number; contentRows: number }) {
+  const at = e.offset - e.by
+  const offset = grownOffsetOf(growth, at, e.contentRows)
+  if (offset !== undefined) return { at, offset, nudge: 0 }
+  const nudge = nudgeOf(at, e.contentRows, e.bodyRows)
+  return nudge === 0 ? undefined : { at, offset: at + nudge, nudge }
 }
 
 // Opens the thread view (or shows it, already open) at its newest rows; a surface that
 // draws it only later is taken there as it does (settleView).
 async function openView($: EngineInterface) {
-  placeViewAtEnd()
+  await placeViewAtEnd($)
   const { step, end } = traceView('open asked')
   const opened = await $.ui.open({ id: VIEW, title: VIEW_TITLE })
   step(`open answered: ${JSON.stringify(opened)}`)
@@ -1948,22 +2038,58 @@ export const register: Register = on => {
   // goes to that row; a move of the person's drops any still to come. The surface's own
   // move as it draws a shorter view at its end goes to the end: the engine, keeping to
   // the end, would take it on from the new end, as far again above it, and stop there.
+  // Earlier sections drawn above the window push what it showed down, as many pixels down
+  // as the desktop keeps it: the next move, this plugin's or the person's, once the surface
+  // has said the rows they added, goes down by them. The person near the top of what is
+  // drawn has earlier sections drawn; scrolled up elsewhere, what is drawn stays.
   on('ui.scroll', { component: 'Pane', requestId: VIEW }, async ($, e, next) => {
     const isMine = e.origin.kind === 'plugin' && e.origin.name === $.plugin.name
+    const isPerson = e.origin.kind === 'person'
     const isRedraw = isRedrawMove(e)
+    const growth = viewGrowth
+    const isKeeping = isMine && viewKeeping && e.offset === 0
+    const kept = isKeeping && growth !== undefined ? keptMoveOf(growth, e) : undefined
+    if (isKeeping && kept === undefined) {
+      // kept already, or the window cannot move: the view fitted it, and its end shows
+      // what it showed
+      if (growth !== undefined) {
+        viewGrowth = undefined
+        void pinViewToEnd($)
+      }
+      return { deny: 'no move to keep the window where it was' }
+    }
+    if (isPerson && growth !== undefined && !growth.isDrawn) growth.rows = e.contentRows
+    const grown = isPerson && !isRedraw && growth?.isDrawn === true ? grownOffsetOf(growth, e.offset, e.contentRows) : undefined
     const move = isRedraw
       ? { ...e, offset: Math.max(0, e.contentRows - e.bodyRows) }
-      : isMine && viewReturning !== undefined && e.offset === 0
-        ? { ...e, offset: viewReturning }
-        : e
-    if (e.origin.kind === 'person') viewChangeUndrawn = undefined
-    if (e.origin.kind === 'person' && !isRedraw) {
+      : kept !== undefined
+        ? { ...e, offset: kept.offset }
+        : grown !== undefined
+          ? { ...e, offset: grown }
+          : isMine && viewReturning !== undefined && e.offset === 0
+            ? { ...e, offset: viewReturning }
+            : e
+    if (isPerson) viewChangeUndrawn = undefined
+    if (isPerson && !isRedraw) {
       personMoves += 1
       viewReturn = undefined
     }
     const result = await next(move)
-    if (result.deny === undefined) viewPlace = viewPlaceOf(move)
+    if (result.deny === undefined) {
+      if (kept !== undefined && kept.nudge !== 0 && growth !== undefined) growth.nudge += kept.nudge
+      else viewPlace = viewPlaceOf(move)
+      if (viewGrowth === growth && ((kept !== undefined && kept.nudge === 0) || grown !== undefined)) viewGrowth = undefined
+    }
+    if (growth !== undefined && (kept !== undefined || grown !== undefined)) {
+      const how = kept === undefined ? 'kept on the person\'s move' : kept.nudge === 0 ? 'kept' : 'nudged'
+      const denied = result.deny === undefined ? '' : `, denied (${result.deny})`
+      noteView(`window ${how}: ${e.contentRows} rows (were ${growth.rows}), to ${move.offset}${denied}`)
+    }
     viewContentRows = move.contentRows
+    if (isPerson && !isRedraw && result.deny === undefined) {
+      if (viewPlace !== 'end') void holdViewFrom($)
+      if (e.by < 0 && move.offset <= e.bodyRows) void showEarlier($, move.contentRows)
+    }
     return result
   })
 
@@ -1979,7 +2105,7 @@ export const register: Register = on => {
     const result = await next(e)
     try {
       if (pickedOf(e.previous) !== pickedOf(e.value) && (await $.ui.panes()).some(p => p.id === VIEW)) {
-        placeViewAtEnd()
+        await placeViewAtEnd($)
         await pinViewToEnd($)
       }
     } catch {
@@ -2000,8 +2126,10 @@ export const register: Register = on => {
       const read_ = await read($, picturesRead)
       step(`pictures read so far: ${read_}`)
       const inputs = await viewInputs($, step)
+      // the newest sections, or from the first the person had drawn as they scrolled up
+      const from = await read($, viewFrom)
       const near = viewNearOf(e.props.scroll.offset, e.props.scroll.bodyRows)
-      const drawn = drawView(
+      const { tree: drawn, span } = drawView(
         {
           surface: e.surface,
           ui: $.ui.resolve(e),
@@ -2012,12 +2140,25 @@ export const register: Register = on => {
           threadPart: (thread, body) => drawThreadPart($, e, thread, drawTag($, e, thread, 'start'), body),
           picture: image => pictureFor($, image),
           near,
+          from: from ?? undefined,
+          showEarlier: () => void showEarlier($, viewContentRows),
         },
         inputs,
         viewDeps,
       )
+      viewSpan = span
+      // earlier sections drawn above the window: once the surface has drawn them, the window
+      // is kept off them
+      const growth = viewGrowth
+      if (growth !== undefined && !growth.isDrawn && span.from < growth.from) {
+        growth.isDrawn = true
+        $.clock.after(VIEW_SETTLE_MS, () => void keepViewPlace($))
+      }
       const { cards, filled, chars } = picturesIn(drawn)
-      end(`returned a ${(drawn as { type?: string }).type ?? 'tree'} near ${near.toFixed(2)}: ${cards} picture cards, ${filled} with ${chars} characters of picture data`)
+      end(
+        `returned a ${(drawn as { type?: string }).type ?? 'tree'} near ${near.toFixed(2)} of sections ${span.from} on of ${span.count}: ` +
+          `${cards} picture cards, ${filled} with ${chars} characters of picture data`,
+      )
       return drawn
     } catch (error) {
       end(`threw ${String(error)}`)
