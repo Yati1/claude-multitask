@@ -1,0 +1,416 @@
+<!doctype html>
+<!--
+  The README demo: a recreation of the Claude desktop app's Code tab (dark theme) with
+  the three mods at work. Everything drawn is a pure function of the time: render(t),
+  t in ms. The storyboard is the data at the top of the script (MSGS, PICKS, MENU, COG,
+  PANE, FILTER, the thought's times, the cursor's PATH). All content is made up.
+
+  Open it in a browser to look: ?t=6800 shows one moment, ?play runs it in a loop.
+  The app's own font, Anthropic Sans, is read from fonts/ (see fonts.js); without it a
+  system font stands in and the text sets a little differently.
+-->
+<html><head><meta charset="utf-8">
+<style>
+@font-face{font-family:AS;src:url(fonts/AnthropicSans.woff2) format('woff2');font-weight:100 900}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{width:880px;height:560px;background:#151515;overflow:hidden}
+#app{--cw:844px;position:relative;width:880px;height:560px;background:#151515;font-family:AS,'Segoe UI',system-ui,-apple-system,sans-serif;color:#f0efec;font-size:14px;line-height:20px;overflow:hidden}
+svg{display:block}
+
+/* top bar */
+.ti{position:absolute;top:10px;width:16px;height:16px}
+.title{position:absolute;left:162px;top:9px;font-size:13px;font-weight:500;line-height:18px;color:#f0efec;display:flex;align-items:center;gap:6px;white-space:nowrap}
+.laptop{position:absolute;left:132px;top:6px;width:24px;height:24px;border-radius:5px;background:#0a2440;display:flex;align-items:center;justify-content:center}
+.badge{font-size:12px;font-weight:400;line-height:16px;color:#bfbeb4;background:#2d2d2d;border-radius:5px;padding:2px 6px;margin-left:8px}
+
+/* chat: --cw is its width, the window's less 18px either side, or up to the pane */
+.msgs{position:absolute;left:18px;width:var(--cw);top:36px;height:387px;display:flex;flex-direction:column;justify-content:flex-end;overflow:hidden}
+.sec{border:1px solid var(--c);border-radius:8px;padding:14px 12px 10px 13px}
+.sec + .sec{margin-top:10px}
+.tagrow{height:12px;display:flex;align-items:center;gap:8px;white-space:nowrap}
+.tag{font-family:'Segoe UI',system-ui,sans-serif;font-weight:600;font-size:9px;line-height:12px;letter-spacing:.4px;color:var(--c);text-transform:uppercase}
+.sec .txt{margin-top:4px}
+.umsg{display:flex;flex-direction:column;align-items:flex-end}
+.umsg .tagrow{padding-right:6px;margin-bottom:3px}
+.bub{position:relative;background:#212121;border-radius:10px;padding:8px 12px;max-width:82%}
+.hov{height:26px}
+.status{color:#898781;display:flex;align-items:center;gap:4px}
+.relay{color:#898781}
+.chip{position:absolute;width:30px;height:20px}
+
+/* band */
+.band{position:absolute;left:18px;width:var(--cw);top:437px;height:42px;background:#212121;border-radius:8px}
+.tint{position:absolute;left:8px;top:11px;height:21px;border-radius:4px;display:flex;align-items:center;padding-left:4px;padding-right:2px}
+.pdot{width:8px;height:8px;border-radius:50%;margin-right:9px;flex:none}
+.sel{height:19px;border:1px solid rgba(255,255,255,.15);background:rgba(255,255,255,.05);border-radius:5px;display:flex;align-items:center;padding:0 3px 0 5px;font-size:13px;line-height:17px;white-space:nowrap;color:#f0efec}
+.cog{position:absolute;top:12px;padding-left:6px}
+.rgroup{position:absolute;right:8px;top:10px;height:22px;display:flex;align-items:center}
+.rgroup .sel{margin-left:9px}
+.tbtn{margin-left:9px;height:21px;border-radius:5px;background:#383838;font-size:12px;line-height:21px;padding:0 6px;color:#f0efec;white-space:nowrap}
+
+/* prompt */
+.prompt{position:absolute;left:18px;width:var(--cw);top:486px;height:40px;border:1px solid #4d4d4c;background:#20201f;border-radius:12px}
+.ptext{position:absolute;left:11px;top:9px;right:40px;white-space:nowrap;overflow:hidden;color:#f0efec}
+.pcaret{display:inline-block;width:1px;height:17px;background:#f0efec;vertical-align:-3px;margin-left:1px}
+.below{position:absolute;left:18px;width:var(--cw);top:533px;height:20px;font-size:12px;line-height:20px}
+
+/* pane */
+.pane{position:absolute;left:516px;top:40px;width:356px;height:512px;border:1px solid #2a2a2a;background:#1a1a19;border-radius:10px;box-shadow:0 1px 6px rgba(0,0,0,.45);overflow:hidden}
+.tab{position:absolute;top:4px;height:24px;border-radius:6px;font-size:13px;line-height:24px;padding:0 8px;display:flex;align-items:center;gap:9px;white-space:nowrap}
+.pbody{position:absolute;left:12px;right:16px;top:36px;bottom:52px;display:flex;flex-direction:column;justify-content:flex-end;overflow:hidden;font-size:13px;line-height:19px}
+.pdiv{position:absolute;left:12px;right:16px;bottom:42px;height:1px;background:#3b3b3a}
+.filters{position:absolute;left:12px;right:16px;bottom:13px;height:19px;display:flex;align-items:center;gap:8px}
+.fsw{height:19px;border:1px solid transparent;border-radius:10px;padding:0 8px;display:flex;align-items:center}
+.psec{border:1px solid var(--c);border-radius:8px;padding:7px 10px 11px 8px}
+.psec .txt{margin-top:1px}
+.pusr{display:flex;flex-direction:column;align-items:flex-end}
+.pusr .tagrow{margin-bottom:1px}
+.pbub{position:relative;background:#252524;border-radius:10px;padding:10px 16px;max-width:88%}
+.pgap{height:18px;flex:none}
+
+/* floating things */
+.menu{position:absolute;background:#262625;border:1px solid #3a3a39;border-radius:8px;padding:4px;box-shadow:0 6px 20px rgba(0,0,0,.5);font-size:13px;line-height:18px;width:150px}
+.mi{height:28px;border-radius:5px;padding:0 8px;display:flex;align-items:center;justify-content:space-between;color:#f0efec}
+.mi.dim{color:#c3c2b7}
+.mi.hot{background:#363635}
+.mi svg{flex:none}
+.tabx{display:flex;align-items:center;justify-content:center;width:16px;height:16px;margin:0 -4px 0 -4px;border-radius:4px}
+.tabx.hot{background:#555554}
+.card{position:absolute;background:#262625;border:1px solid #3a3a39;border-radius:8px;padding:8px 11px 9px;box-shadow:0 6px 20px rgba(0,0,0,.5);font-size:13px;line-height:18px;white-space:nowrap}
+.cursor{position:absolute;width:13px;height:20px;pointer-events:none}
+</style></head>
+<body><div id="app"></div>
+<script>
+// ---------------------------------------------------------------- data
+const TH = {
+  design: { name: 'Design', color: '#4fa3e0' },
+  bugs:   { name: 'Bugs',   color: '#d9636a' },
+  docs:   { name: 'Docs',   color: '#58b36b' },
+};
+const ORDER = ['design', 'bugs', 'docs'];
+// multitask colours a thought from a palette of its own; amber keeps it apart from the threads
+const THOUGHT = { name: 'Test run', color: '#c98a2e' };
+
+// Every message, with when it appears (ms). Replies stream from start to end.
+const MSGS = [
+  { role: 'user', th: 'bugs', text: 'The cooking timer resets when I switch tabs', at: -1 },
+  { role: 'reply', at: -1, secs: [{ th: 'bugs', text: 'Fixed: the timer now keeps counting while its tab is in the background.', start: -1, end: -1 }] },
+  { role: 'user', th: 'docs', text: 'Add a quick start section to the README', at: -1 },
+  { role: 'reply', at: -1, secs: [{ th: 'docs', text: 'Added a Quick start section to the README: clone, install and run the app in three commands.', start: -1, end: -1 }] },
+  { role: 'user', th: 'design', text: 'Make the recipe cards more compact', typed: '# Design Make the recipe cards more compact', type: [200, 1000], at: 1100 },
+  { role: 'reply', at: 1300, secs: [{ th: 'design', text: 'Done: the cards have tighter padding and show the cook time beside the title, so four fit in a row.', start: 1300, end: 1950 }] },
+  { role: 'user', th: 'bugs', text: 'Search misses titles with capitals. Fix it and note it in the docs', type: [3450, 4250], at: 4400 },
+  { role: 'status', text: 'Used 3 tools', at: 4650 },
+  { role: 'reply', at: 4850, secs: [
+    { th: 'bugs', text: 'Fixed: search now ignores case, and a new test covers it.', start: 4850, end: 5250 },
+    { th: 'docs', text: 'Added the search fix to the changelog.', start: 5350, end: 5650 } ] },
+  { role: 'user', th: 'bugs', text: 'Run the whole test suite and fix anything that fails', type: [9350, 10000], at: 10150 },
+  { role: 'reply', at: 10350, secs: [{ th: 'bugs', text: 'On it: a thought is running the suite in the background.', start: 10350, end: 10750 }] },
+  { role: 'relay', text: '◦ thought update: Test run', at: 13250 },
+  { role: 'reply', at: 13450, secs: [{ th: 'bugs', text: 'All 128 tests pass. Two date tests assumed UTC; the parser now keeps the local day.', start: 13450, end: 14050 }] },
+  { role: 'user', th: 'bugs', text: 'Great, thanks!', type: [14550, 14850], at: 15000, reactAt: 15450 },
+];
+const END = 16700;
+
+// Thread the picker posts to, over time.
+const PICKS = [[-1, 'docs'], [1100, 'design'], [3200, 'bugs']];
+// Menu of the picker: open from..to, hovered item over time.
+const MENU = { open: 2700, close: 3200, hot: [[2700, 'design'], [2900, 'bugs']] };
+// The threads menu (the cog): its card shows from the hover until "Open thread view" is
+// clicked, that row hovered from `hot`.
+const COG = { open: 6300, hot: 6700, click: 6900 };
+// The side pane with the thread view: open from..to. The chat is narrower while it shows.
+const PANE = { open: 6900, close: 9050, fade: 150 };
+// The thread view's filter: hovered, then picked. The tab's close button: hovered.
+const FILTER = { hover: [7500, 7700], pick: 7700, th: 'bugs' };
+const TABX_HOT = [8850, 9050];
+// The thought: start, notes, end.
+const TH_START = 10450;
+const NOTES = [[10950, 'Running 128 tests'], [11950, 'Two date tests fail; fixing the parser']];
+const TH_END = 12950;
+const PULSE_MS = 1000, FADE_MS = 1500;
+const CARD = [11350, 12650];
+
+// Cursor path: [t, target, dx, dy] ; target is a selector or [x,y]. Visible spans.
+const CURSOR_SPANS = [[2150, 3550], [5850, 9300], [10600, 12950]];
+const PATH = [
+  [2150, [560, 340]],
+  [2650, '#picker-sel', -8, 2],
+  [2750, '#picker-sel', -8, 2],
+  [2950, '#mi-bugs', -30, 1],
+  [3250, '#mi-bugs', -30, 1],
+  [3550, [330, 470]],
+  [5850, [560, 340]],
+  [6300, '#cog', -6, 2],
+  [6400, '#cog', -6, 2],
+  [6700, '#mi-view', -40, 1],
+  [6950, '#mi-view', -40, 1],
+  [7500, '#f-bugs', 4, 3],
+  [8450, '#f-bugs', 4, 3],
+  [8850, '#tabx', 1, 2],
+  [9050, '#tabx', 1, 2],
+  [9300, [640, 300]],
+  [10600, [560, 330]],
+  [11350, '#dot0', 2, 3],
+  [12650, '#dot0', 2, 3],
+  [12950, [640, 380]],
+];
+
+// Moments that between them show every colour drawn (menus, switches, hover card, check,
+// chip, all threads), from which encode.js builds the GIF's one palette.
+const SAMPLES = [0, 1950, 2900, 5700, 6800, 7200, 8000, 11600, 13100, 15700];
+
+// ---------------------------------------------------------------- storyboard, in short
+//  0.2s  "# Design ..." is typed and sent; the picker follows to Design; the reply
+//        streams in under a blue DESIGN section. The chat has the window to itself.
+//  2.2s  the picker's menu switches to Bugs (its tint turns red); the next message has
+//        no heading and goes to Bugs; the reply covers two threads: BUGS and DOCS.
+//  5.9s  the threads menu (the cog) opens the thread view beside the chat; its filter is
+//        switched to BUGS, so only Bugs sections stay; then its tab is closed.
+//  9.4s  a task for a thought, in the chat alone: the voice answers at once; an amber dot
+//        appears left of the Multitask dropdown ("thoughts 1"), blinks white on each note,
+//        and its hover card shows the latest note; it ends with a check, and the voice
+//        reports.
+// 14.6s  "Great, thanks!" gets a 👍 reaction on the bubble's corner instead of a reply.
+
+// ---------------------------------------------------------------- helpers
+const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const lerp = (a, b, k) => a + (b - a) * k;
+const easeIO = k => (k < 0.5 ? 4 * k * k * k : 1 - Math.pow(-2 * k + 2, 3) / 2);
+function bez(x1, y1, x2, y2) { // cubic-bezier easing
+  return x => { let lo = 0, hi = 1, t = x; for (let i = 0; i < 30; i++) { t = (lo + hi) / 2; const cx = 3 * x1 * t * (1 - t) ** 2 + 3 * x2 * t * t * (1 - t) + t ** 3; if (cx < x) lo = t; else hi = t; }
+    return 3 * y1 * t * (1 - t) ** 2 + 3 * y2 * t * t * (1 - t) + t ** 3; };
+}
+const spline = bez(0.42, 0, 0.58, 1);
+const hex = c => [1, 3, 5].map(i => parseInt(c.slice(i, i + 2), 16));
+const mix = (a, b, k) => '#' + hex(a).map((v, i) => Math.round(lerp(v, hex(b)[i], k)).toString(16).padStart(2, '0')).join('');
+const at = (list, t) => { let v = list[0][1]; for (const [s, x] of list) if (t >= s) v = x; return v; };
+// piecewise-linear over [ms, value] steps
+const steps = (st, ms) => { if (ms <= st[0][0]) return st[0][1]; for (let i = 1; i < st.length; i++) if (ms <= st[i][0]) { const [a, va] = st[i - 1], [b, vb] = st[i]; return lerp(va, vb, (ms - a) / (b - a)); } return st[st.length - 1][1]; };
+
+const tri = '<svg width="5" height="4" viewBox="0 0 5 4"><path d="M0 0.2h5L2.5 3.8z" fill="#c3c2b7"/></svg>';
+const chev = (stroke = '#c3c2b7') => `<svg width="20" height="14" viewBox="-6.86 0 22.86 16"><path d="M4 6l4 4 4-4" fill="none" stroke="${stroke}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+const cogSvg = '<svg width="14" height="14" viewBox="0 0 16 16"><path fill="#faf9f5" fill-rule="evenodd" d="M6.81 2.84L6.86 0.79L9.14 0.79L9.19 2.84A5.3 5.3 0 0 1 10.81 3.51L12.29 2.09L13.91 3.71L12.49 5.19A5.3 5.3 0 0 1 13.16 6.81L15.21 6.86L15.21 9.14L13.16 9.19A5.3 5.3 0 0 1 12.49 10.81L13.910 12.29L12.29 13.91L10.81 12.49A5.3 5.3 0 0 1 9.19 13.16L9.14 15.21L6.86 15.21L6.81 13.16A5.3 5.3 0 0 1 5.19 12.49L3.71 13.91L2.09 12.29L3.51 10.81A5.3 5.3 0 0 1 2.84 9.19L0.79 9.14L0.79 6.86L2.84 6.81A5.3 5.3 0 0 1 3.51 5.19L2.09 3.71L3.71 2.09L5.19 3.51A5.3 5.3 0 0 1 6.81 2.84ZM5.7 8a2.3 2.3 0 1 0 4.6 0a2.3 2.3 0 1 0 -4.6 0Z"/></svg>';
+const tag = (th, caret) => `<div class="tagrow"><span class="tag" style="--c:${TH[th].color}">${TH[th].name}</span>${caret ? tri : ''}</div>`;
+const words = (text, k) => { const w = text.split(' '); const n = Math.ceil(clamp(k, 0, 1) * w.length); return w.slice(0, n).join(' '); };
+// thread-chat's slide switch, and its threads menu: switches, then actions
+const switchSvg = on => `<svg width="34" height="20" viewBox="0 0 34 20"><rect x="1" y="2" width="32" height="16" rx="8" fill="${on ? '#3b82f6' : '#8c8c8c'}"/><circle cx="${on ? 23 : 11}" cy="10" r="6" fill="#ffffff"/></svg>`;
+const VIEW_ROW = 'Open thread view';
+const COG_ROWS = [['On in this chat', true], ['Agent may start threads', false], ['Filter the chat', false], [VIEW_ROW], ['New thread'], ['Manage threads']];
+const chipSvg = '<svg width="30" height="20" viewBox="0 0 30 20"><rect x="0.25" y="0.25" width="29.5" height="19.5" rx="9.75" fill="#151515"/><rect x="0.75" y="0.75" width="28.5" height="18.5" rx="9.25" fill="#ffffff14" stroke="#ffffff38"/><text x="15" y="10" text-anchor="middle" dominant-baseline="central" font-size="12" font-family="Segoe UI Emoji, sans-serif">👍</text></svg>';
+
+// A thought's dot, as multitask's band draws it (pictureOf), `ms` into its pulse or end.
+function dotSvg(color, kind, ms) {
+  const W = '#ffffff';
+  const svg = b => `<svg width="14" height="14" viewBox="0 0 14 14">${b}</svg>`;
+  if (kind === 'running') {
+    let fill = color;
+    if (ms !== undefined && ms < PULSE_MS) { const k = ms < 500 ? spline(ms / 500) : 1 - spline((ms - 500) / 500); fill = mix(color, W, k); }
+    return svg(`<circle cx="7" cy="7" r="3.5" fill="${fill}" stroke="${color}" stroke-width="1"/>`);
+  }
+  // done: a flash, then a check drawn in, then faded
+  const fill = mix(color, W, clamp(ms / 150, 0, 1));
+  const r = steps([[0, 3.5], [400, 6]], ms), sw = steps([[0, 1], [400, 0]], ms), op = steps([[0, 1], [100, 1], [400, 0]], ms);
+  const off = steps([[0, 10], [300, 10], [650, 0]], ms), cop = steps([[0, 1], [FADE_MS - 500, 1], [FADE_MS, 0]], ms);
+  return svg(`<circle cx="7" cy="7" r="${r}" fill="${fill}" stroke="${color}" stroke-width="${sw}" opacity="${op}"/>` +
+    `<path d="M4 7.3 6.2 9.5 10.2 4.8" fill="none" stroke="${color}" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="10" stroke-dashoffset="${off}" opacity="${cop}"/>`);
+}
+
+const IC = '#c9c8c5';
+const ico = {
+  menu: `<svg width="16" height="16" viewBox="0 0 16 16"><path d="M2 4h12M2 8h12M2 12h8" stroke="${IC}" stroke-width="1.4" stroke-linecap="round"/></svg>`,
+  side: `<svg width="16" height="16" viewBox="0 0 16 16"><rect x="2" y="2.5" width="12" height="11" rx="1.5" fill="none" stroke="${IC}" stroke-width="1.3"/><path d="M6.5 2.5v11" stroke="${IC}" stroke-width="1.3"/></svg>`,
+  back: `<svg width="16" height="16" viewBox="0 0 16 16"><path d="M13 8H3M7 4 3 8l4 4" fill="none" stroke="#7d7c78" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+  fwd: `<svg width="16" height="16" viewBox="0 0 16 16"><path d="M3 8h10M9 4l4 4-4 4" fill="none" stroke="#7d7c78" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+  laptop: `<svg width="16" height="16" viewBox="0 0 16 16"><rect x="3" y="3.5" width="10" height="7" rx="1" fill="none" stroke="#5d9ff0" stroke-width="1.4"/><path d="M1.5 12.5h13" stroke="#5d9ff0" stroke-width="1.4" stroke-linecap="round"/></svg>`,
+  term: `<svg width="16" height="16" viewBox="0 0 16 16"><path d="M3 4.5 6.5 8 3 11.5M8 12h5" fill="none" stroke="${IC}" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+  diff: `<svg width="16" height="16" viewBox="0 0 16 16"><rect x="2.5" y="2.5" width="11" height="11" rx="1.5" fill="none" stroke="${IC}" stroke-width="1.3"/><path d="M8 5v4M6 7h4M6 11h4" stroke="${IC}" stroke-width="1.3" stroke-linecap="round"/></svg>`,
+  globe: `<svg width="16" height="16" viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.8" fill="none" stroke="${IC}" stroke-width="1.3"/><path d="M2.2 8h11.6M8 2.2c-2 2-2 9.6 0 11.6M8 2.2c2 2 2 9.6 0 11.6" fill="none" stroke="${IC}" stroke-width="1.2"/></svg>`,
+  folder: `<svg width="16" height="16" viewBox="0 0 16 16"><path d="M2 4.5c0-.6.4-1 1-1h3.2l1.5 1.6H13c.6 0 1 .4 1 1V12c0 .6-.4 1-1 1H3c-.6 0-1-.4-1-1z" fill="none" stroke="${IC}" stroke-width="1.3" stroke-linejoin="round"/></svg>`,
+  kebab: `<svg width="16" height="16" viewBox="0 0 16 16"><circle cx="8" cy="3.5" r="1.2" fill="${IC}"/><circle cx="8" cy="8" r="1.2" fill="${IC}"/><circle cx="8" cy="12.5" r="1.2" fill="${IC}"/></svg>`,
+  min: `<svg width="16" height="16" viewBox="0 0 16 16"><path d="M3 8h10" stroke="${IC}" stroke-width="1"/></svg>`,
+  max: `<svg width="16" height="16" viewBox="0 0 16 16"><rect x="3.5" y="5" width="7.5" height="7.5" rx="1" fill="none" stroke="${IC}" stroke-width="1"/><path d="M5.5 5V4c0-.5.4-1 1-1H12c.5 0 1 .5 1 1v5.5c0 .6-.5 1-1 1h-1" fill="none" stroke="${IC}" stroke-width="1"/></svg>`,
+  close: `<svg width="16" height="16" viewBox="0 0 16 16"><path d="M3.5 3.5l9 9M12.5 3.5l-9 9" stroke="${IC}" stroke-width="1"/></svg>`,
+  plus: `<svg width="16" height="16" viewBox="0 0 16 16"><path d="M8 3v10M3 8h10" stroke="${IC}" stroke-width="1.4" stroke-linecap="round"/></svg>`,
+  mic: `<svg width="16" height="16" viewBox="0 0 16 16"><rect x="5.8" y="2" width="4.4" height="7.5" rx="2.2" fill="none" stroke="${IC}" stroke-width="1.3"/><path d="M3.8 7.8a4.2 4.2 0 0 0 8.4 0M8 12v2" fill="none" stroke="${IC}" stroke-width="1.3" stroke-linecap="round"/></svg>`,
+  ring: `<svg width="14" height="14" viewBox="0 0 14 14"><circle cx="7" cy="7" r="5" fill="none" stroke="#3a3a3a" stroke-width="2"/><path d="M7 2a5 5 0 0 1 4.6 7" fill="none" stroke="#3b82f6" stroke-width="2" stroke-linecap="round"/></svg>`,
+  ret: `<svg width="16" height="16" viewBox="0 0 16 16"><path d="M13 3.5v4.5c0 .6-.4 1-1 1H3.5M6 6 3.5 9 6 12" fill="none" stroke="${IC}" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+  expand: `<svg width="14" height="14" viewBox="0 0 16 16"><path d="M9.5 2.5h4v4M13.5 2.5 9 7M6.5 13.5h-4v-4M2.5 13.5 7 9" fill="none" stroke="${IC}" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+  x: c => `<svg width="8" height="8" viewBox="0 0 8 8"><path d="M1 1l6 6M7 1 1 7" stroke="${c}" stroke-width="1.2" stroke-linecap="round"/></svg>`,
+  rchev: `<svg width="10" height="10" viewBox="0 0 10 10"><path d="M3.5 2 6.5 5 3.5 8" fill="none" stroke="#898781" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+};
+const cursorSvg = '<svg width="13" height="20" viewBox="0 0 13 20"><path d="M0.5 0.5v16.2l3.9-3.7 2.6 6.1 2.6-1.1-2.6-6h5.4z" fill="#ffffff" stroke="#000000" stroke-width="1" stroke-linejoin="round"/></svg>';
+
+// ---------------------------------------------------------------- render
+function chatHtml(t) {
+  const out = [];
+  let prev = null;
+  for (const m of MSGS) {
+    if (t < m.at) break;
+    let gap = 0;
+    if (prev) gap = m.role === 'user' ? 30 : prev.role === 'user' ? 0 : prev.role === 'status' || prev.role === 'relay' ? 12 : 16;
+    if (m.role === 'user') {
+      const chip = m.reactAt !== undefined && t >= m.reactAt;
+      const s = chip ? 0.6 + 0.4 * easeIO(clamp((t - m.reactAt) / 180, 0, 1)) : 1;
+      out.push(`<div class="umsg" style="margin-top:${gap}px">${tag(m.th, true)}<div class="bub">${esc(m.text)}${chip ? `<div class="chip" style="right:8px;bottom:-10px;transform:scale(${s})">${chipSvg}</div>` : ''}</div><div class="hov"></div></div>`);
+    } else if (m.role === 'status') {
+      out.push(`<div class="status" style="margin-top:${gap}px">${esc(m.text)} ${ico.rchev}</div>`);
+    } else if (m.role === 'relay') {
+      out.push(`<div class="relay" style="margin-top:${gap}px">${esc(m.text)}</div>`);
+    } else {
+      const secs = m.secs.filter(s => t >= s.start).map(s => {
+        const k = s.end <= s.start ? 1 : (t - s.start) / (s.end - s.start);
+        return `<div class="sec" style="--c:${TH[s.th].color}">${tag(s.th, true)}<div class="txt">${esc(words(s.text, k))}</div></div>`;
+      });
+      out.push(`<div style="margin-top:${gap}px">${secs.join('')}</div>`);
+    }
+    prev = m;
+  }
+  return out.join('');
+}
+
+function paneHtml(t, picks) {
+  const entries = [];
+  for (const m of MSGS) {
+    if (t < m.at) break;
+    if (m.role === 'user') entries.push({ kind: 'u', th: m.th, text: m.text, chip: m.reactAt !== undefined && t >= m.reactAt });
+    if (m.role === 'reply') for (const s of m.secs) if (t >= s.end) entries.push({ kind: 'r', th: s.th, text: s.text });
+  }
+  const shown = entries.filter(e => picks.size === 0 || picks.has(e.th));
+  return shown.map((e, i) => {
+    const gap = i === 0 ? '' : '<div class="pgap"></div>';
+    if (e.kind === 'r') return `${gap}<div class="psec" style="--c:${TH[e.th].color}">${tag(e.th, false)}<div class="txt">${esc(e.text)}</div></div>`;
+    return `${gap}<div class="pusr" style="${e.chip ? 'padding-bottom:12px' : ''}">${tag(e.th, false)}<div class="pbub">${esc(e.text)}${e.chip ? `<div class="chip" style="right:8px;bottom:-10px">${chipSvg}</div>` : ''}</div></div>`;
+  }).join('');
+}
+
+function promptState(t) {
+  for (const m of MSGS) {
+    if (!m.type) continue;
+    const [a, b] = m.type;
+    const full = m.typed ?? m.text;
+    if (t >= a && t < m.at) { const n = Math.round(clamp((t - a) / (b - a), 0, 1) * full.length); return { text: full.slice(0, n), caret: true }; }
+  }
+  return { text: '', caret: false };
+}
+
+// Where each cursor target was last drawn. Frames are rendered in time order, and a
+// target is always drawn at some point before the cursor leaves it.
+const seen = {};
+
+function render(t) {
+  const app = document.getElementById('app');
+  const picked = at(PICKS, t);
+  const pc = TH[picked].color;
+  const menuOpen = t >= MENU.open && t < MENU.close;
+  const hot = at(MENU.hot, t);
+  const picks = new Set(t >= FILTER.pick ? [FILTER.th] : []);
+  const fHover = t >= FILTER.hover[0] && t < FILTER.hover[1];
+  const pr = promptState(t);
+  const paneOpen = t >= PANE.open && t < PANE.close;
+  app.style.setProperty('--cw', (paneOpen ? 472 : 844) + 'px');
+  const cogOpen = t >= COG.open && t < COG.click;
+  const tabxHot = t >= TABX_HOT[0] && t < TABX_HOT[1];
+
+  // the thought's dot
+  let dot = '';
+  const running = t >= TH_START && t < TH_END;
+  if (running) {
+    let since; for (const [s] of NOTES) if (t >= s) since = s;
+    dot = dotSvg(THOUGHT.color, 'running', since === undefined ? undefined : t - since);
+  } else if (t >= TH_END && t < TH_END + FADE_MS) dot = dotSvg(THOUGHT.color, 'done', t - TH_END);
+  const tlabel = running ? 'thoughts 1' : 'thoughts';
+
+  let note; for (const [s, n] of NOTES) if (t >= s) note = n;
+
+  app.innerHTML = `
+  <div class="ti" style="left:12px">${ico.menu}</div>
+  <div class="ti" style="left:42px">${ico.side}</div>
+  <div class="ti" style="left:72px">${ico.back}</div>
+  <div class="ti" style="left:100px">${ico.fwd}</div>
+  <div class="laptop">${ico.laptop}</div>
+  <div class="title">Recipe box polish ${chev('#c3c2b7').replace('width="20"', 'width="16"').replace('-6.86 0 22.86 16', '-2 0 18 16')}<span class="badge">recipe-box</span></div>
+  ${['term', 'diff', 'globe', 'folder', 'kebab'].map((k, i) => `<div class="ti" style="left:${590 + i * 28}px">${ico[k]}</div>`).join('')}
+  <div class="ti" style="left:758px">${ico.min}</div>
+  <div class="ti" style="left:804px">${ico.max}</div>
+  <div class="ti" style="left:850px">${ico.close}</div>
+
+  <div class="msgs">${chatHtml(t)}</div>
+
+  <div class="band">
+    <div class="tint" style="background:${pc}26"><div class="pdot" style="background:${pc}"></div>
+      <div class="sel" id="picker-sel">${TH[picked].name}${chev()}</div></div>
+    <div class="sel cog" id="cog" style="left:0${cogOpen ? ';border-color:rgba(255,255,255,.3)' : ''}">${cogSvg}${chev()}</div>
+    <div class="rgroup">${dot ? `<div id="dot0">${dot}</div>` : ''}<div class="sel" style="${dot ? '' : 'margin-left:0'}">Multitask${chev()}</div><div class="tbtn">${tlabel}</div></div>
+  </div>
+  <div class="prompt"><div class="ptext">${esc(pr.text)}${pr.caret ? '<span class="pcaret"></span>' : ''}</div><div style="position:absolute;right:12px;top:11px">${ico.ret}</div></div>
+  <div class="below">
+    <div style="position:absolute;left:8px;top:2px">${ico.plus}</div>
+    <div style="position:absolute;left:29px;top:2px">${ico.mic}</div>
+    <div style="position:absolute;left:44px;top:3px">${chev('#8f8f87').replace('width="20"', 'width="14"').replace('-6.86 0 22.86 16', '0 0 16 16')}</div>
+    <div style="position:absolute;left:64px;color:#c2beb1">Auto</div>
+    <div style="position:absolute;right:76px;color:#efeae5">Opus 5.5</div>
+    <div style="position:absolute;right:30px;color:#efeae5">Extra</div>
+    <div style="position:absolute;right:6px;top:3px">${ico.ring}</div>
+  </div>
+
+  <div class="pane" style="${paneOpen ? `opacity:${clamp((t - PANE.open) / PANE.fade, 0, 1)}` : 'visibility:hidden'}">
+    <div class="tab" style="left:5px;background:#3c3c3b;color:#edece9">Thread view <span class="tabx${tabxHot ? ' hot' : ''}" id="tabx">${ico.x('#d6d5d2')}</span></div>
+    <div style="position:absolute;right:12px;top:11px">${ico.expand}</div>
+    <div class="pbody">${paneHtml(t, picks)}</div>
+    <div class="pdiv"></div>
+    <div class="filters">${ORDER.map(k => {
+      const on = picks.has(k);
+      const bc = on ? TH[k].color : fHover && k === FILTER.th ? TH[k].color + '73' : 'transparent';
+      return `<div class="fsw" id="f-${k}" style="border-color:${bc}">${tag(k, false)}</div>`;
+    }).join('')}</div>
+  </div>
+  ${`<div class="menu" id="menu" style="${menuOpen ? '' : 'visibility:hidden'}">${ORDER.map(k => `<div class="mi${menuOpen && hot === k ? ' hot' : ''}" id="mi-${k}">${TH[k].name}${k === 'design' ? '<svg width="12" height="12" viewBox="0 0 12 12"><path d="M2.5 6.2 5 8.6 9.6 3.6" fill="none" stroke="#f0efec" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>' : ''}</div>`).join('')}<div class="mi dim">No thread</div></div>`}
+  <div class="menu" id="cogmenu" style="width:232px;${cogOpen ? '' : 'visibility:hidden'}">${COG_ROWS.map(([label, on]) => on === undefined
+    ? `<div class="mi${label === VIEW_ROW && cogOpen && t >= COG.hot ? ' hot' : ''}"${label === VIEW_ROW ? ' id="mi-view"' : ''}>${label}</div>`
+    : `<div class="mi">${label}${switchSvg(on)}</div>`).join('')}</div>
+  ${(t >= CARD[0] && t < CARD[1] && dot) ? `<div class="card" id="card"><div style="color:${THOUGHT.color};font-weight:700">${THOUGHT.name}</div><div>${note ? esc(note) : '<span style="color:#898781">No notes yet</span>'}</div><div style="color:#898781">just now</div></div>` : ''}
+  <div class="cursor" id="cursor" style="display:none">${cursorSvg}</div>`;
+
+  // place the cog after the picker's tint, the menus above the picker and the cog, the card above the dot
+  const band = app.querySelector('.band').getBoundingClientRect();
+  const tint = app.querySelector('.tint').getBoundingClientRect();
+  app.querySelector('#cog').style.left = (tint.right - band.left + 11) + 'px';
+  const menu = app.querySelector('#menu');
+  if (menu) { const sel = app.querySelector('#picker-sel').getBoundingClientRect(); menu.style.left = sel.left + 'px'; menu.style.top = (band.top - 4 - menu.offsetHeight) + 'px'; }
+  const cogMenu = app.querySelector('#cogmenu');
+  const cog = app.querySelector('#cog').getBoundingClientRect();
+  cogMenu.style.left = cog.left + 'px'; cogMenu.style.top = (band.top - 4 - cogMenu.offsetHeight) + 'px';
+  const card = app.querySelector('#card');
+  if (card) { const d = app.querySelector('#dot0').getBoundingClientRect(); const x = clamp(d.left + 7 - card.offsetWidth / 2, band.left + 4, band.right - 4 - card.offsetWidth); card.style.left = x + 'px'; card.style.top = (band.top - 6 - card.offsetHeight) + 'px'; }
+
+  // cursor
+  const vis = CURSOR_SPANS.some(([a, b]) => t >= a && t <= b);
+  if (vis) {
+    // a target's centre (plus its offset); one not drawn now keeps where it was last seen
+    const pos = p => {
+      if (Array.isArray(p[1])) return p[1];
+      const el = app.querySelector(p[1]);
+      if (el) { const r = el.getBoundingClientRect(); seen[p[1]] = [r.left + r.width / 2, r.top + r.height / 2]; }
+      const c = seen[p[1]] ?? [440, 400];
+      return [c[0] + (p[2] || 0), c[1] + (p[3] || 0)];
+    };
+    let i = PATH.findIndex(p => p[0] > t);
+    let xy;
+    if (i === -1) xy = pos(PATH[PATH.length - 1]);
+    else if (i === 0) xy = pos(PATH[0]);
+    else { const a = PATH[i - 1], b = PATH[i]; const pa = pos(a), pb = pos(b); const k = easeIO((t - a[0]) / (b[0] - a[0])); xy = [lerp(pa[0], pb[0], k), lerp(pa[1], pb[1], k)]; }
+    const c = app.querySelector('#cursor'); c.style.display = 'block'; c.style.left = xy[0] + 'px'; c.style.top = xy[1] + 'px';
+  }
+}
+window.render = render;
+window.END = END;
+window.SAMPLES = SAMPLES;
+const q = new URLSearchParams(location.search);
+document.fonts.ready.then(() => {
+  render(+(q.get('t') ?? 0));
+  window.ready = true;
+  if (q.has('play')) { const t0 = performance.now(); const tick = () => { render((performance.now() - t0) % END); requestAnimationFrame(tick); }; tick(); }
+});
+</script></body></html>
