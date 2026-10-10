@@ -1099,17 +1099,21 @@ test('the picker is a Select of the threads and "No thread", its face the picked
     return [await pickerLabel(desktop), await pickerLabel(terminal)]
   }
   // the mark before the picker and the Box that holds the two: for the picked thread, on
-  // the desktop a dot of its colour on a light tint of it, on the terminal one solid cell
-  // of its colour and no tint; for none, a hollow dot and no tint
+  // the desktop a dot of its colour (a picture, filled) on a light tint of it, on the
+  // terminal one solid cell of its colour and no tint; for none, a hollow dot (on the
+  // desktop a picture of a ring) and no tint
   const lookOf = async (band: { drawn: () => Promise<unknown> }) => {
     const group = pathTo(await band.drawn(), n => n.props?.key === PICKER)?.at(-2)
     const mark = (group?.children as Drawn[] | undefined)?.[0]
-    const text = (mark?.children ?? []).join('')
-    return {
-      mark: text === '○' ? 'none' : text === '●' ? { dot: mark?.props?.color } : { cell: mark?.props?.backgroundColor, text },
-      tint: group?.props?.backgroundColor,
-      flexShrink: group?.props?.flexShrink,
+    const markOf = () => {
+      if (mark?.type === 'Svg') {
+        const fill = /fill="([^"]+)"/.exec(String(mark.props?.source))?.[1]
+        return fill === 'none' ? 'none' : { dot: fill }
+      }
+      const text = (mark?.children ?? []).join('')
+      return text === '○' ? 'none' : { cell: mark?.props?.backgroundColor, text }
     }
+    return { mark: markOf(), tint: group?.props?.backgroundColor, flexShrink: group?.props?.flexShrink }
   }
 
   // the threads to post to, then "No thread"; no label before the face, and no tick of the
@@ -1128,15 +1132,29 @@ test('the picker is a Select of the threads and "No thread", its face the picked
   const none = { mark: 'none', tint: undefined, flexShrink: 0 }
   expect(await faces()).toEqual(['No thread', 'No thread'])
   for (const band of [desktop, terminal]) expect(await lookOf(band)).toEqual(none)
+  // the desktop's tint keeps its shape, clear, with no thread, so picking one moves nothing
+  const shapeOf = async () => {
+    const props = pathTo(await desktop.drawn(), n => n.props?.key === PICKER)?.at(-2)?.props
+    return [props?.borderStyle, props?.borderColor, props?.paddingX, props?.paddingY]
+  }
+  const unpicked = await shapeOf()
+  expect(unpicked).toEqual(['single', '#00000000', 0.5, 0])
   await terminal.select({ key: PICKER, value: 'thread:perf' })
   expect(await faces()).toEqual(['perf', 'perf'])
   expect(await lookOf(terminal)).toEqual({ mark: { cell: PALETTE[1], text: ' ' }, tint: undefined, flexShrink: 0 })
   expect(await lookOf(desktop)).toEqual({ mark: { dot: PALETTE[1] }, tint: `${PALETTE[1]}26`, flexShrink: 0 })
-  // the tint keeps a little room either side and no more, and leaves the height to the
-  // desktop, which sets the picker's own
-  const tinted = pathTo(await desktop.drawn(), n => n.props?.key === PICKER)?.at(-2)?.props
-  expect(tinted).toMatchObject({ paddingX: 0.5, paddingY: 0 })
-  expect(tinted?.height).toBeUndefined()
+  expect(await shapeOf()).toEqual(unpicked)
+  // the tint has rounded corners from a clear border, keeps a little room either side and
+  // no more, and leaves the height to the desktop, which sets the picker's own; the dot is
+  // a fixed size, so the desktop centres it on the picker
+  const tinted = pathTo(await desktop.drawn(), n => n.props?.key === PICKER)?.at(-2)
+  expect(tinted?.props).toMatchObject({ borderStyle: 'single', borderColor: '#00000000', paddingX: 0.5, paddingY: 0 })
+  expect(tinted?.props?.height).toBeUndefined()
+  expect(tinted?.props?.alignItems).toBe('center')
+  expect((tinted?.children as Drawn[] | undefined)?.[0]?.props).toMatchObject({ width: 8, height: 8, alt: 'perf thread' })
+  // the terminal's group has no border, which would cost it two rows
+  const plain = pathTo(await terminal.drawn(), n => n.props?.key === PICKER)?.at(-2)?.props
+  expect(plain?.borderStyle).toBeUndefined()
 
   // one thread is picked at a time: another takes its place, and "No thread" leaves none
   await desktop.select({ key: PICKER, value: 'thread:design' })
@@ -1755,7 +1773,9 @@ test('the Threads menu starts a thread from a typed name and picks it', async ($
   expect(await band.find({ key: 'threads:new' })).toBeDefined()
   expect(await choicesIn(band)).toEqual(['design', 'ideas'])
   expect(await pickerLabel(band)).toBe('ideas')
-  expect((await band.findAll({ type: 'Text' })).find(t => t.text === '●')?.props.color).toBe(PALETTE[1])
+  expect(String((await band.findAll({ type: 'Svg' })).find(p => p.props.alt === 'ideas thread')?.props.source)).toContain(
+    `fill="${PALETTE[1]}"`,
+  )
   await $.prompt.submit(say('first thought'))
   expect(prompts.at(-1)).toContain('This message belongs to the thread "ideas"')
 

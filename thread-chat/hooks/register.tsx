@@ -2193,6 +2193,22 @@ function drawThreadActions($: EngineInterface, ui: MenuUi, surface: RenderSurfac
 // the thread's colour: about 15%, which still shows on a dark theme.
 const PICKER_TINT = '26'
 
+// The desktop's tint has the picker's own small rounded corners. Only a border gives a Box
+// corners there, so it has one, clear, and that border's padding put back to a little room
+// either side and none above or below: the desktop sets the picker's height.
+const PICKER_TINT_SHAPE = { borderStyle: 'single', borderColor: '#00000000', paddingX: 0.5, paddingY: 0 }
+
+// The desktop's mark before the picker, 8px across: a dot of the picked thread's colour,
+// or with none a ring in the dimmed text colour. A picture, so the band centres it on the
+// picker exactly; a glyph sits wherever its font puts it in the line.
+const PICKER_MARK_SIZE = 8
+const pickerMarkPicture = (color: string | undefined) =>
+  `<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8" viewBox="0 0 8 8">` +
+  (color === undefined
+    ? '<circle cx="4" cy="4" r="3.5" fill="none" stroke="currentColor" stroke-opacity="0.5"/>'
+    : `<circle cx="4" cy="4" r="4" fill="${escapeXml(color)}"/>`) +
+  '</svg>'
+
 // Threads' controls in the band: the thread picker after a mark of the picked thread's
 // colour, or, with no threads to post to, how to start one. They take the room the band
 // has left and give way first.
@@ -2220,12 +2236,26 @@ async function drawThreadControls(
 
   if (e.surface !== 'mobile') {
     const { Select } = $.ui.resolve(e)
-    // The thread messages go to shows in its colour: on the desktop, a light tint of it
-    // behind the dot and picker; elsewhere, where a see-through fill may not show, one
-    // solid cell of it for the dot. With no thread, the hollow dot alone.
+    // The thread messages go to shows in its colour: on the desktop, a dot of it on a
+    // light tint of it behind the picker; elsewhere, where a see-through fill may not
+    // show, one solid cell of it. With no thread, a hollow dot alone.
     const isDesktop = e.surface === 'desktop'
-    const tint = isDesktop && picked !== undefined ? { backgroundColor: picked.color + PICKER_TINT, paddingX: 0.5, paddingY: 0 } : {}
-    const mark = picked !== undefined && !isDesktop ? <Text backgroundColor={picked.color}> </Text> : dot(picked)
+    // The tint's shape stays with no thread, clear, so picking one moves nothing.
+    const tint = isDesktop ? { ...PICKER_TINT_SHAPE, ...(picked !== undefined ? { backgroundColor: picked.color + PICKER_TINT } : {}) } : {}
+    let mark: RenderElement
+    if (e.surface === 'desktop') {
+      const { Svg } = $.ui.resolve(e)
+      mark = (
+        <Svg
+          source={pickerMarkPicture(picked?.color)}
+          alt={picked === undefined ? 'No thread' : `${picked.name} thread`}
+          width={PICKER_MARK_SIZE}
+          height={PICKER_MARK_SIZE}
+        />
+      )
+    } else {
+      mark = picked !== undefined ? <Text backgroundColor={picked.color}> </Text> : dot(picked)
+    }
     return (
       <Box flexDirection="row" alignItems="center" flexGrow={1} flexShrink={1} minWidth={0}>
         <Box flexDirection="row" alignItems="center" columnGap={1} flexShrink={0} {...tint}>
