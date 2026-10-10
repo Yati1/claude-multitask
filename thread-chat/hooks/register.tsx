@@ -56,6 +56,8 @@ const isOn = atom({ plugin: 'thread-chat', key: 'isOn' } as const, false)
 const threads = atom({ plugin: 'thread-chat', key: 'threads' } as const, [])
 const aliases = atom({ plugin: 'thread-chat', key: 'aliases' } as const, {})
 const agentMayCreate = atom({ plugin: 'thread-chat', key: 'agentMayCreate' } as const, false)
+// Held for the session as the agent switch is, never kept on disk: a new run filters again.
+const filtersChat = atom({ plugin: 'thread-chat', key: 'filtersChat' } as const, true)
 const snaps = atom({ plugin: 'thread-chat', key: 'snaps' } as const, {})
 const recent = atom({ plugin: 'thread-chat', key: 'recent' } as const, [])
 const recentTexts = atom({ plugin: 'thread-chat', key: 'recentTexts' } as const, [])
@@ -72,12 +74,14 @@ const menuOpen = atom({ plugin: 'thread-chat', key: 'menuOpen' } as const, false
 
 const CREATE_TOOL = 'mcp__thread-chat__create_thread'
 // Thread-chat's menu in the band: a "Threads" button, and a row per switch, which a
-// press flips: threads on in this chat, and, while on, whether the agent may start them.
-// On the desktop the rows are a card shown while the pointer is on the button or it has
-// the focus; on the terminal a press on the button shows or hides them in the band.
+// press flips: threads on in this chat, and, while on, whether the agent may start them
+// and whether picking threads filters the chat. On the desktop the rows are a card shown
+// while the pointer is on the button or it has the focus; on the terminal a press on the
+// button shows or hides them in the band.
 const MENU = 'threads'
 const THREADS_SWITCH = 'threads-on'
 const AGENT_SWITCH = 'agent-threads'
+const FILTER_SWITCH = 'filter-chat'
 // A switch's hit area over its picture, keyed by this and the switch's key.
 const SWITCH_HIT = 'switch:'
 // The thread view's pane id, which is also its command's name and its menu row's key.
@@ -157,11 +161,12 @@ async function flipThreads($: EngineInterface): Promise<boolean> {
   return now
 }
 
-// Flips a switch of the band's menu. The agent's switch while threads are off leaves
-// things be.
+// Flips a switch of the band's menu. The agent's switch or the filter's while threads
+// are off leaves things be.
 async function flipMenuSwitch($: EngineInterface, key: string) {
   if (key === THREADS_SWITCH) await flipThreads($)
   else if (key === AGENT_SWITCH && (await read($, isOn))) await flipAgentSwitch($)
+  else if (key === FILTER_SWITCH && (await read($, isOn))) await update($, filtersChat, is => !is)
 }
 
 // What a heading means, by one rule for sending and drawing alike: `+name` a new
@@ -377,10 +382,11 @@ async function isRecentReply($: EngineInterface, id: string, text: string): Prom
   return (await read($, recentTexts)).includes(textMarkOf(text))
 }
 
-// Whether a row that belongs to no thread is filtered out: while threads are on and a
-// thread is picked, all but those since the person's last message are.
+// Whether a row that belongs to no thread is filtered out: while threads are on, a
+// thread is picked and picks filter the chat, all but those since the person's last
+// message are.
 async function isFilteredOut($: EngineInterface, ids: string[]): Promise<boolean> {
-  if (!(await read($, isOn)) || (await selectedKeys($)).size === 0) return false
+  if (!(await read($, isOn)) || (await chatFilterKeys($)).size === 0) return false
   return !(await isRecent($, ids))
 }
 
@@ -624,9 +630,9 @@ function tagPicture(name: string, color: string, align: 'start' | 'end', inset =
 }
 
 // The SVG of a thread's filter pill: one row high, its coloured dot and tag inside,
-// outlined and tinted in the thread's colour when picked, faded when another is,
-// and with an arrow after the tag when it alone is picked: messages with no
-// heading go to it. With no colour it has no dot; its outline is dashed unless
+// outlined and tinted in the thread's colour when picked, faded when another is
+// (while picks filter the chat), and with an arrow after the tag when it alone is
+// picked: messages with no heading go to it. With no colour it has no dot; its outline is dashed unless
 // told otherwise, as the pill of no thread. Hot, it is the same pill under the
 // pointer: its fill and outline stronger and a faded one less faded, as the
 // desktop lights its own controls on hover (and leaves the cursor as it is).
@@ -962,12 +968,17 @@ function drawAddThread(
 type MenuSwitch = { key: string; label: string; isOn: boolean }
 
 // The switches of the band's menu: threads on in this chat, and, while they are, whether
-// the agent may start them.
+// the agent may start them and whether picking threads filters the chat.
 async function menuSwitches($: EngineInterface): Promise<MenuSwitch[]> {
   const isThreadsOn = await read($, isOn)
   return [
     { key: THREADS_SWITCH, label: 'On in this chat', isOn: isThreadsOn },
-    ...(isThreadsOn ? [{ key: AGENT_SWITCH, label: 'Agent may start threads', isOn: await read($, agentMayCreate) }] : []),
+    ...(isThreadsOn
+      ? [
+          { key: AGENT_SWITCH, label: 'Agent may start threads', isOn: await read($, agentMayCreate) },
+          { key: FILTER_SWITCH, label: 'Filter the chat', isOn: await read($, filtersChat) },
+        ]
+      : []),
   ]
 }
 
@@ -1148,17 +1159,25 @@ function drawPicker(
   )
 }
 
-// Picks or drops a thread in the filter, and takes the chat back to its end.
+// Picks or drops a thread in the filter, and takes the chat back to its end; with the
+// filter off the chat keeps its rows, and its place.
 async function toggleThread($: EngineInterface, key: string) {
   await update($, threads, all =>
     all.map(one => (keyOf(one.name) === key ? { ...one, isSelected: !one.isSelected } : one)),
   )
-  await scrollToEnd($)
+  if (await read($, filtersChat)) await scrollToEnd($)
 }
 
 // The keys of the threads picked in the band; empty shows everything.
 async function selectedKeys($: EngineInterface): Promise<Set<string>> {
   return new Set((await read($, threads)).filter(t => t.isSelected).map(t => keyOf(t.name)))
+}
+
+// The keys of the threads the chat is filtered to: those picked, unless the person
+// turned the menu's filter off, when the chat shows every row whatever is picked. The
+// thread view keeps to the picks either way. Read while a row draws, so a flip draws it again.
+async function chatFilterKeys($: EngineInterface): Promise<Set<string>> {
+  return (await read($, filtersChat)) ? selectedKeys($) : new Set()
 }
 
 // Whether a section stays in view: all of them while no thread is picked, else
@@ -1774,7 +1793,8 @@ async function drawThreadControls(
   e: Parameters<EngineInterface['ui']['resolve']>[0],
 ): Promise<RenderElement> {
   const list = await read($, threads)
-  const isFiltering = list.some(t => t.isSelected)
+  // The pills not picked fade only while the chat hides their rows.
+  const isFiltering = (await read($, filtersChat)) && list.some(t => t.isSelected)
   // With one thread alone picked, messages with no heading go to it.
   const picked = list.filter(t => t.isSelected)
   const sendTarget = picked.length === 1 ? picked[0] : undefined
@@ -1939,8 +1959,9 @@ export const register: Register = on => {
       const only = picked.length === 1 ? picked[0] : undefined
       if (only === undefined) return send([])
       unsent.push({ text: e.text.trim(), key: keyOf(only.name) })
+      const how = (await read($, filtersChat)) ? 'while viewing that thread alone' : 'with that thread picked'
       return send([
-        `This message belongs to the thread "${only.name}": the user wrote it while viewing that thread alone, so your reply most likely belongs under that thread's heading.`,
+        `This message belongs to the thread "${only.name}": the user wrote it ${how}, so your reply most likely belongs under that thread's heading.`,
       ])
     }
     await addThreads($, names, 'user')
@@ -2258,7 +2279,7 @@ export const register: Register = on => {
     const merged = await read($, aliases)
     const snapped = await read($, snaps)
     const resolve = (name: string) => personThreadOf(name, list, { ...snapped, ...merged })
-    const selected = await selectedKeys($)
+    const selected = await chatFilterKeys($)
     const typed = personSectionsOf(e.props.text, list, snapped, merged)
     // A message with no heading may have gone to the one thread picked as it was sent.
     const sentThread = typed.some(s => s.thread !== null) ? undefined : await sentThreadOf($, e.requestId, list, merged)
@@ -2325,14 +2346,14 @@ export const register: Register = on => {
     // The voice's "(quiet)" (the multitask plugin draws it as nothing) and a block of no
     // words are the engine's drawing alone: no "+ thread", or room for one, round nothing.
     if (isBlankText(e.props.text)) {
-      const isHidden = (await selectedKeys($)).size > 0 && !(await isRecentReply($, e.requestId, e.props.text))
+      const isHidden = (await chatFilterKeys($)).size > 0 && !(await isRecentReply($, e.requestId, e.props.text))
       if (!isHidden) return next(e)
       const { Box } = $.ui.resolve(e)
       return <Box display="none" />
     }
     const list = await read($, threads)
     const merged = await read($, aliases)
-    const selected = await selectedKeys($)
+    const selected = await chatFilterKeys($)
     const resolve = (name: string) => threadOf(name, list, merged)
     const written = splitSections(e.props.text, name => resolve(name) !== undefined)
     const moves = await read($, moved)

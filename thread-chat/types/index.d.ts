@@ -55,6 +55,9 @@ declare module 'claude-code' {
       // a merged-away thread's key -> the key of the thread it now belongs to
       aliases: Record<string, string>
       agentMayCreate: boolean
+      // whether picking threads in the band filters the chat to them; off, a pick still
+      // says where messages with no heading go, but the chat shows every row
+      filtersChat: boolean
       // a heading's key as typed -> the key of the thread it was decided to mean at send
       snaps: Record<string, string>
       // the main conversation's rows since the person's last message, that message
