@@ -4,6 +4,14 @@ Notable changes to the thread-chat, multitask and react mods. The format is base
 
 ## Unreleased
 
+### Changed
+
+- Changed thread-chat to send each message under a heading of its thread's exact name, however it was chosen.
+
+### Fixed
+
+- Fixed issue where thread-chat lost a message's picked thread when the app closed before the reply ended.
+
 ## 0.4.0 - 2026-10-11
 
 ### Added

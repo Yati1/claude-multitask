@@ -10,6 +10,7 @@ import {
   leadingQuoteOf,
   rewriteHeadings,
   splitSections,
+  withHeading,
   withOpeningQuote,
 } from '../hooks/parse'
 
@@ -217,7 +218,11 @@ test('a typed name finds the thread it most likely means', async () => {
   const fixed = rewriteHeadings('#thrads\nx\n# +ideas\ny\n#auth\nz', raw =>
     raw === 'thrads' ? 'threads' : raw.replace(/^\+/, ''),
   )
-  expect(fixed).toBe('# threads\nx\n# ideas\ny\n#auth\nz')
+  expect(fixed).toBe('# threads\nx\n# ideas\ny\n# auth\nz')
+  // a heading that already reads `# name` is left as typed; a line's `\r` is kept; a name
+  // that would not read back as its heading leaves the heading as typed
+  expect(rewriteHeadings('# auth #\r\nx\r\n#auth\r\ny\r\n# auth\r\nz', () => 'auth')).toBe('# auth\r\nx\r\n# auth\r\ny\r\n# auth\r\nz')
+  expect(rewriteHeadings('#c\nx', () => 'C#')).toBe('#c\nx')
 })
 
 test('a mistyped or partial heading means its thread, decided at send and told to the model', async ($, on) => {
@@ -228,13 +233,15 @@ test('a mistyped or partial heading means its thread, decided at send and told t
   expect(prompts.at(-1)).toStartWith('# Threads\na\n# Multitasking\nb\n--\n# Conversation threads\n')
   expect(prompts.at(-1)).toContain('Threads so far: "Threads", "Multitasking".')
 
-  // the text goes on as typed; a note beside it says what the headings mean
+  // the text goes on with each heading its thread's exact name; a note beside it says
+  // what the headings meant as typed
   await $.prompt.submit(say('#thrads\nc\n#multi\nd'))
   expect(prompts.at(-1)).toBe(
-    '#thrads\nc\n#multi\nd\n--\nThread headings in this message, as the user meant them: "#thrads" is the thread "Threads"; "#multi" is the thread "Multitasking".',
+    '# Threads\nc\n# Multitasking\nd\n--\nThread headings in this message, as the user meant them: "#thrads" is the thread "Threads"; "#multi" is the thread "Multitasking".',
   )
 
   await $.prompt.submit(say('#+Thread\ne'))
+  expect(prompts.at(-1)).toStartWith('# Thread\ne\n--\n')
   expect(prompts.at(-1)).toContain('"#+Thread" starts the new thread "Thread"')
   const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...BAND })
   expect(await choiceKeys(band)).toContain('thread')
@@ -927,26 +934,29 @@ test('with a thread picked, a message with no heading goes to it; a heading stil
   await pickIn(band, 'terminal', 'perf')
 
   await $.prompt.submit(say('and the cache?'))
+  // it goes on under the thread's heading, the note beside it
+  expect(prompts.at(-1)).toStartWith('# perf\nand the cache?\n--\n')
   expect(prompts.at(-1)).toContain('This message belongs to the thread "perf": the user posted it there with their thread picker')
   await $.session
     .append({
-      message: { type: 'user', role: 'user', content: [{ type: 'text', text: 'and the cache?' }] },
+      message: { type: 'user', role: 'user', content: [{ type: 'text', text: '# perf\nand the cache?' }] },
       door: 'prompt',
       origin: { kind: 'composer' },
       uuid: 'p9',
     })
 
-  const row = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...userRow('and the cache?'), requestId: 'p9' })
+  const row = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...userRow('# perf\nand the cache?'), requestId: 'p9' })
   expect(await tagOf(row, 'perf')).toBeDefined()
+  expect((await row.find({ type: 'Text', text: /cache/ }))?.text).toBe('and the cache?')
   // it stays in perf, and in view, whichever thread is picked later
   await pickIn(band, 'terminal', 'design')
   await row.redraw()
   expect(await tagOf(row, 'perf')).toBeDefined()
   expect(await row.find({ text: /cache/ })).toBeDefined()
 
-  // a heading wins over the picked thread
+  // a heading wins over the picked thread, and is not added again
   await $.prompt.submit(say('# perf\nstill slow'))
-  expect(prompts.at(-1)).not.toContain('belongs to the thread')
+  expect(prompts.at(-1)).toBe('# perf\nstill slow')
 
   // with none picked, a message with no heading stays unthreaded
   await pickIn(band, 'terminal', '')
@@ -1019,19 +1029,21 @@ test('a reply to a selected part of a reply goes to the thread that part is in',
   const note = (name: string) =>
     `This message belongs to the thread "${name}": the user replied to part of your message in that thread, so your reply most likely belongs under that thread's heading.`
 
-  // the desktop's marker and quote, then the person's words
+  // the desktop's marker and quote, then the person's words: the thread's heading goes
+  // between them, as a quote right before a heading is in that heading's thread
   const reply = '<!-- reply 1 -->\n> invisible on light\n\nThis is a test of replying'
+  const sent = '<!-- reply 1 -->\n> invisible on light\n\n# design\nThis is a test of replying'
   await $.prompt.submit(say(reply))
-  expect(prompts.at(-1)).toBe(`${reply}\n--\n${note('design')}`)
+  expect(prompts.at(-1)).toBe(`${sent}\n--\n${note('design')}`)
   await $.session
     .append({
-      message: { type: 'user', role: 'user', content: [{ type: 'text', text: reply }] },
+      message: { type: 'user', role: 'user', content: [{ type: 'text', text: sent }] },
       door: 'prompt',
       origin: { kind: 'composer' },
       uuid: 'q1',
     })
   for (const surface of ['terminal', 'desktop'] as const) {
-    const row = await $.ui.mount({ plugin: 'thread-chat', surface, ...userRow(reply), requestId: 'q1' })
+    const row = await $.ui.mount({ plugin: 'thread-chat', surface, ...userRow(sent), requestId: 'q1' })
     expect(await tagOf(row, 'design')).toBeDefined()
     // the engine draws it as sent: the desktop still shows its quote
     expect((await row.find({ type: 'Text', text: /invisible/ }))?.text).toBe(reply)
@@ -1042,7 +1054,7 @@ test('a reply to a selected part of a reply goes to the thread that part is in',
   // one across a link and a line break; a quote found nowhere is passed over
   const two = '<!-- reply 3 -->\n> it is fast\n\nsure?\n\n<!-- reply -->\n> see the profile for more\n\nwhere?\n\n<!-- reply -->\n> not said\n\nhm'
   await $.prompt.submit(say(two))
-  expect(prompts.at(-1)).toBe(`${two}\n--\n${note('perf')}`)
+  expect(prompts.at(-1)).toBe(`${two.replace('\n\nsure?', '\n\n# perf\nsure?')}\n--\n${note('perf')}`)
 
   // a quote wins over the one picked thread
   const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...BAND })
@@ -1083,8 +1095,11 @@ test('a quoted selection opening a message goes with the thread heading right af
   const quote = '<!-- reply 1 -->\r\n> The two tasks deferred until after this release are due now:\r\n>\r\n> reusing a colour'
   const text = `${quote}\r\n\r\n# Multitask\r\nyes`
   await $.prompt.submit(say(text))
-  // the heading decides: the model is told what it means, and nothing of design
-  expect(prompts.at(-1)).toBe(`${text}\n--\nThread headings in this message, as the user meant them: "#Multitask" is the thread "multitasking".`)
+  // the heading decides, written as its thread's name: the model is told what it meant,
+  // and nothing of design
+  expect(prompts.at(-1)).toBe(
+    `${text.replace('# Multitask', '# multitasking')}\n--\nThread headings in this message, as the user meant them: "#Multitask" is the thread "multitasking".`,
+  )
   await $.session.append({
     message: { type: 'user', role: 'user', content: [{ type: 'text', text }] },
     door: 'prompt',
@@ -1117,6 +1132,102 @@ test('a quoted selection opening a message goes with the thread heading right af
   await pickIn(band, 'terminal', 'design')
   const picked = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...userRow(text), requestId: 'q1' })
   expect(await picked.find({ text: /deferred|yes/ })).toBeUndefined()
+})
+
+test("a message sent to a thread with no heading takes that thread's heading where its section starts", async () => {
+  const split = (text: string) => withOpeningQuote(splitSections(text, () => true), () => true)
+  // on its first line, blank lines round the text gone, its own indents kept
+  expect(withHeading('\n\nhello\n  there\n\n', 'design')).toBe('# design\nhello\n  there')
+  // after the quoted selection it opens with, before the person's own words
+  expect(withHeading('<!-- reply 1 -->\n> fast\n\nreally?', 'perf')).toBe('<!-- reply 1 -->\n> fast\n\n# perf\nreally?')
+  // two selections back to back, as the desktop writes them on Windows: its line ends kept
+  const quotes = '<!-- reply 2 -->\r\n> invisible\r\n>\r\n> on light\r\n<!-- reply -->\r\n> fast'
+  expect(withHeading(`\r\n${quotes}\r\n\r\nwhy?\r\n`, 'design')).toBe(`${quotes}\r\n\r\n# design\r\nwhy?`)
+  // a quote alone; a quote after words of the person's own, which opens no section
+  expect(withHeading('<!-- reply 1 -->\n> fast', 'perf')).toBe('<!-- reply 1 -->\n> fast\n\n# perf')
+  expect(withHeading('so\n<!-- reply 1 -->\n> fast\n\nreally?', 'perf')).toBe('# perf\nso\n<!-- reply 1 -->\n> fast\n\nreally?')
+
+  // each reads back as one section of that thread, the quote first
+  expect(split(withHeading('hello\n  there', 'design'))).toEqual([{ thread: 'design', text: 'hello\n  there' }])
+  expect(split(withHeading(`${quotes}\r\n\r\nwhy?`, 'design'))).toEqual([{ thread: 'design', text: `${quotes}\n\nwhy?` }])
+  expect(split(withHeading('<!-- reply 1 -->\n> fast', 'perf'))).toEqual([{ thread: 'perf', text: '<!-- reply 1 -->\n> fast' }])
+  expect(split(withHeading('so\n<!-- reply 1 -->\n> fast', 'perf'))).toEqual([{ thread: 'perf', text: 'so\n<!-- reply 1 -->\n> fast' }])
+})
+
+test('a message goes on with its threads written in it, each heading `# ` and its thread\'s exact name', async ($, on) => {
+  const prompts = engine(on)
+  await flipThreads($)
+  await $.prompt.submit(say('# design\na\n# perf\nb'))
+  const sentOf = () => (prompts.at(-1) ?? '').split('\n--\n')[0]
+
+  // without the space, or in another case: its thread's exact name, and nothing to tell
+  await $.prompt.submit(say('#perf\nc\n# Design\nd'))
+  expect(prompts.at(-1)).toBe('# perf\nc\n# design\nd')
+  // a later heading abbreviated or mistyped, as the first
+  await $.prompt.submit(say('# design\ne\n#per\nf\n#dezign\ng'))
+  expect(sentOf()).toBe('# design\ne\n# perf\nf\n# design\ng')
+  // typed with its first line on its line: on a line of its own
+  await $.prompt.submit(say('#perf the cache is cold\nh'))
+  expect(sentOf()).toBe('# perf\nthe cache is cold\nh')
+  // `#+name` as the heading of the thread it starts
+  await $.prompt.submit(say('#+ideas\ni'))
+  expect(sentOf()).toBe('# ideas\ni')
+
+  // with no thread picked, a message with no heading goes on as typed
+  const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...BAND })
+  await pickIn(band, 'terminal', '')
+  await $.prompt.submit(say('just words\n## notes'))
+  expect(prompts.at(-1)).toBe('just words\n## notes')
+
+  // with one picked, deeper headings and those in code are no thread's: it goes under the
+  // picked thread's heading, and they stay
+  await pickIn(band, 'terminal', 'perf')
+  await $.prompt.submit(say('## notes\nj\n```\n# not a heading\n```'))
+  expect(sentOf()).toBe('# perf\n## notes\nj\n```\n# not a heading\n```')
+  // text before the first heading stays unthreaded, the picked thread or not
+  await $.prompt.submit(say('intro\n#design\nk'))
+  expect(sentOf()).toBe('intro\n# design\nk')
+  // no words (a picture alone), a command's text, or another's prompt a surface passes as
+  // the person's: left as they came
+  for (const text of [
+    '  ',
+    '<command-name>/review</command-name>',
+    'The multitask plugin sent a message:\nThought updates. Reply (quiet) unless something here needs you.\n\nfound it',
+  ]) {
+    await pickIn(band, 'terminal', 'perf')
+    await $.prompt.submit(say(text))
+    expect(sentOf()).toBe(text)
+  }
+})
+
+test('a message sent to a thread with no heading is kept as its row is stored, not only as the turn ends', async ($, on) => {
+  const kept: Record<string, unknown> = {}
+  on('store.get', ($, e) => ({ value: kept[e.key] }))
+  on('store.set', ($, e) => {
+    kept[e.key] = e.value
+    return { value: undefined }
+  })
+  on('store.keys', () => ({ value: Object.keys(kept) }))
+  engine(on, null)
+  await flipThreads($)
+  await $.prompt.submit(say('# perf\na'))
+  const store = (uuid: string, text: string) =>
+    $.session.append({
+      message: { type: 'user', role: 'user', content: [{ type: 'text', text }] },
+      door: 'prompt',
+      origin: { kind: 'composer' },
+      uuid,
+    })
+  const sentTo = () => (kept['session:session-1'] as { sentTo: Record<string, string> }).sentTo
+
+  // stored as sent, under its heading
+  await $.prompt.submit(say('and the cache?'))
+  await store('p1', '# perf\nand the cache?')
+  expect(sentTo()).toEqual({ p1: 'perf' })
+  // stored as typed, where an engine keeps that: known all the same
+  await $.prompt.submit(say('why?'))
+  await store('p2', 'why?')
+  expect(sentTo()).toEqual({ p1: 'perf', p2: 'perf' })
 })
 
 test('a reply of several sections draws one by the engine and the rest as markdown', async ($, on) => {

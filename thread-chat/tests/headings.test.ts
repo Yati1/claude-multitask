@@ -92,6 +92,9 @@ async function threadsOn(band: Drawing & { find: (q: { key: string }) => Promise
 const noteOf = (prompt: string | undefined) =>
   (prompt ?? '').split('\n--\n').find(part => part.startsWith('Thread headings in this message')) ?? ''
 
+// The text of the last prompt as it went on, without the notes beside it.
+const sentOf = (prompt: string | undefined) => (prompt ?? '').split('\n--\n')[0] ?? ''
+
 test('a heading starts with a name as whole words, the longest, in any case, with words after it', async () => {
   const names = ['Threads', 'view', 'View transcript']
   expect(headingStart('Threads Lets fix the view', names)).toEqual({ name: 'Threads', rest: 'Lets fix the view' })
@@ -130,8 +133,11 @@ test("a heading typed with its first line on the heading's line is split, told t
   expect(noteOf(prompts.at(-1))).toBe(
     'Thread headings in this message, as the user meant them: "#Threads Lets fix the view so that every section…" is the thread "Threads", its first line typed on the heading\'s line.',
   )
+  // it goes on split: the heading on a line of its own
+  expect(sentOf(prompts.at(-1))).toBe('# Threads\nLets fix the view so that every section shows up in the pane\nand keep the tags')
   await $.prompt.submit(say('# threads: lets fix\nthe band'))
   expect(noteOf(prompts.at(-1))).toContain('"#threads: lets fix" is the thread "Threads"')
+  expect(sentOf(prompts.at(-1))).toBe('# Threads\nlets fix\nthe band')
 
   const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...BAND })
   expect(await threadsOn(band, ['threads', 'perf', 'threads lets fix', 'threads: lets fix'])).toEqual(['threads', 'perf'])
@@ -253,4 +259,60 @@ test('the thread view shows the rest of a split heading as the first line of its
   expect((await pane.findAll({ type: 'Text' })).map(t => t.text)).toContain('Lets fix the view\nand the tags')
   expect((await pane.findAll({ type: 'Markdown' })).map(m => String(m.props.text))).toEqual(['on it'])
   expect(await tagOf(pane, 'Threads')).toBeDefined()
+})
+
+test('a message sent under the heading of the thread it went to draws in that thread, in the chat and the thread view', async ($, on) => {
+  const prompts = engine(on)
+  await flipThreads($)
+  const store = (uuid: string, role: 'user' | 'assistant', said: string) =>
+    $.session
+      .append({
+        message:
+          role === 'assistant'
+            ? { type: 'assistant', role, content: [{ type: 'text', text: said }] }
+            : { type: 'user', role, content: [{ type: 'text', text: said }] },
+        door: role === 'assistant' ? 'response' : 'prompt',
+        origin: role === 'assistant' ? { kind: 'model', model: 'test' } : { kind: 'composer' },
+        uuid,
+      })
+      .catch(() => undefined)
+  // each message stored as it was sent
+  const send = async (uuid: string, text: string) => {
+    await $.prompt.submit(say(text))
+    const sent = sentOf(prompts.at(-1))
+    await store(uuid, 'user', sent)
+    return sent
+  }
+  await send('p0', '# design\na\n# perf\nb')
+  await store('a0', 'assistant', '# design\nthe pills are invisible on light\n# perf\nit is fast enough')
+
+  // to the picked thread (the last heading's), and in reply to a part of a reply in another
+  expect(await send('p1', 'and the cache?')).toBe('# perf\nand the cache?')
+  expect(await send('p2', '<!-- reply 1 -->\n> invisible on light\n\nfix it')).toBe(
+    '<!-- reply 1 -->\n> invisible on light\n\n# design\nfix it',
+  )
+  // a heading typed with its first line on its line
+  expect(await send('p3', '#design the pills again\nplease')).toBe('# design\nthe pills again\nplease')
+
+  for (const surface of ['terminal', 'desktop'] as const) {
+    for (const [id, text, thread, shown] of [
+      ['p1', '# perf\nand the cache?', 'perf', 'and the cache?'],
+      ['p2', '<!-- reply 1 -->\n> invisible on light\n\n# design\nfix it', 'design', '<!-- reply 1 -->\n> invisible on light\n\nfix it'],
+      ['p3', '# design\nthe pills again\nplease', 'design', 'the pills again\nplease'],
+    ] as const) {
+      const row = await $.ui.mount({ plugin: 'thread-chat', surface, ...userRow(text), requestId: id })
+      expect(await tagOf(row, thread)).toBeDefined()
+      expect((await row.find({ type: 'Text', text: /cache|fix it|again/ }))?.text).toBe(shown)
+      await row.unmount()
+    }
+  }
+
+  // the thread view: each in its thread, no heading line in its words
+  const pane = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...PANE })
+  const texts = (await pane.findAll({ type: 'Text' })).map(t => t.text)
+  expect(texts.slice(texts.indexOf('and the cache?') - 1, texts.indexOf('and the cache?') + 1)).toEqual(['PERF', 'and the cache?'])
+  // the quote drawn as a quote, then the words, under the thread's tag
+  expect(texts.slice(texts.indexOf('fix it') - 3, texts.indexOf('fix it') + 1)).toEqual(['DESIGN', '│', 'invisible on light', 'fix it'])
+  expect(texts).toContain('the pills again\nplease')
+  expect(texts.some(t => /^# /m.test(t))).toBe(false)
 })

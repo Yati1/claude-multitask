@@ -8,6 +8,7 @@ import {
   headingStart,
   headingsIn,
   holdsQuote,
+  isHeadable,
   isOthersPrompt,
   keyOf,
   leadingQuoteOf,
@@ -16,6 +17,7 @@ import {
   rewriteHeadings,
   splitRunOns,
   splitSections,
+  withHeading,
   withOpeningQuote,
 } from './parse'
 import type { RunOn, Section } from './parse'
@@ -158,6 +160,9 @@ const VIEW_TITLE = 'Thread view'
 // The ways a person's own prompt arrives: typed in the terminal, the desktop
 // app (an SDK host) or Remote Control.
 const PERSON = new Set(['composer', 'sdk', 'bridge'])
+
+// A prompt's text the engine wrote in its own tags (a command's), never written to.
+const ENGINE_TAGGED = /^\s*<[a-z][\w-]*>/i
 
 function withThreads(list: Thread[], names: string[], createdBy: Thread['createdBy']): Thread[] {
   const known = new Set(list.map(t => keyOf(t.name)))
@@ -385,9 +390,10 @@ function replySectionsOf(text: string, list: Thread[], merged: Record<string, st
 type Meaning = { typed: string; meant: string; isRunOn?: boolean }
 
 // What the headings of a prompt mean: the thread names, in order, the name its last
-// heading means, and each heading not written as its thread's exact name (a typo, a
+// heading means, each heading not written as its thread's exact name (a typo, a
 // start of a name, `+name`, a name with the first line on its line) as typed with the
-// thread it means. A heading may also mean a thread introduced earlier in the same prompt.
+// thread it means, and the text with each heading written `# ` and that exact name, on
+// a line of its own. A heading may also mean a thread introduced earlier in the same prompt.
 function decideHeadings(text: string, list: Thread[], links: Record<string, string>, merged: Record<string, string>) {
   let known = list
   const meanings: Meaning[] = []
@@ -408,7 +414,7 @@ function decideHeadings(text: string, list: Thread[], links: Record<string, stri
     meant.push(name)
     return name
   })
-  return { names: headingsIn(resolved), last: meant.at(-1), meanings }
+  return { names: headingsIn(resolved), last: meant.at(-1), meanings, text: resolved }
 }
 
 // The thread a name means: the thread by that name, else the one a merge or a
@@ -638,8 +644,8 @@ async function scrollToEnd($: EngineInterface) {
 }
 
 // Messages sent with no heading to one thread (the one picked, or the one a reply's
-// quotes came from), until their rows are stored.
-const unsent: { text: string; key: string }[] = []
+// quotes came from), as sent with its heading and as typed, until their rows are stored.
+const unsent: { texts: string[]; key: string }[] = []
 
 // The ids of the main conversation's replies with text in the turn so far, since its
 // last tool call: interim if another tool call follows them in the turn.
@@ -3153,47 +3159,56 @@ export const register: Register = (on, options) => {
       const off = await offNote($)
       return off === undefined ? next(e) : next({ ...e, context: [...(e.context ?? []), off] })
     }
-    // The text goes on as typed, the one version everything reads; what its
-    // headings mean is decided now, kept for drawing it, and told to the model.
+    // The text goes on with its threads written in it, the one version everything
+    // reads: each heading as `# ` and the exact name of the thread it means, on a line
+    // of its own, and a message with no heading that goes to one thread under that
+    // thread's heading. What its headings meant as typed is decided now, kept for
+    // drawing a surface that shows it as typed, and told to the model.
     // Messages the person moved between threads since they last wrote go beside this
     // one, after how threads work and where they stand, when the model is to be told.
     const told = await read($, untold)
     if (told.length > 0) await update($, untold, () => [])
     // The threads it goes to (`to`) that the agent has likely lost track of are caught up on.
-    const send = async (notes: string[], to: readonly string[] = []) => {
+    const send = async (text: string, notes: string[], to: readonly string[] = []) => {
       const all = [...(await briefing($)), ...told, ...notes, ...(await catchUpNotes($, to).catch(() => []))]
-      return all.length === 0 ? next(e) : next({ ...e, context: [...(e.context ?? []), ...all] })
+      const sent = text === e.text ? e : { ...e, text }
+      return all.length === 0 ? next(sent) : next({ ...sent, context: [...(e.context ?? []), ...all] })
+    }
+    // Only the person's own words are written to: never a text of no words (a picture
+    // alone), one the engine tagged (a command's), or another's prompt passed as theirs.
+    const isWritable = e.text.trim() !== '' && !ENGINE_TAGGED.test(e.text) && !isOthersPrompt(e.text)
+    // A message with no heading, sent to one thread: under its heading where it may have
+    // one, and known by its row once stored, by its text as sent or as typed.
+    const sendTo = (thread: Thread, note: string) => {
+      const text = isWritable && isHeadable(thread.name) ? withHeading(e.text, thread.name) : e.text
+      unsent.push({ texts: [...new Set([text.trim(), e.text.trim()])], key: keyOf(thread.name) })
+      return send(text, [note], [thread.name])
     }
 
     const merged = await read($, aliases)
     const links = linksFor(merged, await read($, deleted), await read($, snaps))
     const list = await read($, threads)
-    const { names, last, meanings } = decideHeadings(e.text, list, links, merged)
+    const { names, last, meanings, text } = decideHeadings(e.text, list, links, merged)
     if (names.length === 0) {
       // A reply to parts of earlier replies goes to the thread they came from, even
       // while another is picked: the person pointed at that thread's text.
       const quoted = await quotedThreadOf($, replyQuotesOf(e.text), list)
       if (quoted !== undefined) {
-        unsent.push({ text: e.text.trim(), key: keyOf(quoted.name) })
-        return send(
-          [
-            `This message belongs to the thread "${quoted.name}": the user replied to part of your message in that thread, so your reply most likely belongs under that thread's heading.`,
-          ],
-          [quoted.name],
+        return sendTo(
+          quoted,
+          `This message belongs to the thread "${quoted.name}": the user replied to part of your message in that thread, so your reply most likely belongs under that thread's heading.`,
         )
       }
       // With a thread picked above the prompt, a message with no heading goes to it.
       const cur = await read($, current)
       const picked = cur === '' ? undefined : list.find(t => keyOf(t.name) === cur && t.isArchived !== true)
-      if (picked === undefined) return send([])
-      unsent.push({ text: e.text.trim(), key: keyOf(picked.name) })
-      return send(
-        [
-          `This message belongs to the thread "${picked.name}": the user posted it there with their thread picker, so your reply most likely belongs under that thread's heading.`,
-        ],
-        [picked.name],
+      if (picked === undefined) return send(e.text, [])
+      return sendTo(
+        picked,
+        `This message belongs to the thread "${picked.name}": the user posted it there with their thread picker, so your reply most likely belongs under that thread's heading.`,
       )
     }
+    const headed = isWritable ? text : e.text
     await addThreads($, names, 'user')
     // The picker follows the thread of the message's last heading, so the person's next
     // message with no heading goes on in it.
@@ -3201,9 +3216,9 @@ export const register: Register = (on, options) => {
     const decided = linksOf(meanings)
     if (Object.keys(decided).length > 0) await update($, snaps, all => ({ ...all, ...decided }))
     await save($)
-    if (meanings.length === 0) return send([], names)
+    if (meanings.length === 0) return send(headed, [], names)
 
-    return send([`Thread headings in this message, as the user meant them: ${meanings.map(meaningNote).join('; ')}.`], names)
+    return send(headed, [`Thread headings in this message, as the user meant them: ${meanings.map(meaningNote).join('; ')}.`], names)
   })
 
   // A message sent with no heading to one thread is known by its row once stored, and the
@@ -3219,9 +3234,14 @@ export const register: Register = (on, options) => {
     }
     if (e.agentId === undefined && isPersonMessage && unsent.length > 0) {
       const said = textOf(e.message.content)
-      const sent = unsent.findIndex(u => said.includes(u.text))
+      const sent = unsent.findIndex(u => u.texts.some(text => said.includes(text)))
       const key = sent >= 0 ? unsent.splice(sent, 1)[0]?.key : undefined
-      if (key !== undefined) await update($, sentTo, all => ({ ...all, [e.uuid]: key }))
+      if (key !== undefined) {
+        await update($, sentTo, all => ({ ...all, [e.uuid]: key }))
+        // kept now, not as the turn ends: a session closed mid-turn keeps it too; a store
+        // that fails never holds up the row
+        await save($).catch(() => undefined)
+      }
     }
     // The thread view learns a person's message or a reply's text, as stored, with
     // its text: its record of the transcript, which no compaction rewrites. It draws
