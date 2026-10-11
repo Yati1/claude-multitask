@@ -36,7 +36,7 @@ import {
   relayNames,
 } from './prompts'
 import { TELL_FIELD, drawThoughts } from './pane'
-import { FADE_MS, drawDots } from './band'
+import { BLINK_MS, FADE_MS, drawThoughtsButton } from './band'
 
 const isOn = atom({ plugin: 'multitask', key: 'isOn' } as const, false)
 const thoughts = atom({ plugin: 'multitask', key: 'thoughts' } as const, [])
@@ -56,6 +56,8 @@ const PANE = 'multitask-thoughts'
 // Multitask's dropdown in the band. Its face is the mode the chat is in, Multitask or
 // Focus (Multitask off); picking the other mode switches to it.
 const DROPDOWN = 'multitask'
+// The keys of the hit areas over the parts of the desktop's `thoughts` button: this, then the part.
+const THOUGHTS_HIT = 'thoughts-hit:'
 const MULTITASK_MODE = 'multitask'
 const FOCUS_MODE = 'focus'
 const AGENT = 'multitask:thought'
@@ -137,6 +139,9 @@ const AGE_TICK_MS = 60_000
 // fade out by: kept here, as `settling` is, and set before the change it goes with.
 let bandTimer: Timer | undefined
 const endings = new Map<string, number>()
+// When each running thought's dot last began to blink, by thought id: kept here, so a row
+// that starts no blink writes nothing to state and draws nothing afresh.
+const blinks = new Map<string, number>()
 // The settling of each thought's latest turn end, by thought id, with its name, which the
 // engine's notice or hand-back of that end waits for. Kept here, not in state: what one
 // dispatch reads of state stands still while it runs, so a wait for it would never see it.
@@ -575,11 +580,12 @@ async function relay($: EngineInterface, fn: (list: Update[]) => Update[]) {
 }
 
 // What a thought writes as it works is a progress note: kept to follow it by, and
-// relayed to the voice while RELAY_NOTES is on. Its tool calls never are.
-async function noteThoughtSaid($: EngineInterface, id: string, text: string) {
+// relayed to the voice while RELAY_NOTES is on. Its tool calls never are. Whether it was
+// one.
+async function noteThoughtSaid($: EngineInterface, id: string, text: string): Promise<boolean> {
   const t = (await read($, thoughts)).find(one => one.id === id)
   // The turn's report, should its row land after the turn ended, has been relayed already.
-  if (t === undefined || text === '' || text === t.lastText) return
+  if (t === undefined || text === '' || text === t.lastText) return false
   const now = await timeNow($)
   // Not through patchThought: a note alone is not kept in the store straight away (KEEP_MS).
   await update($, thoughts, list =>
@@ -590,6 +596,20 @@ async function noteThoughtSaid($: EngineInterface, id: string, text: string) {
     ),
   )
   if (RELAY_NOTES) await relay($, list => [...list, { thought: t.name, text }])
+  return true
+}
+
+// Any other new row in a running thought's conversation (a tool call or its result, a
+// message to it) blinks its dot in the band, unless a blink began under BLINK_MS ago: only
+// a blink's start draws the band afresh, so a busy thought redraws it once a BLINK_MS at most.
+async function blinkThought($: EngineInterface, id: string) {
+  const now = await timeNow($)
+  const last = blinks.get(id)
+  if (now === undefined || (last !== undefined && now - last < BLINK_MS)) return
+  if ((await read($, thoughts)).find(one => one.id === id)?.status !== 'running') return
+  for (const [one, at] of blinks) if (now - at >= BLINK_MS) blinks.delete(one)
+  blinks.set(id, now)
+  await update($, bandTick, n => n + 1)
 }
 
 // The end of a thought's turn reaches the voice once, as a done line. Its report replaces
@@ -1365,13 +1385,15 @@ export const register: Register = (on, options) => {
     return result
   })
 
-  // What a thought writes as it works is kept as its progress notes (and relayed, while RELAY_NOTES is on).
+  // What a thought writes as it works is kept as its progress notes (and relayed, while RELAY_NOTES is on);
+  // any other row in its conversation blinks its dot in the band.
   // While Multitask is on, the engine's hand-back of a thought's report is stored as the
   // wake-up: the engine keeps the text a hand-back was queued with, whatever prompt.submit
   // returns, so it is changed here, as it is stored.
   on('session.append', async ($, e, next) => {
-    if (e.agentId !== undefined && e.door === 'response') {
-      await noteThoughtSaid($, e.agentId, textOf(e.message.content))
+    if (e.agentId !== undefined) {
+      const isNote = e.door === 'response' && (await noteThoughtSaid($, e.agentId, textOf(e.message.content)))
+      if (!isNote) await blinkThought($, e.agentId)
     }
     if (e.agentId === undefined && e.door !== 'note' && e.message.type === 'user') {
       const text = textOf(e.message.content)
@@ -1435,11 +1457,11 @@ export const register: Register = (on, options) => {
     return <Text dimColor>◦ thought update{names.length > 0 ? `: ${names.join(', ')}` : ''}</Text>
   })
 
-  // The band above the prompt: a dot for each running thought (band.tsx), Multitask's
-  // dropdown and, while Multitask is on or has thoughts left, `thoughts`. They sit after
-  // what other mods draw there, keeping their width while the others give way. The mobile
-  // app draws no dropdown: /multitask is there. The dots' timed changes draw the band
-  // afresh by a write of `bandTick`, which it alone reads.
+  // The band above the prompt: while Multitask is on or has thoughts left, `thoughts`
+  // with a dot for each running thought (band.tsx); then Multitask's dropdown. They sit
+  // after what other mods draw there, keeping their width while the others give way. The
+  // mobile app draws no dropdown: /multitask is there. The dots' timed changes, and a
+  // dot's blink, draw the band afresh by a write of `bandTick`, which it alone reads.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const below = await next(e)
     if (e.props.hasSurvey) return below
@@ -1447,14 +1469,23 @@ export const register: Register = (on, options) => {
     const on_ = await read($, isOn)
     const all = await read($, thoughts)
     await read($, bandTick)
-    const { dots, redrawIn } = drawDots({ surface: e.surface, ui: $.ui.resolve(e), now: await timeNow($), endings }, all)
+    // Off with no thoughts left, the band has no `thoughts`; an idle or failed one keeps it up.
+    const showsThoughts = on_ || all.some(t => t.status !== 'stopped')
+    const ui = $.ui.resolve(e)
+    // On the desktop, the hit areas over the parts of `thoughts` (band.tsx draws them there).
+    const hitOf =
+      e.surface === 'desktop'
+        ? (part: string) => {
+            const { Client } = $.ui.resolve(e)
+            return <Client key={`${THOUGHTS_HIT}${part}`} module="./press.tsx" width="100%" height="100%" />
+          }
+        : undefined
+    const open = () => void $.ui.open({ id: PANE, title: 'Thoughts' })
+    const drawing = { surface: e.surface, ui, now: await timeNow($), endings, blinks, open, ...(hitOf !== undefined && { hitOf }) }
+    const { button, redrawIn } = showsThoughts ? drawThoughtsButton(drawing, all) : {}
     bandTimer?.cancel()
     bandTimer = redrawIn === undefined ? undefined : $.clock.after(redrawIn, () => void update($, bandTick, n => n + 1))
-    const live = all.filter(t => t.status !== 'stopped')
-    // The count is of the thoughts running now; an idle or failed one only keeps the button up.
-    const running = live.filter(t => t.status === 'running').length
-    const thoughtsLabel = running > 0 ? `thoughts ${running}` : 'thoughts'
-    const { Box, Button } = $.ui.resolve(e)
+    const { Box } = ui
     let dropdown: RenderElement | undefined
     if (e.surface !== 'mobile') {
       const { Select } = $.ui.resolve(e)
@@ -1470,17 +1501,12 @@ export const register: Register = (on, options) => {
         />
       )
     }
-    // Off with no thoughts left, the band has no `thoughts`.
-    const showsThoughts = on_ || live.length > 0
-    if (dropdown === undefined && !showsThoughts) return below
+    if (dropdown === undefined && button === undefined) return below
 
     const mine = (
       <Box flexDirection="row" alignItems="center" columnGap={1} flexShrink={0}>
-        {dots}
+        {button}
         {dropdown}
-        {showsThoughts && (
-          <Button key="open-thoughts" label={thoughtsLabel} onPress={() => void $.ui.open({ id: PANE, title: 'Thoughts' })} />
-        )}
       </Box>
     )
     if (below.type === 'engine') return mine
@@ -1492,6 +1518,14 @@ export const register: Register = (on, options) => {
         {mine}
       </Box>
     )
+  })
+
+  // A click on any part of the desktop's `thoughts` button, a dot included, posts here from
+  // its hit area (press.tsx) and opens the Thoughts pane.
+  on('ui.message', async ($, e, next) => {
+    if (!e.element.startsWith(THOUGHTS_HIT) || (e.data as { press?: unknown } | null)?.press !== true) return next(e)
+    await $.ui.open({ id: PANE, title: 'Thoughts' })
+    return next(e)
   })
 
   // The Thoughts pane, laid out by pane.tsx. Its ages are drawn afresh each minute it

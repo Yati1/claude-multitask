@@ -40,6 +40,10 @@ type Seen = {
   // the engine raised to it, which the test raises through raised() (seen.raising counts them)
   isAutoMode?: boolean
   raising: number
+  // how many times the band above the prompt was drawn
+  bandDraws: number
+  // the panes the mod opened, by id
+  opened: string[]
 }
 
 // What auto mode answers a SendMessage of the mod's that the mod's own allowance (its
@@ -77,7 +81,7 @@ function engine(
   agents: AgentInfo[] = [{ id: 'agent-1', description: 'auth-bug', type: 'multitask:thought', status: 'running' }],
   store: Record<string, unknown> | null = {},
 ): Seen {
-  const seen: Seen = { prompts: [], sends: [], ran: [], efforts: [], aborts: [], spawns: 0, names: [], registered: [], raising: 0 }
+  const seen: Seen = { prompts: [], sends: [], ran: [], efforts: [], aborts: [], spawns: 0, names: [], registered: [], raising: 0, bandDraws: 0, opened: [] }
   if (store !== null) mock.store(on, store)
   on('session.id', () => ({ value: 'session-1' }))
   on('session.start', ($, e) => ({ cwd: e.cwd }))
@@ -88,9 +92,15 @@ function engine(
     return { value: { tool: `mcp__multitask__${e.name}` } }
   })
   on('command.register', ($, e) => ({ value: { command: e.name } }))
-  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.open', ($, e) => {
+    seen.opened.push(e.id)
+    return { value: { isPlaced: true } }
+  })
   on('ui.message', () => ({}))
-  on('ui.render', () => ({ type: 'engine', ref: 0 }))
+  on('ui.render', ($, e) => {
+    if (e.component === 'AbovePrompt') seen.bandDraws++
+    return { type: 'engine', ref: 0 }
+  })
   // Only the real engine can hand back a spawned agent's id; the agent list stands in.
   on('agent.spawn', ($, e) => {
     seen.spawns++
@@ -153,6 +163,17 @@ function engine(
 const DROPDOWN = 'multitask'
 const modeOf = async (band: { find: (query: { key: string }) => Promise<{ props: Record<string, unknown> } | undefined> }) =>
   (await band.find({ key: DROPDOWN }))?.props.value
+
+// What the band's `thoughts` button shows: its word, then a ● for each dot in it (a
+// picture on the desktop; elsewhere a glyph, the Button's text as it is); undefined where
+// the band has none.
+const thoughtsShown = async (band: { drawn: () => Promise<unknown> }) => {
+  const button = elementsOf(await band.drawn()).find(n => n.props?.key === 'open-thoughts')
+  if (button === undefined) return undefined
+  if (button.type === 'Button') return textIn(button)
+  const word = textIn(elementsOf(button).find(n => n.type === 'Text'))
+  return [word, '●'.repeat(dotKeys(button).length)].filter(part => part !== '').join(' ')
+}
 
 const BAND = {
   component: 'AbovePrompt',
@@ -245,7 +266,7 @@ test('a session that never switches Multitask on is left as it is: no `thoughts`
   await flip()
   await band.redraw()
   expect(await modeOf(band)).toBe('focus')
-  expect((await band.find({ key: 'open-thoughts' }))?.props.label).toBe('thoughts 1')
+  expect(await thoughtsShown(band)).toBe('thoughts ●')
   registered.length = 0
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
   expect(registered).toEqual(['think', 'tell', 'unqueue', 'stop', 'thoughts'])
@@ -343,7 +364,7 @@ test('a turn ending reaches the voice once: bare when it has nothing more to say
   const band = await $.ui.mount({ plugin: 'multitask', surface: 'desktop', ...BAND })
   const label = async () => {
     await band.redraw()
-    return (await band.find({ key: 'open-thoughts' }))?.props.label
+    return thoughtsShown(band)
   }
   const says = (uuid: string, text: string) =>
     $.session.append({
@@ -353,7 +374,7 @@ test('a turn ending reaches the voice once: bare when it has nothing more to say
       uuid,
       agentId: 'agent-1',
     })
-  expect(await label()).toBe('thoughts 1')
+  expect(await label()).toBe('thoughts ●')
 
   // A turn that ends with no text is a bare done; the band counts only running thoughts.
   await $.turn.complete({ ...finished('agent-1'), answer: '' })
@@ -366,7 +387,7 @@ test('a turn ending reaches the voice once: bare when it has nothing more to say
   // A report that already reached the voice as a note is not sent again. With notes
   // not relayed (RELAY_NOTES off), it goes out once, on the done line.
   await $.tool.call({ tool: 'mcp__multitask__tell', tool_use_id: 'c3', thought: 'auth-bug', message: 'go on' })
-  expect(await label()).toBe('thoughts 1')
+  expect(await label()).toBe('thoughts ●')
   await says('u1', 'Nothing else is wrong.')
   await clock.advance(2500)
   await $.turn.complete({ ...finished('agent-1'), answer: 'Nothing else is wrong.' })
@@ -422,7 +443,7 @@ test('the voice is refused work, and its thoughts relay, queue and unqueue', asy
   })
   expect(started.deny).toBeUndefined()
   await band.redraw()
-  expect((await band.find({ key: 'open-thoughts' }))?.props.label).toBe('thoughts 1')
+  expect(await thoughtsShown(band)).toBe('thoughts ●')
 
   // What the thought writes as it works is kept as a progress note, and relayed while
   // RELAY_NOTES is on; what its tool calls carry never is.
@@ -449,7 +470,7 @@ test('the voice is refused work, and its thoughts relay, queue and unqueue', asy
   await $.tool.call({ tool: 'mcp__multitask__tell', tool_use_id: 'c3', thought: 'auth-bug', message: 'keep', how: 'queue' })
   await $.tool.call({ tool: 'mcp__multitask__tell', tool_use_id: 'c4', thought: 'auth-bug', message: 'drop', how: 'queue' })
   await band.redraw()
-  expect((await band.find({ key: 'open-thoughts' }))?.props.label).toBe('thoughts 1')
+  expect(await thoughtsShown(band)).toBe('thoughts ●')
   await $.tool.call({ tool: 'mcp__multitask__unqueue', tool_use_id: 'c5', thought: 'auth-bug', index: 2 })
   expect(seen.sends).toHaveLength(0)
 
@@ -1765,11 +1786,17 @@ test('no button of the mod is below the input, and the mobile app, which draws n
   expect(await band.find({ key: 'open-thoughts' })).toBeDefined()
 })
 
-// A thought's dot in a drawing of the band, the picture it draws on a page, the lines of
-// its hover card, and its glyph on the terminal.
-const dotIn = (tree: unknown, id: string) => elementsOf(tree).find(n => n.type === 'Box' && n.props?.key === `dot:${id}`)
+// A thought's dot in a drawing of the band (its keyed Box, on the desktop), the picture it
+// draws on a page, the lines of its hover card; on the terminal, the glyphs on the
+// `thoughts` button, in order, which keeps no key on them.
+const dotIn = (tree: unknown, id: string) => elementsOf(tree).find(n => n.props?.key === `dot:${id}`)
+const glyphsIn = (tree: unknown) =>
+  (elementsOf(tree).find(n => n.props?.key === 'open-thoughts')?.children ?? []).filter(
+    (n): n is Drawn => typeof n === 'object' && n !== null && (n as Drawn).type === 'Text',
+  )
 const pictureIn = (dot: Drawn | undefined) => String(elementsOf(dot).find(n => n.type === 'Svg')?.props?.source ?? '')
-const cardIn = (dot: Drawn | undefined) => elementsOf(dot).find(n => n.type === 'Box' && n.props?.position === 'absolute')
+const cardIn = (dot: Drawn | undefined) =>
+  elementsOf(dot).find(n => n.type === 'Box' && n.props?.position === 'absolute' && n.props?.display === 'none')
 const linesIn = (node: Drawn | undefined) => elementsOf(node).filter(n => n.type === 'Text').map(textIn)
 const glyphIn = (dot: Drawn | undefined) => {
   const text = elementsOf(dot).find(n => n.type === 'Text')
@@ -1788,7 +1815,25 @@ const sayer = ($: Engine, agentId: string) => (uuid: string, text: string) =>
     agentId,
   })
 
-test('the band has a dot for each running thought, left of the dropdown, that pulses white at each note and fades out as its turn ends', async ($, on) => {
+// What else a thought does as it works, which is no note: a tool call, and its result.
+const worker = ($: Engine, agentId: string) => async (uuid: string) => {
+  await $.session.append({
+    message: { type: 'assistant', role: 'assistant', content: [{ type: 'tool_use', id: `call-${uuid}`, name: 'Read', input: {} }] },
+    door: 'response',
+    origin: { kind: 'model', model: 'test' },
+    uuid: `${uuid}-call`,
+    agentId,
+  })
+  await $.session.append({
+    message: { type: 'user', role: 'user', content: [{ type: 'tool_result', tool_use_id: `call-${uuid}`, content: 'the file' }] },
+    door: 'tool-result',
+    origin: { kind: 'tool', tool: 'Read' },
+    uuid: `${uuid}-result`,
+    agentId,
+  })
+}
+
+test('the `thoughts` button, left of the dropdown, has a dot for each running thought that blinks white as it works, swells at each note and fades out as its turn ends', async ($, on) => {
   engine($, on)
   const clock = mock.clock(on, { now: 1_000_000 })
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
@@ -1799,15 +1844,18 @@ test('the band has a dot for each running thought, left of the dropdown, that pu
   const dot = async () => dotIn(await band.drawn(), 'agent-1')
   const color = '#4fa3e0'
 
-  // Left of the dropdown, in the band's own controls: a still disc in the thought's colour.
+  // In the `thoughts` button, after its word, left of the dropdown in the band's own
+  // controls: a still disc in the thought's colour.
   const tree = await band.drawn()
   const toDot = pathTo(tree, n => n.props?.key === 'dot:agent-1')
   const toDropdown = pathTo(tree, n => n.props?.key === DROPDOWN)
   let at = 0
   while (toDot?.[at] === toDropdown?.[at]) at++
   const row = toDot?.[at - 1]?.children ?? []
+  expect(toDot?.[at]?.props?.key).toBe('open-thoughts')
   expect(row.indexOf(toDot?.[at])).toBeGreaterThanOrEqual(0)
   expect(row.indexOf(toDot?.[at])).toBeLessThan(row.indexOf(toDropdown?.[at]))
+  expect(await thoughtsShown(band)).toBe('thoughts ●')
   expect(pictureIn(await dot())).toContain(`fill="${color}"`)
   expect(pictureIn(await dot())).not.toContain('<animate')
 
@@ -1816,16 +1864,43 @@ test('the band has a dot for each running thought, left of the dropdown, that pu
   expect(cardIn(await dot())?.hover?.display).toBe('flex')
   expect(linesIn(cardIn(await dot()))).toEqual(['auth-bug', 'No notes yet', 'started just now'])
 
-  // A note pulses it white and back; drawn again meanwhile, the pulse carries on where it
-  // had got to; over, the dot is drawn still.
-  await says('u1', 'Checking the token')
-  const pulse = pictureIn(await dot())
-  expect(pulse).toContain(`<animate attributeName="fill" values="${color};#ffffff;${color}"`)
-  expect(pulse).toContain('begin="0ms"')
+  // A tool call and its result blink it white and back; drawn again meanwhile, the blink
+  // carries on where it had got to; over, the dot is drawn still.
+  const works = worker($, 'agent-1')
+  await works('w1')
+  const blink = pictureIn(await dot())
+  expect(blink).toContain(`<animate attributeName="fill" values="${color};#ffffff;${color}"`)
+  expect(blink).toContain('begin="0ms"')
+  expect(blink).not.toContain('attributeName="r"')
   await clock.advance(400)
   await band.redraw()
   expect(pictureIn(await dot())).toContain('begin="-400ms"')
   await clock.advance(700)
+  await band.redraw()
+  expect(pictureIn(await dot())).not.toContain('<animate')
+
+  // A note swells it to 1.3 times as wide and back, about the same centre of the same box,
+  // with no blink; drawn again meanwhile, it carries on; over, the dot is drawn still.
+  await says('u1', 'Checking the token')
+  const swell = pictureIn(await dot())
+  expect(swell).toContain('<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 14 14">')
+  expect(swell).toContain('<circle cx="7" cy="7" r="3.5"')
+  expect(swell).toContain('<animate attributeName="r" values="3.5;4.7;3.5"')
+  expect(swell).toContain('begin="0ms"')
+  expect(swell).not.toContain('attributeName="fill"')
+  await clock.advance(400)
+  await band.redraw()
+  expect(pictureIn(await dot())).toContain('begin="-400ms"')
+  // a blink meanwhile runs beside it, each carried on alone
+  await works('w2')
+  const both = pictureIn(await dot())
+  expect(both).toContain('<animate attributeName="r" values="3.5;4.7;3.5" keyTimes="0;0.5;1" dur="1000ms" begin="-400ms"')
+  expect(both).toContain(`<animate attributeName="fill" values="${color};#ffffff;${color}" keyTimes="0;0.25;1" dur="1000ms" begin="0ms"`)
+  await clock.advance(700)
+  await band.redraw()
+  expect(pictureIn(await dot())).not.toContain('attributeName="r"')
+  expect(pictureIn(await dot())).toContain('begin="-700ms"')
+  await clock.advance(300)
   await band.redraw()
   expect(pictureIn(await dot())).not.toContain('<animate')
 
@@ -1849,18 +1924,29 @@ test('the band has a dot for each running thought, left of the dropdown, that pu
   expect(pictureIn(await dot())).toContain(`fill="${color}"`)
 })
 
-test("on the terminal a dot is a glyph in its thought's colour, inverted a moment at each note, a check as its turn ends", async ($, on) => {
-  engine($, on)
+test("on the terminal a dot is a glyph on the `thoughts` button in its thought's colour, white a moment as it works, inverted a moment at each note, a check as its turn ends", async ($, on) => {
+  const seen = engine($, on)
   const clock = mock.clock(on, { now: 1_000_000 })
   await $.session.start({ cwd: '.', surface: 'terminal', isInteractive: true })
   await $.command.run({ command: 'multitask', args: '', origin: { kind: 'composer' }, presentation: {} as never })
   await $.tool.call({ tool: 'mcp__multitask__think', tool_use_id: 'c1', name: 'auth bug', task: 'Find why login fails' })
   const says = sayer($, 'agent-1')
   const band = await $.ui.mount({ plugin: 'multitask', surface: 'terminal', ...BAND })
-  const dot = async () => dotIn(await band.drawn(), 'agent-1')
+  const dot = async () => glyphsIn(await band.drawn())[0]
   const color = '#4fa3e0'
   expect(glyphIn(await dot())).toEqual({ glyph: '●', color, inverse: undefined })
-  expect(cardIn(await dot())).toBeUndefined()
+  expect(elementsOf(await band.drawn()).some(n => n.props?.position === 'absolute')).toBe(false)
+  // on the button, after its word, which opens the Thoughts pane
+  const button = await band.find({ key: 'open-thoughts' })
+  expect(button?.type).toBe('Button')
+  expect(button?.text).toBe('thoughts ●')
+  await band.press({ key: 'open-thoughts' })
+  expect(seen.opened).toEqual(['multitask-thoughts'])
+  await worker($, 'agent-1')('w1')
+  expect(glyphIn(await dot())).toEqual({ glyph: '●', color: '#ffffff', inverse: undefined })
+  await clock.advance(400)
+  expect(glyphIn(await dot())).toEqual({ glyph: '●', color, inverse: undefined })
+  await clock.advance(600)
   await says('u1', 'Checking the token')
   expect(glyphIn(await dot())).toEqual({ glyph: '●', color, inverse: true })
   // back to itself once the pulse is over, with nothing else changing
@@ -1872,6 +1958,96 @@ test("on the terminal a dot is a glyph in its thought's colour, inverted a momen
   expect(glyphIn(await dot())).toEqual({ glyph: '✓', color, inverse: undefined })
   await clock.advance(1500)
   expect(await dot()).toBeUndefined()
+  expect(await thoughtsShown(band)).toBe('thoughts')
+})
+
+test('a click anywhere on the desktop\'s `thoughts` button opens the Thoughts pane: its word, a dot, its `+N`, each under a hit area of its own', async ($, on) => {
+  const names = ['one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine']
+  const agents: AgentInfo[] = names.map(name => ({ id: name, description: name, type: 'multitask:thought', status: 'running' }))
+  const seen = engine($, on, agents)
+  mock.clock(on, { now: 1_000_000 })
+  await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
+  await $.command.run({ command: 'multitask', args: '', origin: { kind: 'composer' }, presentation: {} as never })
+  const band = await $.ui.mount({ plugin: 'multitask', surface: 'desktop', ...BAND })
+  // With no thought running, the word alone, under its hit area.
+  expect(await thoughtsShown(band)).toBe('thoughts')
+  for (const name of names) await $.tool.call({ tool: 'mcp__multitask__think', tool_use_id: `think-${name}`, name, task: `the brief for ${name}` })
+  expect(await thoughtsShown(band)).toBe('thoughts ●●●●●●●●')
+
+  // A dot's Box holds its picture, its card and, filling it, its hit area: the pointer on
+  // the hit area is on the dot, so its card shows.
+  const dot = dotIn(await band.drawn(), 'one')
+  expect(dot?.children?.map(n => (n as Drawn).type)).toEqual(['Svg', 'Box', 'Box'])
+  const hitBox = dot?.children?.[2] as Drawn
+  expect(hitBox.props).toMatchObject({ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%' })
+  expect(elementsOf(hitBox).find(n => n.type === 'Client')?.props).toMatchObject({ key: 'thoughts-hit:dot:one', width: '100%', height: '100%' })
+
+  // Every part has one, the padding inside the parts, so none of the ring is dead.
+  const button = elementsOf(await band.drawn()).find(n => n.props?.key === 'open-thoughts')
+  const hits = elementsOf(button).flatMap(n => (n.type === 'Client' ? [n.props?.key] : []))
+  expect(hits).toEqual(['thoughts-hit:word', ...names.slice(0, 8).map(name => `thoughts-hit:dot:${name}`), 'thoughts-hit:more'])
+  // The padding is in the parts: the ring's own, which the desktop would give it, is none.
+  expect(button?.props).toMatchObject({ borderStyle: 'single', height: 1, paddingY: 0, paddingLeft: 0, paddingRight: 0 })
+
+  const press = async (key: string) => {
+    seen.opened.length = 0
+    await band.pointer({ type: 'down', x: 0, y: 0, button: 'left', in: key } as never)
+    return seen.opened
+  }
+  expect(await press('thoughts-hit:dot:three')).toEqual(['multitask-thoughts'])
+  expect(await press('thoughts-hit:word')).toEqual(['multitask-thoughts'])
+  expect(await press('thoughts-hit:more')).toEqual(['multitask-thoughts'])
+})
+
+test("a dot blinks once a second at most however busy its thought, and only a blink's start draws the band again", async ($, on) => {
+  const seen = engine($, on)
+  const clock = mock.clock(on, { now: 1_000_000 })
+  await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
+  await $.command.run({ command: 'multitask', args: '', origin: { kind: 'composer' }, presentation: {} as never })
+  await $.tool.call({ tool: 'mcp__multitask__think', tool_use_id: 'c1', name: 'auth bug', task: 'Find why login fails' })
+  const works = worker($, 'agent-1')
+  const band = await $.ui.mount({ plugin: 'multitask', surface: 'desktop', ...BAND })
+  const picture = async () => pictureIn(dotIn(await band.drawn(), 'agent-1'))
+
+  // (The kit draws the band again, if anything asked it to, as the drawing is read.)
+  const drawsNow = async () => {
+    await band.drawn()
+    return seen.bandDraws
+  }
+  await works('w1')
+  const first = await picture()
+  expect(first).toContain('begin="0ms"')
+  const draws = await drawsNow()
+
+  // What it does under a second later starts no blink and draws nothing: the blink drawn
+  // carries on of itself.
+  await clock.advance(300)
+  await works('w2')
+  expect(await drawsNow()).toBe(draws)
+  await clock.advance(400)
+  await works('w3')
+  expect(await drawsNow()).toBe(draws)
+  expect(await picture()).toBe(first)
+
+  // The first row a second or more after it starts the next blink, a picture of its own.
+  await clock.advance(300)
+  await works('w4')
+  expect(await drawsNow()).toBe(draws + 1)
+  const second = await picture()
+  expect(second).toContain('begin="0ms"')
+  expect(second).not.toBe(first)
+
+  // Over, it ends of itself: nothing draws the band again.
+  await clock.advance(5000)
+  expect(await drawsNow()).toBe(draws + 1)
+
+  // An ended thought's rows blink nothing.
+  await $.turn.complete({ ...finished('agent-1'), answer: 'Found it.' })
+  await clock.settle()
+  await clock.advance(1500)
+  const ended = await drawsNow()
+  await works('w5')
+  expect(await drawsNow()).toBe(ended)
 })
 
 test('the band shows eight dots at most, in the order their thoughts started, and counts the rest; a stopped one fades without a mark', async ($, on) => {
