@@ -752,6 +752,13 @@ export type ViewDrawing = {
   // thread's key, as wide and high as its parent, whose press does as `toggleShown` does;
   // the filter then draws each thread's `tag` under it
   filterHit?: (key: string, isPicked: boolean) => RenderElement
+  // a thread's one-line summary (by its key) and how long ago it was made, which the
+  // pointer on its tag shows where the surface has a hit area; none where it has none yet
+  summaryOf?: (key: string) => { line: string; age: string } | undefined
+  // the pane's width in columns, and a thread's tag's picture's in px, by which a
+  // summary's card is set above its tag and kept inside the pane
+  columns?: number
+  tagWidth?: (thread: Thread) => number
 }
 
 // The most picture data one drawing of the view holds, in base64 characters. The desktop
@@ -1051,8 +1058,9 @@ function drawEntry(draw: ViewDrawing, isPage: boolean, entry: Entry, drawn: Draw
 const FILTER_SHAPE = { borderStyle: 'round', paddingX: 1, paddingY: 0.3 }
 const FILTER_HOVER_ALPHA = '73'
 // Rows between the desktop's rows of switches, once they wrap: about 5px, so two picked
-// switches' borders do not touch.
+// switches' borders do not touch. Columns between two switches in a row.
 const FILTER_ROW_GAP = 0.5
+const FILTER_COLUMN_GAP = 1
 
 // One thread of the view's filter, a switch. Where the surface has a hit area (the
 // desktop) it is the thread's tag, as the chat draws it, in a round border of the
@@ -1066,6 +1074,12 @@ function drawFilterChoice(draw: ViewDrawing, thread: Thread, isPicked: boolean):
   const key = keyOf(thread.name)
   const boxKey = `thread-view-filter-box:${key}`
   if (draw.filterHit !== undefined) {
+    const summary = draw.summaryOf?.(key)
+    // with a summary, the pointer on the tag lights its group: its card above the filter
+    const hover = {
+      ...(summary === undefined ? {} : { scope: SUMMARY_SCOPE + key }),
+      ...(isPicked ? {} : { borderColor: thread.color + FILTER_HOVER_ALPHA }),
+    }
     // kept whole, as a Button is, so a long name moves to the next row rather than wrap
     return (
       <Box
@@ -1074,7 +1088,7 @@ function drawFilterChoice(draw: ViewDrawing, thread: Thread, isPicked: boolean):
         flexShrink={0}
         {...FILTER_SHAPE}
         borderColor={isPicked ? thread.color : CLEAR}
-        {...(isPicked ? {} : { hover: { borderColor: thread.color + FILTER_HOVER_ALPHA } })}
+        {...(Object.keys(hover).length === 0 ? {} : { hover })}
       >
         {draw.tag(thread, `${thread.name}: ${isPicked ? 'on' : 'off'}`)}
         <Box position="absolute" top={0} left={0} width="100%" height="100%">
@@ -1108,9 +1122,14 @@ const DIVIDER_HEIGHT = 0.1
 const DIVIDER_FILL = '#8888884d'
 const DIVIDER_CHARS = 500
 
-function drawDivider(draw: ViewDrawing, isPage: boolean): RenderElement {
+function drawDivider(draw: ViewDrawing, isPage: boolean, cards: readonly RenderElement[] = []): RenderElement {
   const { Box, Text } = draw.ui
-  if (isPage) return <Box height={DIVIDER_HEIGHT} backgroundColor={DIVIDER_FILL} />
+  if (isPage)
+    return (
+      <Box height={DIVIDER_HEIGHT} backgroundColor={DIVIDER_FILL}>
+        {cards}
+      </Box>
+    )
   return (
     <Box height={1} overflow="hidden">
       <Text dimColor>{'─'.repeat(DIVIDER_CHARS)}</Text>
@@ -1121,23 +1140,94 @@ function drawDivider(draw: ViewDrawing, isPage: boolean): RenderElement {
 // The view's filter, below its newest section, where the view opens and keeps to as
 // messages come (a pane has no row that stays as it scrolls): under the divider, a switch
 // for each thread it offers, in one row while they fit. On a page the divider has a row
-// either side; on the terminal the filter sits right under it.
+// either side; on the terminal the filter sits right under it. On a page the divider holds
+// the threads' summary cards, which rise from it.
 function drawFilter(draw: ViewDrawing, isPage: boolean, offered: readonly Thread[], picks: ReadonlySet<string>): RenderElement {
   const { Box } = draw.ui
   return (
     <Box flexDirection="column" rowGap={isPage ? 1 : 0}>
-      {drawDivider(draw, isPage)}
+      {drawDivider(draw, isPage, drawSummaryCards(draw, offered))}
       <Box
         flexDirection="row"
         flexWrap="wrap"
         alignItems="center"
-        columnGap={1}
+        columnGap={FILTER_COLUMN_GAP}
         rowGap={draw.filterHit !== undefined ? FILTER_ROW_GAP : 0}
       >
         {offered.map(t => drawFilterChoice(draw, t, picks.has(keyOf(t.name))))}
       </Box>
     </Box>
   )
+}
+
+// The hover group of a thread's tag in the filter and its summary card.
+export const SUMMARY_SCOPE = 'summary:'
+// A summary card's widest, in columns: about the 360px the desktop's own hover cards take
+// at most, a column being about 8px on a page. Its padding and border across, in columns:
+// the 12px either side the desktop gives a bordered Box (as its hover cards are padded)
+// and a column for the border and the text's slack. Its fill, the theme's raised surface,
+// opaque in either theme (white on a light page, #1a1a19 on a dark one).
+const CARD_COLUMNS = 45
+const CARD_PADDING = 4
+const CARD_FILL = 'userMessageBackgroundHover'
+const COLUMN_PX = 8
+// A switch's ring across, 1px either side, in columns.
+const SWITCH_RING = 2 / COLUMN_PX
+
+// Where each switch of the filter starts, in columns from the pane's left, as the row lays
+// them out and wraps them: a guess from their tags' widths, near enough to set a card by.
+// None where the pane's width or the tags' are not known.
+function switchStarts(draw: ViewDrawing, offered: readonly Thread[]): number[] | undefined {
+  const { columns, tagWidth } = draw
+  if (columns === undefined || tagWidth === undefined) return undefined
+  let at = 0
+  return offered.map(t => {
+    const width = tagWidth(t) / COLUMN_PX + FILTER_SHAPE.paddingX * 2 + SWITCH_RING
+    if (at > 0 && at + width > columns) at = 0
+    const start = at
+    at += width + FILTER_COLUMN_GAP
+    return start
+  })
+}
+
+// Each thread's one-line summary, and how long ago it was made, in a card shown while the
+// pointer is on its tag in the filter (their hover group), drawn as the desktop's hover
+// cards are: its raised fill, a faint ring, their rounded corners and padding (a round
+// border gives all three), but no shadow, which a Box cannot have. A pane does not float
+// a card the pointer reveals, as the band does, so it is placed here: absolute in the
+// divider, its foot on it, so it rises above the filter over the sections, however many
+// rows the tags wrap to. Across, it starts where its tag does, as near as can be told,
+// and stays inside the pane: as wide as its line, up to CARD_COLUMNS and the pane's
+// width. Only where the surface has hit areas, for each thread offered with a line.
+function drawSummaryCards(draw: ViewDrawing, offered: readonly Thread[]): RenderElement[] {
+  const summaryOf = draw.summaryOf
+  if (draw.filterHit === undefined || summaryOf === undefined) return []
+  const { Box, Text } = draw.ui
+  const starts = switchStarts(draw, offered)
+  const room = draw.columns ?? CARD_COLUMNS
+  return offered.flatMap((thread, i) => {
+    const key = keyOf(thread.name)
+    const summary = summaryOf(key)
+    if (summary === undefined) return []
+    const width = Math.min(CARD_COLUMNS, room, Math.max(summary.line.length, summary.age.length) + CARD_PADDING)
+    const left = Math.max(0, Math.min(Math.round(starts?.[i] ?? 0), room - width))
+    return [
+      <Box
+        position="absolute"
+        bottom={0}
+        left={left}
+        width={width}
+        display="none"
+        hover={{ scope: SUMMARY_SCOPE + key, display: 'flex' }}
+        flexDirection="column"
+        borderStyle="round"
+        backgroundColor={CARD_FILL}
+      >
+        <Text>{summary.line}</Text>
+        <Text dimColor>{summary.age}</Text>
+      </Box>,
+    ]
+  })
 }
 
 // The pane's body: the sections of the threads its filter picked, oldest first, the newest

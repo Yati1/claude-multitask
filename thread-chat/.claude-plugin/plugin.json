@@ -2,5 +2,19 @@
   "name": "thread-chat",
   "version": "0.3.0",
   "description": "Conversation threads by # heading: colour-coded sections, a thread picker above the prompt, a pane to read the threads you pick, optional agent-created threads",
-  "types": "./types/index.d.ts"
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "catchUpAfter": {
+      "type": "number",
+      "title": "Catch up after (tokens)",
+      "description": "How many tokens of other conversation (tool output included) after a thread's last message before your next message in it gives the agent a summary of the thread. Summaries are made ahead at 80% of this.",
+      "default": 75000
+    },
+    "summaryModel": {
+      "type": "string",
+      "title": "Summary model",
+      "description": "The model that writes thread summaries: a model id or an alias such as haiku.",
+      "default": "claude-haiku-5-5"
+    }
+  }
 }

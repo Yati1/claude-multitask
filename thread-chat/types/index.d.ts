@@ -26,6 +26,22 @@ export type ViewRow = {
   interim?: true
   // the pictures the person pasted with their message, in order
   images?: ViewImage[]
+  // the main conversation's token position (TokenPos) as the row's turn ended, and its
+  // compaction count then: how far the conversation has moved on since is the gap a
+  // thread's summary is for. Absent until the turn ends; a row an earlier version kept
+  // is stamped when the session starts.
+  pos?: number
+  epoch?: number
+}
+
+// The main conversation's token position: how many tokens its context (Claude's whole
+// transcript as the model is sent it, tool output included) has grown by in all, from the
+// context size the engine last reported (none before its first report this run), and how
+// many compactions it has been through.
+export type TokenPos = {
+  pos: number
+  last?: number
+  epoch: number
 }
 
 // A picture the person pasted: its media type, its size where its header tells it, and
@@ -38,6 +54,79 @@ export type ViewImage = {
   path?: string
   data?: string
 }
+
+// What a small model keeps of one thread: `short`, where it stands, for the note beside
+// the person's message; `long`, its history for an agent that forgot it, for the
+// read_thread tool; `line`, one line for the person scanning their threads. `coversRow` is
+// the thread's last message the summary was made from, at token position `coversPos`.
+export type ThreadSummary = {
+  name: string
+  short?: string
+  long?: string
+  line?: string
+  coversRow?: string
+  coversPos?: number
+  // when it was made, and when its line was, by the engine's clock
+  madeAt?: number
+  lineAt?: number
+}
+
+// What the summaries' calls have cost in all, as the API counted it, and the characters
+// they sent.
+export type SummaryUsage = {
+  calls: number
+  failed: number
+  input: number
+  output: number
+  cacheRead: number
+  cacheWrite: number
+  chars: number
+}
+
+// One summary call as the log keeps it, for debugging: its number in the session (`n`),
+// when it started by the engine's clock, what it made (a thread's pack, or one-line
+// summaries), why (`trigger`: the turn ending, a thread past a share of the catch-up
+// gap, a compaction starting, read_thread), the threads it was for, the model asked, the
+// characters sent, its tokens as the API counted them (`isEstimated`: none came back,
+// the input guessed from the characters), its cost in dollars at list price (none for a
+// model whose price is not known), how long it took, and what came of it (`fallback`:
+// the model was refused and the next call asks another; `unparsed`: answered, but not
+// in the form asked).
+export type SummaryCall = {
+  n: number
+  at: number
+  kind: 'line' | 'pack'
+  trigger: string
+  threads: string[]
+  model: string
+  chars: number
+  input: number
+  cacheRead: number
+  cacheWrite: number
+  output: number
+  isEstimated?: boolean
+  cost?: number
+  ms: number
+  outcome: 'ok' | 'unparsed' | 'empty' | 'error' | 'aborted' | 'refused' | 'fallback'
+  why?: string
+}
+
+// The totals of a session's summary calls of one kind: estimated tokens left out, so
+// they say what was billed; `unpriced` calls are those of a model with no known price.
+export type SummaryCallTotals = {
+  calls: number
+  failed: number
+  input: number
+  cacheRead: number
+  cacheWrite: number
+  output: number
+  cost: number
+  unpriced: number
+  ms: number
+}
+
+// A session's summary calls: the latest few, and the totals of all of them by kind.
+export type SummaryCallLog = { calls: SummaryCall[]; totals: { line: SummaryCallTotals; pack: SummaryCallTotals } }
 
 // Where the threads stood when the model was last told, beside the person's message:
 // the merges (a merged-away thread's key -> its thread's key) and the agent switch.
@@ -112,6 +201,32 @@ declare module 'claude-code' {
       // whether the thread picker's list is open in the mobile app, which draws no Select:
       // its button opens and closes it
       pickerOpen: boolean
+      // the main conversation's token position, kept with the session's record
+      tokenPos: TokenPos
+      // each thread's summaries by its key, kept in a file beside the view's rows
+      summaries: Record<string, ThreadSummary>
+      // each thread's one-line summary by its key, and when it was made: what the band and
+      // the thread view draw
+      summaryLines: Record<string, { line: string; at: number }>
+      // what the summaries' calls have cost
+      summaryUsage: SummaryUsage
+      // each summary call, the latest CALLS_KEPT, for `/thread-view trace summaries`;
+      // kept in a file beside the view's rows, read by no render
+      summaryCalls: SummaryCallLog
+      // whether the chat's threads are summarised and the agent caught up on them: the
+      // menu's switch, on at first, kept with the session's record
+      summariesOn: boolean
+      // whether the agent was offered read_thread this run: only as a run starts, so the
+      // tools the model is sent stay the same all session
+      readToolOffered: boolean
+      // whether this run's session.start has run: one running again is a reload
+      hasStarted: boolean
+      // whether the band shows a line under its controls with the picked thread's one-line
+      // summary (or the active thread's, none picked): the menu's switch, off at first,
+      // kept with the session's record
+      summaryLineShown: boolean
+      // the key of the thread the latest turn touched last ('' none yet)
+      activeThread: string
     }
   }
 }

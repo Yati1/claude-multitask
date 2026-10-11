@@ -924,7 +924,7 @@ test('/thread-view trace tells how the view was last opened and drawn, step by s
   engine(on)
   const trace = async () =>
     (await $.command.run({ command: 'thread-view', args: 'trace', origin: { kind: 'composer' }, presentation: {} as never })).text
-  expect(await trace()).toBe('The thread view has not been drawn since thread-chat last loaded.')
+  expect(await trace()).toStartWith('The thread view has not been drawn since thread-chat last loaded.\n\nThread summaries:')
   await flipThreads($)
   await $.prompt.submit(say('# design\nhello'))
   await $.command.run({ command: 'thread-view', args: '', origin: { kind: 'composer' }, presentation: {} as never })
