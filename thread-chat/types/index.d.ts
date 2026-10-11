@@ -173,6 +173,12 @@ declare module 'claude-code' {
       readToolOffered: boolean
       // whether this run's session.start has run: one running again is a reload
       hasStarted: boolean
+      // whether the band shows a line under its controls with the picked thread's one-line
+      // summary (or the active thread's, none picked): the menu's switch, off at first,
+      // kept with the session's record
+      summaryLineShown: boolean
+      // the key of the thread the latest turn touched last ('' none yet)
+      activeThread: string
     }
   }
 }

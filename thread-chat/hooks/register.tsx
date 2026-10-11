@@ -56,6 +56,7 @@ import {
 } from './pane'
 import type { Picture, ViewDeps, ViewGrowth, ViewInputs, ViewPlace, ViewSpan } from './pane'
 import {
+  LINE_SYSTEM,
   NO_USAGE,
   PACK_SYSTEM,
   TOOL_TAIL_CHARS,
@@ -69,19 +70,23 @@ import {
   isPackDue,
   isPassing,
   isPast,
+  linePrompt,
   packParts,
   packPrompt,
+  parseLines,
   parsePack,
   readThreadText,
   summariesOf,
   threadGaps,
   tokenPosOf,
   tokensText,
+  turnSectionsOf,
   usageText,
   verbatimOf,
   withStamps,
   withUsage,
 } from './summaries'
+import type { LineInput } from './summaries'
 
 const isOn = atom({ plugin: 'thread-chat', key: 'isOn' } as const, false)
 const threads = atom({ plugin: 'thread-chat', key: 'threads' } as const, [])
@@ -115,6 +120,8 @@ const summaryUsage = atom({ plugin: 'thread-chat', key: 'summaryUsage' } as cons
 const summariesOn = atom({ plugin: 'thread-chat', key: 'summariesOn' } as const, true)
 const readToolOffered = atom({ plugin: 'thread-chat', key: 'readToolOffered' } as const, false)
 const hasStarted = atom({ plugin: 'thread-chat', key: 'hasStarted' } as const, false)
+const summaryLineShown = atom({ plugin: 'thread-chat', key: 'summaryLineShown' } as const, false)
+const activeThread = atom({ plugin: 'thread-chat', key: 'activeThread' } as const, '')
 // The react mod's switch and reactions, which the thread view draws as the chat does
 // (types/react.d.ts); never written without react, so off and none.
 const reactIsOn = atom({ plugin: 'react', key: 'isOn' } as const, false)
@@ -131,6 +138,7 @@ const THREADS_SWITCH = 'threads-on'
 const AGENT_SWITCH = 'agent-threads'
 const FILTER_SWITCH = 'filter-chat'
 const SUMMARIES_SWITCH = 'thread-summaries'
+const LINE_SWITCH = 'summary-line'
 // A switch's hit area over its picture, keyed by this and the switch's key.
 const SWITCH_HIT = 'switch:'
 // The thread view's pane id, which is also its command's name and its menu row's key.
@@ -291,6 +299,14 @@ async function flipMenuSwitch($: EngineInterface, key: string) {
   else if (key === AGENT_SWITCH && (await read($, isOn))) await flipAgentSwitch($)
   else if (key === FILTER_SWITCH && (await read($, isOn))) await flipFilter($)
   else if (key === SUMMARIES_SWITCH && (await read($, isOn))) await flipSummaries($)
+  else if (key === LINE_SWITCH && (await read($, isOn))) await flipSummaryLine($)
+}
+
+// Shows or hides the line under the band's controls with a thread's one-line summary, and
+// keeps the switch for the session's next run.
+async function flipSummaryLine($: EngineInterface) {
+  await update($, summaryLineShown, is => !is)
+  await save($)
 }
 
 // What a heading means, by one rule for sending and drawing alike: `+name` a new
@@ -432,6 +448,8 @@ type Saved = {
   // absent from a record kept before thread summaries
   tokenPos?: TokenPos
   summariesOn?: boolean
+  summaryLineShown?: boolean
+  activeThread?: string
 }
 
 // Keeps the session's switches, threads, merges, recorded meanings, latest rows, picked
@@ -455,6 +473,8 @@ async function save($: EngineInterface) {
     viewThreads: await read($, viewThreads),
     tokenPos: await read($, tokenPos),
     summariesOn: await read($, summariesOn),
+    summaryLineShown: await read($, summaryLineShown),
+    activeThread: await read($, activeThread),
   }
   await $.store.set(storeKey(await $.session.id()), saved)
 }
@@ -1203,6 +1223,7 @@ async function menuSwitches($: EngineInterface): Promise<MenuSwitch[]> {
           { key: AGENT_SWITCH, label: 'Agent may start threads', isOn: await read($, agentMayCreate) },
           { key: FILTER_SWITCH, label: 'Filter the chat', isOn: await read($, filtersChat) },
           { key: SUMMARIES_SWITCH, label: 'Thread summaries', isOn: await read($, summariesOn) },
+          ...((await read($, summariesOn)) ? [{ key: LINE_SWITCH, label: 'Show thread summary', isOn: await read($, summaryLineShown) }] : []),
         ]
       : []),
   ]
@@ -2467,8 +2488,9 @@ const FALLBACK_MODEL = 'haiku'
 const summaryConfig = { catchUpAfter: CATCH_UP_AFTER, model: SUMMARY_MODEL }
 
 // A summary call to make: a thread's pack (`short`, `long`, `line`), or the one-line
-// summaries of the threads a turn touched; how many times it has been tried.
-type SummaryJob = { kind: 'pack'; key: string; tries: number } | { kind: 'line'; keys: string[]; tries: number }
+// summaries of the threads turns touched, with those turns' sections of each by its key;
+// how many times it has been tried.
+type SummaryJob = { kind: 'pack'; key: string; tries: number } | { kind: 'line'; sections: Record<string, string>; tries: number }
 // The calls waiting, by what they are for (one per thread's pack, one for the lines), those
 // running, and how many may run at once.
 const summaryJobs = new Map<string, SummaryJob>()
@@ -2485,6 +2507,13 @@ const SUMMARY_LOG_KEPT = 16
 
 const jobId = (job: SummaryJob) => (job.kind === 'pack' ? `pack:${job.key}` : 'line')
 
+// Turns' sections of each thread, those of a later turn after an earlier's.
+function withSections(earlier: Record<string, string>, later: Record<string, string>): Record<string, string> {
+  const all = { ...earlier }
+  for (const [key, text] of Object.entries(later)) all[key] = all[key] === undefined ? text : `${all[key]}\n\n${text}`
+  return all
+}
+
 // A step of the summaries' for the trace, by the engine's clock.
 async function noteSummary($: EngineInterface, what: string) {
   const now = await $.clock.now().catch(() => Date.now())
@@ -2498,7 +2527,7 @@ async function noteSummary($: EngineInterface, what: string) {
 function queueSummary($: EngineInterface, job: SummaryJob) {
   const id = jobId(job)
   const queued = summaryJobs.get(id)
-  const merged = job.kind === 'line' && queued?.kind === 'line' ? { ...job, keys: [...new Set([...queued.keys, ...job.keys])] } : job
+  const merged = job.kind === 'line' && queued?.kind === 'line' ? { ...job, sections: withSections(queued.sections, job.sections) } : job
   summaryJobs.set(id, merged)
   pumpSummaries($)
 }
@@ -2598,7 +2627,7 @@ async function callSummaryModel($: EngineInterface, ask: SummaryAsk): Promise<Su
 async function runSummary($: EngineInterface, job: SummaryJob) {
   try {
     if (summariesStopped !== undefined || !(await read($, isOn)) || !(await read($, summariesOn))) return
-    const answer = job.kind === 'pack' ? await makePack($, job.key) : undefined
+    const answer = job.kind === 'pack' ? await makePack($, job.key) : await makeLines($, job.sections)
     if (answer?.kind !== 'retry') return
     const wait = RETRY_MS[job.tries]
     if (wait === undefined) {
@@ -2664,6 +2693,74 @@ const PACK_MAX_TOKENS = 4000
 // How long a summary call may take: one made ahead, and one read_thread waits for.
 const SUMMARY_TIMEOUT_MS = 90_000
 const READ_TIMEOUT_MS = 30_000
+
+// A one-line call's cap on the reply: a line a thread, and room for thinking.
+const LINE_MAX_TOKENS = 1500
+
+// Makes the one-line summaries of the threads turns touched, in one call, from each one's
+// line and short summary so far and those turns' sections of it; a thread with a pack
+// waiting or being made is left to it, which writes its line too.
+async function makeLines($: EngineInterface, sections: Record<string, string>): Promise<SummaryAnswer | undefined> {
+  const list = await read($, threads)
+  const all = await read($, summaries)
+  const lines = await read($, summaryLines)
+  const inputs: (LineInput & { key: string })[] = []
+  for (const [key, messages] of Object.entries(sections)) {
+    const thread = list.find(t => keyOf(t.name) === key && t.isArchived !== true)
+    const packId = `pack:${key}`
+    if (thread === undefined || messages.trim() === '' || summaryJobs.has(packId) || summaryRunning.has(packId)) continue
+    const short = all[key]?.short
+    const line = lines[key]?.line
+    inputs.push({ key, name: thread.name, messages, ...(line === undefined ? {} : { line }), ...(short === undefined ? {} : { short }) })
+  }
+  if (inputs.length === 0) return undefined
+  const what = `lines ${inputs.map(t => t.name).join(', ')}`
+  const answer = await askSummaryModel($, {
+    what,
+    job: 'line',
+    keys: inputs.map(t => t.key),
+    system: LINE_SYSTEM,
+    prompt: linePrompt(inputs),
+    maxTokens: LINE_MAX_TOKENS,
+  })
+  if (answer.kind !== 'text') return answer
+  const made = parseLines(answer.text)
+  const wanted = new Set(inputs.map(t => t.key))
+  const fresh = Object.entries(made).filter(([key]) => wanted.has(key))
+  if (fresh.length === 0) {
+    await noteSummary($, `${what}: reply held no line, kept as they were`)
+    return { kind: 'failed', why: 'unparsed' }
+  }
+  const now = await $.clock.now()
+  await update($, summaryLines, was => ({ ...was, ...Object.fromEntries(fresh.map(([key, line]) => [key, { line, at: now }])) }))
+  await update($, summaries, was => {
+    const next = { ...was }
+    for (const [key, line] of fresh) {
+      const name = list.find(t => keyOf(t.name) === key)?.name ?? key
+      next[key] = { ...(next[key] ?? { name }), line, lineAt: now }
+    }
+    return next
+  })
+  await keepSummaries($)
+  return { kind: 'text', text: '' }
+}
+
+// Queues the one-line summaries of the threads the turn that just ended touched (its rows
+// since the person's last message), and notes the last of them as the active thread.
+async function queueTurnLines($: EngineInterface) {
+  if (summariesStopped !== undefined || !(await read($, isOn)) || !(await read($, summariesOn))) return
+  const stems = new Set((await read($, recent)).map(stemOf))
+  const { entries } = await allEntries($)
+  const isTurnRow = (id: string) => stems.has(stemOf(id))
+  const touched = [
+    ...new Set(entries.flatMap(entry => (entry.thread !== undefined && entry.id !== undefined && isTurnRow(entry.id) ? [keyOf(entry.thread.name)] : []))),
+  ]
+  if (touched.length === 0) return
+  const last = touched.at(-1)
+  if (last !== undefined) await update($, activeThread, () => last)
+  const sections = Object.fromEntries(touched.map(key => [key, turnSectionsOf(entries, key, isTurnRow)]))
+  queueSummary($, { kind: 'line', sections, tries: 0 })
+}
 
 // The file beside a session's rows that keeps its threads' summaries.
 const SUMMARIES_FILE = 'summaries.json'
@@ -2884,6 +2981,10 @@ export const register: Register = (on, options) => {
     if (keptFilters !== undefined) await update($, filtersChat, () => keptFilters)
     const keptSummariesOn = saved?.summariesOn
     if (keptSummariesOn !== undefined) await update($, summariesOn, () => keptSummariesOn)
+    const keptLineShown = saved?.summaryLineShown
+    if (keptLineShown !== undefined) await update($, summaryLineShown, () => keptLineShown)
+    const keptActive = saved?.activeThread
+    if (keptActive !== undefined && (await read($, activeThread)) === '') await update($, activeThread, () => keptActive)
     // With threads and the agent switch on, after a reload or a restart, its tool is offered again.
     if ((await read($, isOn)) && (await read($, agentMayCreate))) await offerCreateTool($)
     // read_thread is offered as a run starts with threads and their summaries on, never
@@ -3045,8 +3146,10 @@ export const register: Register = (on, options) => {
       await takeKeptPaths($, id)
       const rows = await read($, viewRows)
       if (rows.length > 0) await keepViewRows($, id, rows)
-      // threads near catching up get their summaries made ahead
+      // threads near catching up get their summaries made ahead, and those the turn touched
+      // their one-line summaries
       await queueDuePacks($)
+      await queueTurnLines($)
     }
     return result
   })
@@ -3472,7 +3575,8 @@ export const register: Register = (on, options) => {
   // The band above the prompt: while threads are on, the thread picker, giving way first,
   // then thread-chat's menu right after it. They sit before what other mods draw there,
   // which keeps its width. The mobile app draws no menu: /threads and
-  // /thread-view are there.
+  // /thread-view are there. With the menu's `Show thread summary` on, a line under them
+  // holds a thread's one-line summary.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const below = await next(e)
     if (e.props.hasSurvey) return below
@@ -3488,14 +3592,62 @@ export const register: Register = (on, options) => {
         {menu !== undefined && <Box flexShrink={0}>{menu}</Box>}
       </Box>
     )
-    if (below.type === 'engine') return mine
-    return (
-      <Box flexDirection="row" alignItems="center" columnGap={2}>
-        {mine}
-        <Box flexDirection="row" alignItems="center" flexShrink={0}>
-          {below}
+    const controls =
+      below.type === 'engine' ? (
+        mine
+      ) : (
+        <Box flexDirection="row" alignItems="center" columnGap={2}>
+          {mine}
+          <Box flexDirection="row" alignItems="center" flexShrink={0}>
+            {below}
+          </Box>
         </Box>
+      )
+    const line = on_ ? await drawSummaryLine($, e) : undefined
+    if (line === undefined) return controls
+    return (
+      <Box flexDirection="column" minWidth={0} rowGap={e.surface === 'desktop' ? SUMMARY_LINE_GAP : 0}>
+        {controls}
+        {line}
       </Box>
     )
   })
 }
+
+// The gap above the band's summary line on the desktop, in its half lines: about 5px, so
+// the line clears the picker's tint by as much as the band pads above and below. The
+// terminal's rows are whole lines, so it has none.
+const SUMMARY_LINE_GAP = 0.5
+
+// The band's line of a thread's one-line summary, under its controls, while the menu's
+// `Show thread summary` is on: the picked thread's, or with none picked the thread the
+// latest turn touched last; its line alone, dim, cut to one row, from the band's left
+// edge, where the picker's tint starts. None where that thread has no line yet; where
+// the summaries stopped this run, why.
+async function drawSummaryLine($: EngineInterface, e: Parameters<EngineInterface['ui']['resolve']>[0]): Promise<RenderElement | undefined> {
+  if (!(await read($, summaryLineShown)) || !(await read($, summariesOn))) return undefined
+  const { Box, Text } = $.ui.resolve(e)
+  if (summariesStopped !== undefined) {
+    return (
+      <Box flexDirection="row" minWidth={0}>
+        <Box flexShrink={1} minWidth={0}>
+          <Text dimColor wrap="truncate-end">{`Thread summaries unavailable: ${summariesStopped}`}</Text>
+        </Box>
+      </Box>
+    )
+  }
+  const key = (await read($, current)) || (await read($, activeThread))
+  const thread = (await read($, threads)).find(t => keyOf(t.name) === key && t.isArchived !== true)
+  const line = thread === undefined ? undefined : (await read($, summaryLines))[key]?.line
+  if (thread === undefined || line === undefined) return undefined
+  return (
+    <Box key={SUMMARY_LINE} flexDirection="row" minWidth={0}>
+      <Box flexShrink={1} minWidth={0}>
+        <Text dimColor wrap="truncate-end">{line}</Text>
+      </Box>
+    </Box>
+  )
+}
+
+// The band's line of a thread's one-line summary.
+const SUMMARY_LINE = 'summary-line-row'

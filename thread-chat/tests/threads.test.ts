@@ -1711,9 +1711,9 @@ test('a long desktop transcript draws Clients only in the one open move picker',
   expect(await clientsInRows()).toBe(0)
 
   // the band: one per switch in its menu (threads on, the agent's, the filter's, the
-  // summaries'); the thread picker's menu is Buttons
+  // summaries', their line's); the thread picker's menu is Buttons
   const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...BAND })
-  expect(await band.findAll({ type: 'Client' })).toHaveLength(4)
+  expect(await band.findAll({ type: 'Client' })).toHaveLength(5)
 
   // an open picker adds its pills, at most one per thread and "none"; opening another closes it
   await rows[1]?.press({ key: 'tag:design' })

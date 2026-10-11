@@ -43,12 +43,19 @@ const packReply = (name: string, n = 1) =>
 // The thread a pack's request is for.
 const threadOfRequest = (r: ModelRequest) => /^Thread: (.*)$/m.exec(r.prompt)?.[1] ?? ''
 
+// The threads a one-line request is for, in order.
+const threadsOfRequest = (r: ModelRequest) => [...r.prompt.matchAll(/^Thread: (.*)$/gm)].map(m => m[1] ?? '')
+
+// Whether a request is for one-line summaries, not a pack.
+const isLineRequest = (r: ModelRequest) => (r.system ?? '').includes('one-line summaries')
+
 // The test stands in for the engine beneath the plugin: the mod store (`kept`, seeded with
 // `store`), the files it reads and writes (`files`, seeded with `seed`), the context size
 // the engine reports (`usage.tokens`, none until set), the prompts that reach the model, each
-// with the notes beside it, and the summary model: the requests it got (`requests`), each
-// answered by `answer` (a pack's reply naming its thread, unless a test says otherwise), or
-// refused where it throws.
+// with the notes beside it, and the summary model: the packs it was asked for (`requests`),
+// each answered by `answer` (a pack's reply naming its thread, unless a test says otherwise),
+// or refused where it throws; and the one-line requests (`lineRequests`), each answered by
+// `answerLines` (`<name> turn line <n>` for each thread).
 function engine(on: On, store: Record<string, unknown> = {}, seed: Record<string, string> = {}) {
   const kept: Record<string, unknown> = { ...store }
   const files: Record<string, string> = { ...seed }
@@ -56,11 +63,23 @@ function engine(on: On, store: Record<string, unknown> = {}, seed: Record<string
   const prompts: string[] = []
   const registered: string[] = []
   const requests: ModelRequest[] = []
-  const model: { answer: (r: ModelRequest) => ModelAnswer } = {
+  const lineRequests: ModelRequest[] = []
+  const model: { answer: (r: ModelRequest) => ModelAnswer; answerLines: (r: ModelRequest) => ModelAnswer } = {
     answer: r => ({ isAnswered: true, text: packReply(threadOfRequest(r), requests.length), usage: USAGE }),
+    answerLines: r => ({
+      isAnswered: true,
+      text: threadsOfRequest(r)
+        .map(name => `<thread name="${name}">${name} turn line ${lineRequests.length}</thread>`)
+        .join('\n'),
+      usage: { ...USAGE, input_tokens: 600, output_tokens: 60 },
+    }),
   }
   const clock = mock.clock(on, { now: 1_000_000 })
   on('model.complete', ($, e) => {
+    if (isLineRequest(e)) {
+      lineRequests.push(e)
+      return { value: model.answerLines(e) as never }
+    }
     requests.push(e)
     return { value: model.answer(e) as never }
   })
@@ -104,7 +123,7 @@ function engine(on: On, store: Record<string, unknown> = {}, seed: Record<string
   on('session.compact', () => ({ messages: [{ role: 'user' as const, text: 'the summary', toolUses: [] }] }))
   on('ui.render', () => ({ type: 'engine', ref: 0 }))
   on('ui.message', () => ({}))
-  return { kept, files, usage, prompts, registered, requests, model, clock }
+  return { kept, files, usage, prompts, registered, requests, lineRequests, model, clock }
 }
 
 const model = { kind: 'model', model: 'test' } as const
@@ -197,12 +216,12 @@ test("each thread is as far behind as Claude's context grew since its last messa
   await call('a2')
   await reply('a3', '# perf\nyes')
   await done()
-  expect(await summaryTrace($)).toBe(
+  // (the threads' one-line summaries are made as each turn ends, so the trace goes on)
+  expect(await summaryTrace($)).toStartWith(
     [
       'Thread summaries: token position 30.0k, context 50.0k, 0 compactions; catch up after 75.0k',
       '  design: 30.0k since its last message',
       '  perf: 0 since its last message',
-      '  model claude-haiku-5-5; no calls yet',
     ].join('\n'),
   )
 
@@ -366,8 +385,7 @@ test("a thread's summary is made ahead, at 80% of catching up, by the summary mo
 
   const trace = await summaryTrace($)
   expect(trace).toContain('  design: 60.0k since its last message; summary current\n    design line 1')
-  expect(trace).toContain('model claude-haiku-5-5; 1 call: 2.0k in, 900 cache read, 0 cache written, 500 out')
-  expect(trace).toMatch(/\d\d:\d\d:\d\d pack design: 2\.0k in/)
+  expect(trace).toMatch(/\d\d:\d\d:\d\d pack design: 2\.0k in, 900 cache read, 0 cache written, 500 out/)
   const kept = JSON.parse(files[`${VIEWS}/session-1/summaries.json`] ?? '{}') as { summaries: Record<string, { short?: string; coversRow?: string }> }
   expect(kept.summaries.design).toMatchObject({ short: 'design short 1', long: 'design long 1', line: 'design line 1', coversRow: 'a1' })
 
@@ -400,7 +418,7 @@ test('a summary call that fails in passing is tried again later; a model refused
   await clock.advance(30_000)
   expect(requests).toHaveLength(3)
   expect(await summaryTrace($)).toContain('summary current')
-  expect(await summaryTrace($)).toContain('3 calls (2 failed)')
+  expect(await summaryTrace($)).toContain('calls (2 failed)')
 
   // the model set refused: haiku in its place; refused too, no more calls this run
   model.answer = r => {
@@ -617,4 +635,68 @@ test("a compaction starting has every thread's summary made, and after it every 
   expect(prompts.at(-1)).toContain(
     'Catch-up for thread "perf": the conversation was compacted since its last message. Summary written by a small model from the thread\'s messages; it may miss detail:\nperf short',
   )
+})
+
+test("each turn's threads get their one-line summaries in one call, from their line so far and the turn's messages", async ($, on) => {
+  const { usage, lineRequests, clock } = engine(on, { 'session:session-1': recordOn() })
+  await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
+  usage.tokens = 20_000
+  await talk($, usage, [['p1', '# design\nmake it blue\n# perf\nfaster?', 'a1', '# design\nblue\n# perf\nyes']])
+  await clock.settle()
+  expect(lineRequests.map(threadsOfRequest)).toEqual([['design', 'perf']])
+  const [first] = lineRequests
+  expect(first?.systemBlocks?.[0]?.cache).toBe(true)
+  expect(first?.maxTokens).toBe(1500)
+  expect(first?.prompt).toBe(
+    [
+      'Thread: design\nCurrent line: (none)\nLatest summary: (none)\nNewest messages (oldest first):\n[user]\nmake it blue\n\n[agent]\nblue',
+      'Thread: perf\nCurrent line: (none)\nLatest summary: (none)\nNewest messages (oldest first):\n[user]\nfaster?\n\n[agent]\nyes',
+    ].join('\n\n---\n\n'),
+  )
+  expect(await summaryTrace($)).toContain('  design: 0 since its last message\n    design turn line 1')
+
+  // the next turn, perf alone: from its line so far
+  await talk($, usage, [['p2', '# perf\nhow fast?', 'a2', '# perf\ntwice']])
+  await clock.settle()
+  expect(lineRequests.at(-1)?.prompt).toBe(
+    'Thread: perf\nCurrent line: perf turn line 1\nLatest summary: (none)\nNewest messages (oldest first):\n[user]\nhow fast?\n\n[agent]\ntwice',
+  )
+  // a turn in no thread (none picked above the prompt): no call
+  const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...BAND })
+  await band.select({ key: 'thread-picker', value: 'none' })
+  await talk($, usage, [['p3', 'thanks', 'a3', 'you are welcome']])
+  await clock.settle()
+  expect(lineRequests).toHaveLength(2)
+})
+
+test("the band's line shows the picked thread's one-line summary, or the latest turn's thread's, while its switch is on", async ($, on) => {
+  const { usage, clock } = engine(on, { 'session:session-1': recordOn() })
+  await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
+  usage.tokens = 20_000
+  await talk($, usage, [
+    ['p1', '# design\nmake it blue', 'a1', '# design\nblue'],
+    ['p2', '# perf\nfaster?', 'a2', '# perf\nyes'],
+  ])
+  await clock.settle()
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const band = await $.ui.mount({ plugin: 'thread-chat', surface, ...BAND })
+    // off at first
+    expect(await band.find({ key: 'summary-line-row' })).toBeUndefined()
+    if ((await band.find({ key: 'summary-line' })) === undefined) {
+      await band.press({ key: 'threads' })
+      await band.redraw()
+    }
+    await band.press({ key: 'summary-line' })
+    await band.redraw()
+    // no thread picked: the thread the latest turn touched
+    expect((await band.find({ key: 'summary-line-row' }))?.text).toBe('perf turn line 1')
+    await band.select({ key: 'thread-picker', value: 'thread:design' })
+    await band.redraw()
+    expect((await band.find({ key: 'summary-line-row' }))?.text).toBe('design turn line 1')
+    await band.press({ key: 'summary-line' })
+    await band.redraw()
+    expect(await band.find({ key: 'summary-line-row' })).toBeUndefined()
+    await band.select({ key: 'thread-picker', value: 'none' })
+    await band.unmount()
+  }
 })
