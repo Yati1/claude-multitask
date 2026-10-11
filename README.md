@@ -52,6 +52,10 @@ In the band above the prompt, Multitask has a dropdown, and thread-chat a thread
 - `/thread-view`, or `Open thread view` in the threads menu, opens the thread view: a pane with a switch for each thread below its newest message. With none on it shows every message; with some on, only those threads' messages, and those since your last message that are in no thread, as `Filter the chat` does. The thread picker above the prompt and `Filter the chat` do not change it.
 - `/merge-threads <thread> into <thread>` also merges two threads.
 - `Agent may start threads`, in the threads menu while threads are on, lets the agent start threads itself. It is per chat, and kept when the chat is restarted.
+- Thread summaries: when you write in a thread after a long gap (75k tokens of other conversation by default), or after the chat was compacted, the agent gets a short summary of the thread with your message. A small model (Haiku) writes the summaries ahead, in the background. The agent can also read a thread's summary and latest messages itself, with its `read_thread` tool.
+- `Thread summaries`, in the threads menu while threads are on, is on at first; off, it stops summaries in that chat. It is per chat, and kept when the chat is restarted.
+- `Show thread summary`, in the threads menu while summaries are on, shows a one-line summary of the picked thread above the prompt (of the latest thread, with none picked). In the desktop app, hover a thread's switch in the thread view for its one-line summary.
+- The `catchUpAfter` setting (Catch up after, in `/config`) sets that gap in tokens, `75000` by default; `summaryModel` sets the model that writes the summaries, `claude-haiku-5-5` by default.
 
 ### Reactions
 
