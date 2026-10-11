@@ -63,6 +63,7 @@ import {
   RETRY_MS,
   START_POS,
   advancedPos,
+  ageText,
   catchUpNote,
   catchUpPointer,
   compactedPos,
@@ -3246,6 +3247,14 @@ export const register: Register = (on, options) => {
       // the newest sections, or from the first the person had drawn as they scrolled up
       const from = await read($, viewFrom)
       const near = viewNearOf(e.props.scroll.offset, e.props.scroll.bodyRows)
+      // the threads' one-line summaries while they are on, which the pointer on a tag shows;
+      // read here, so a new line draws the view again
+      const lines = (await read($, summariesOn)) ? await read($, summaryLines) : {}
+      const now = await $.clock.now().catch(() => Date.now())
+      const summaryOf = (key: string) => {
+        const made = lines[key]
+        return made === undefined ? undefined : { line: made.line, age: ageText(now - made.at) }
+      }
       const { tree: drawn, span } = drawView(
         {
           surface: e.surface,
@@ -3262,6 +3271,10 @@ export const register: Register = (on, options) => {
           showEarlier: () => void showEarlier($, viewContentRows),
           toggleShown: key => void toggleViewThread($, key),
           filterHit: e.surface === 'desktop' ? filterHitOf($.ui.resolve(e)) : undefined,
+          summaryOf,
+          // to set a summary's card above its tag, inside the pane
+          columns: e.props.bodyColumns,
+          tagWidth: thread => tagWidth(thread.name.toUpperCase(), CHAT_TAG_SIZE),
         },
         inputs,
         viewDeps,

@@ -425,3 +425,12 @@ export function readThreadText(name: string, key: string, gap: ThreadGap | undef
   if (all.text === '') return `Thread "${name}" has no messages yet.${footer}`
   return `Messages of thread "${name}" (oldest first${all.isCut ? ', the newest kept' : ''}):\n\n${all.text}${footer}`
 }
+
+// How long ago a summary was made, as the thread view's card says it.
+export function ageText(ms: number): string {
+  const minutes = Math.floor(Math.max(0, ms) / 60_000)
+  if (minutes < 1) return 'updated just now'
+  if (minutes < 60) return `updated ${minutes} min ago`
+  const hours = Math.floor(minutes / 60)
+  return hours < 24 ? `updated ${hours} h ago` : `updated ${Math.floor(hours / 24)} d ago`
+}

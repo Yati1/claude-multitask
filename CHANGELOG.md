@@ -11,6 +11,7 @@ Notable changes to the thread-chat, multitask and react mods. The format is base
 - Added `Thread summaries` to thread-chat's threads menu, on at first, to stop summary calls in a chat.
 - Added `catchUpAfter` and `summaryModel` settings to thread-chat for when and how threads are summarised.
 - Added `Show thread summary` to thread-chat's threads menu for a thread's one-line summary above the prompt.
+- Added a thread's one-line summary to thread-chat's thread view, shown on hovering its tag in the desktop app.
 
 ### Changed
 

@@ -700,3 +700,73 @@ test("the band's line shows the picked thread's one-line summary, or the latest 
     await band.unmount()
   }
 })
+
+const PANE = {
+  component: 'Pane',
+  requestId: 'thread-view',
+  props: { title: 'Thread view', isFocused: false, bodyColumns: 80, placement: 'dock', scroll: { offset: 0, bodyRows: 20 }, view: {} },
+} as const
+
+type Drawn = { type?: string; props?: Record<string, unknown>; hover?: Record<string, unknown>; children?: unknown[] }
+
+// Every element of a drawing that passes `is`, in order.
+function allIn(node: unknown, is: (el: Drawn) => boolean, found: Drawn[] = []): Drawn[] {
+  if (typeof node !== 'object' || node === null) return found
+  const el = node as Drawn
+  if (is(el)) found.push(el)
+  for (const child of el.children ?? []) allIn(child, is, found)
+  return found
+}
+
+// The strings an element shows, its own and its children's, in order.
+const shownIn = (node: unknown): string =>
+  typeof node === 'string' ? node : typeof node === 'object' && node !== null ? ((node as Drawn).children ?? []).map(shownIn).join('') : ''
+
+test("the thread view's filter tags show their thread's one-line summary under the pointer, in a card above the filter", async ($, on) => {
+  // perf's tag first, so design's is to its right
+  const { usage, clock } = engine(on, { 'session:session-1': recordOn({ threads: [PERF, DESIGN] }) })
+  await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
+  usage.tokens = 20_000
+  await talk($, usage, [['p1', '# design\nmake it blue', 'a1', '# design\nblue']])
+  await clock.settle()
+  await clock.advance(3 * 60_000)
+
+  const pane = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...PANE })
+  const drawn = await pane.drawn()
+  const [tagBox] = allIn(drawn, el => el.props?.key === 'thread-view-filter-box:design')
+  // the pointer on design's tag lights its group; perf has no line, so no group
+  expect(tagBox?.hover).toMatchObject({ scope: 'summary:design' })
+  expect(allIn(drawn, el => el.props?.key === 'thread-view-filter-box:perf')[0]?.hover).not.toHaveProperty('scope')
+  // the group's one other member: a card the group reveals, nothing in the tag itself
+  const group = allIn(drawn, el => el.hover?.scope === 'summary:design')
+  expect(group).toHaveLength(2)
+  const card = group.find(el => el !== tagBox)
+  expect(allIn(tagBox, el => el === card)).toEqual([])
+  expect(card?.hover).toEqual({ scope: 'summary:design', display: 'flex' })
+  expect(shownIn(card)).toBe('design turn line 1updated 3 min ago')
+  // drawn as a hover card: opaque raised fill, a round border (its ring, corners, padding)
+  expect(card?.props).toMatchObject({ position: 'absolute', display: 'none', borderStyle: 'round', backgroundColor: 'userMessageBackgroundHover' })
+  // in the divider, its foot on it, so it rises above the tags; as wide as its line, and
+  // starting where design's tag does, past perf's (23px, 2 columns of padding, its ring, a gap)
+  const [divider] = allIn(drawn, el => el.props?.backgroundColor === '#8888884d')
+  expect(allIn(divider, el => el === card)).toEqual([card])
+  expect(card?.props).toMatchObject({ bottom: 0, left: 6, width: 'design turn line 1'.length + 4 })
+  await pane.unmount()
+
+  const cardIn = async (bodyColumns: number) => {
+    const sized = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...PANE, props: { ...PANE.props, bodyColumns } })
+    const [found] = allIn(await sized.drawn(), el => el.hover?.scope === 'summary:design' && el.hover.display === 'flex')
+    await sized.unmount()
+    return found?.props
+  }
+  // where it would pass the pane's right edge, it moves left to end at it
+  expect(await cardIn(24)).toMatchObject({ left: 2, width: 22 })
+
+  // in a pane narrower than the card would be, it is as wide as the pane, from its left
+  expect(await cardIn(12)).toMatchObject({ left: 0, width: 12 })
+
+  // the terminal, with no pointer to reveal it, draws no card
+  const terminal = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...PANE })
+  expect(allIn(await terminal.drawn(), el => typeof el.hover?.scope === 'string')).toEqual([])
+  await terminal.unmount()
+})
