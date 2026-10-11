@@ -6,7 +6,8 @@ Notable changes to the thread-chat, multitask and react mods. The format is base
 
 ### Changed
 
-- Changed multitask's dots above the prompt to blink as their thought works, and swell at each note.
+- Changed multitask's `thoughts` button to sit left of the dropdown and hold the dots, not a running count.
+- Changed multitask's dots to blink as their thought works and swell at each note.
 
 ## 0.3.0 - 2026-10-10
 

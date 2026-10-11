@@ -4,29 +4,32 @@ import type { Thought } from '../types'
 import { agoOf } from './pane'
 import { oneLine } from './prompts'
 
-// The band's dots, left of Multitask's dropdown: one for each running thought, in its
+// The band's `thoughts` button, left of Multitask's dropdown, which opens the Thoughts
+// pane, with the thoughts' dots after its word: one for each running thought, in its
 // colour, in the order they started, DOTS_SHOWN at most and `+N` for the rest. A dot
 // blinks white as its thought works, at each new row in its conversation (BLINK_MS apart
 // at least: register.tsx starts a blink, none while one runs), and swells a little and
 // back as it writes a progress note. As a turn ends, the dot flashes and gives way to a
 // check (a cross for one that failed; a stopped one only fades), which fades out of the
-// row. Hovered on the desktop, a dot's card says the thought's name, its latest note and
-// how long ago that came.
+// button. Hovered on the desktop, a dot's card says the thought's name, its latest note
+// and how long ago that came.
 //
 // The desktop draws a dot as a small SVG, which it shows as an image: its SMIL animation
 // runs there, with no redraw. The desktop builds the band afresh at each redraw, which
 // would start an animation over, so one is drawn with how far it has got (a negative
 // `begin`): a redraw carries it on, and once it is over the dot is drawn still. A blink
-// and a note's swell are two animations of the one disc, each carried on alone. The
-// terminal draws a dot as a glyph: white a moment for a blink, inverted for a note; a
-// check or cross as a turn ends.
+// and a note's swell are two animations of the one disc, each carried on alone. A Button
+// holds only text, so there the button is a Box drawn as the dropdown is, each of its
+// parts under a hit area that opens the pane (drawField). Every other surface draws a
+// Button, a dot in it a glyph: white a moment for a blink, inverted for a note; a check
+// or cross as a turn ends.
 //
 // As pane.tsx: plain functions here, every hook and call on `$` in register.tsx.
 
 // The most dots the band shows; the rest are counted as `+N`.
 export const DOTS_SHOWN = 8
 // How long a dot's swell at a note takes; its blink, which is also the least time from one
-// blink's start to the next; the white of a blink on the terminal; and its end.
+// blink's start to the next; the white of a blink in a glyph; and its end.
 export const PULSE_MS = 1000
 export const BLINK_MS = 1000
 const FLICKER_MS = 400
@@ -36,7 +39,8 @@ const BLINK_PEAK_MS = 250
 // How often the ages in the dots' cards are drawn afresh while they stand.
 export const CARD_AGE_MS = 60_000
 
-// The key of a dot's Box: this, then the thought's id.
+// The key of a dot's Box on the desktop: this, then the thought's id. A glyph has none: a
+// Button keeps no key on the text in it.
 export const DOT = 'dot:'
 
 // The side of a dot's picture, in CSS pixels: its disc 8 across, the rest room to swell
@@ -54,7 +58,7 @@ type DotKind = 'running' | 'done' | 'failed' | 'stopped'
 // latest blink began (running).
 type Dot = { t: Thought; kind: DotKind; since: number | undefined; blinkAt?: number | undefined }
 
-// The terminal's glyph for each, the pane's for a failed or stopped thought.
+// The glyph for each where a dot is no picture, the pane's for a failed or stopped thought.
 const GLYPH: Record<DotKind, string> = { running: '●', done: '✓', failed: '!', stopped: '×' }
 const WORD: Record<DotKind, string> = { running: 'running', done: 'done', failed: 'failed', stopped: 'stopped' }
 
@@ -99,9 +103,9 @@ function runsOf(d: Dot, now: number | undefined, blinkMs = BLINK_MS) {
 }
 
 // How long until the band must be drawn again for its dots: an end to fade out of the
-// row, a swell or blink on the terminal to end, the cards' ages; undefined when nothing
-// waits. A swell or blink in a picture ends of itself.
-function redrawIn(dots: readonly Dot[], draw: DotsDrawing): number | undefined {
+// button, a swell or blink in a glyph to end, the cards' ages; undefined when nothing
+// waits. A swell or blink in a picture ends of itself; only a picture has a card.
+function redrawIn(dots: readonly Dot[], draw: ButtonDrawing): number | undefined {
   const { now } = draw
   if (now === undefined || dots.length === 0) return undefined
   const waits = dots.flatMap(d => {
@@ -110,12 +114,9 @@ function redrawIn(dots: readonly Dot[], draw: DotsDrawing): number | undefined {
     if (isPicture(draw)) return []
     return [swell === undefined ? [] : [PULSE_MS - swell], blink === undefined ? [] : [FLICKER_MS - blink]].flat()
   })
-  if (hasCards(draw)) waits.push(CARD_AGE_MS)
+  if (isPicture(draw)) waits.push(CARD_AGE_MS)
   return waits.length === 0 ? undefined : Math.max(1, Math.min(...waits))
 }
-
-// Whether a dot has a card on hover: on the desktop, which lifts it over the band.
-const hasCards = (draw: DotsDrawing) => draw.surface === 'desktop'
 
 // A colour as it may go into a picture's markup: a thought's is one of the palette's; any
 // other is drawn grey.
@@ -204,50 +205,115 @@ function drawCard(draw: DotsDrawing, d: Dot): RenderElement {
   )
 }
 
-// Whether the dots are pictures: everywhere but the terminal, whose table may still hand
-// over an Svg it cannot draw.
-const isPicture = (draw: DotsDrawing) => draw.surface !== 'terminal'
+// What the `thoughts` button is drawn with besides the dots': what opens the Thoughts
+// pane, and on the desktop the hit area (a Client, which register.tsx makes) for each of
+// its parts, by name.
+export type ButtonDrawing = DotsDrawing & {
+  open: () => void
+  hitOf?: (part: string) => RenderElement
+}
 
-// One dot, keyed by its thought: a picture with its card where the surface draws one,
-// else a glyph.
-function drawDot(draw: DotsDrawing, d: Dot): RenderElement {
-  const { ui } = draw
-  const { Box, Text } = ui
-  const key = `${DOT}${d.t.id}`
-  if (isPicture(draw) && 'Svg' in ui) {
-    const { Svg } = ui
-    return (
-      <Box key={key} flexShrink={0}>
-        <Svg source={pictureOf(d, draw.now)} alt={`${d.t.name}: ${WORD[d.kind]}`} width={DOT_PX} height={DOT_PX} />
-        {hasCards(draw) && drawCard(draw, d)}
-      </Box>
-    )
-  }
+// The key of the `thoughts` button.
+export const THOUGHTS_BUTTON = 'open-thoughts'
+const WORD_SHOWN = 'thoughts'
+
+// The fill of the desktop's Select field, white at 5% over the band (no theme colour
+// names it), and its 6px either side of its text from its outer edge, in the band's ch:
+// as thread-chat draws its menu beside its thread picker. The room between the button's
+// word and its first dot, and before its `+N`. The clear 3px right of a dot's disc in its
+// picture, in the band's ch, which a last dot's padding leaves out.
+const FIELD_FILL = 'rgba(255,255,255,0.05)'
+const FIELD_PADDING = 0.7
+const WORD_GAP = 0.5
+const MORE_GAP = 0.3
+const DOT_ROOM = 0.4
+
+// Whether the dots are pictures, in a button drawn of a Box: on the desktop, the one
+// surface with both pictures and hit areas.
+const isPicture = (draw: ButtonDrawing) => draw.hitOf !== undefined && 'Svg' in draw.ui
+
+// A dot on any surface but the desktop: a glyph.
+function drawGlyph(draw: DotsDrawing, d: Dot): RenderElement {
+  const { Text } = draw.ui
   const { swell, blink } = runsOf(d, draw.now, FLICKER_MS)
   const isSwell = swell !== undefined
   return (
-    <Box key={key} flexShrink={0}>
-      <Text color={blink !== undefined && !isSwell ? WHITE : d.t.color} {...(isSwell && { inverse: true })}>
-        {GLYPH[d.kind]}
-      </Text>
+    <Text color={blink !== undefined && !isSwell ? WHITE : d.t.color} {...(isSwell && { inverse: true })}>
+      {GLYPH[d.kind]}
+    </Text>
+  )
+}
+
+// The button on the desktop: a Box drawn as the dropdown beside it is (its fill and its
+// ring, stronger under the pointer, one line high), holding its word, its dots and its
+// `+N`, each in a Box of its own under a hit area that fills it, the padding inside them,
+// so a click anywhere in the ring opens the pane. Its own side padding is set to none, as
+// the desktop gives a bordered Box 12px either side unless told otherwise. A dot's Box
+// holds its picture, its card and its hit area: the pointer on the hit area is on the
+// dot, so the card shows.
+function drawField(draw: ButtonDrawing, shown: readonly Dot[], more: number): RenderElement {
+  const { ui, hitOf } = draw
+  if (!('Svg' in ui) || hitOf === undefined) return <ui.Box />
+  const { Box, Text, Svg } = ui
+  const hit = (part: string) => (
+    <Box position="absolute" top={0} left={0} width="100%" height="100%">
+      {hitOf(part)}
+    </Box>
+  )
+  const lastDot = more > 0 ? -1 : shown.length - 1
+  return (
+    <Box
+      key={THOUGHTS_BUTTON}
+      flexDirection="row"
+      alignItems="center"
+      flexShrink={0}
+      height={1}
+      paddingY={0}
+      paddingLeft={0}
+      paddingRight={0}
+      borderStyle="single"
+      backgroundColor={FIELD_FILL}
+      hover={{ borderColor: 'promptBorder' }}
+    >
+      <Box flexShrink={0} paddingLeft={FIELD_PADDING} paddingRight={shown.length === 0 ? FIELD_PADDING : WORD_GAP}>
+        <Text>{WORD_SHOWN}</Text>
+        {hit('word')}
+      </Box>
+      {shown.map((d, i) => (
+        <Box key={`${DOT}${d.t.id}`} flexShrink={0} {...(i === lastDot && { paddingRight: FIELD_PADDING - DOT_ROOM })}>
+          <Svg source={pictureOf(d, draw.now)} alt={`${d.t.name}: ${WORD[d.kind]}`} width={DOT_PX} height={DOT_PX} />
+          {drawCard(draw, d)}
+          {hit(`dot:${d.t.id}`)}
+        </Box>
+      ))}
+      {more > 0 && (
+        <Box flexShrink={0} paddingLeft={MORE_GAP} paddingRight={FIELD_PADDING}>
+          <Text dimColor>{`+${more}`}</Text>
+          {hit('more')}
+        </Box>
+      )}
     </Box>
   )
 }
 
-// The band's dots, none when no thought has one, and how long until they must be drawn again.
-export function drawDots(draw: DotsDrawing, list: readonly Thought[]): { dots?: RenderElement; redrawIn?: number } {
+// The `thoughts` button, which opens the Thoughts pane: its word, then a dot for each
+// thought with one (none: the word alone), and how long until it must be drawn again.
+export function drawThoughtsButton(draw: ButtonDrawing, list: readonly Thought[]): { button: RenderElement; redrawIn?: number } {
   const all = dotsOf(list, draw)
-  if (all.length === 0) return {}
   const shown = all.slice(0, DOTS_SHOWN)
-  const { Box, Text } = draw.ui
+  const more = all.length - shown.length
   const wait = redrawIn(shown, draw)
+  const timing = wait === undefined ? {} : { redrawIn: wait }
+  if (isPicture(draw)) return { button: drawField(draw, shown, more), ...timing }
+  const { Button, Text } = draw.ui
+  const dots: (string | RenderElement)[] = shown.length === 0 ? [] : [' ', ...shown.map(d => drawGlyph(draw, d))]
+  const rest = more > 0 ? [<Text dimColor>{` +${more}`}</Text>] : []
   return {
-    dots: (
-      <Box flexDirection="row" alignItems="center" columnGap={isPicture(draw) ? 0 : 1} flexShrink={0}>
-        {shown.map(d => drawDot(draw, d))}
-        {all.length > shown.length && <Text dimColor>{`+${all.length - shown.length}`}</Text>}
-      </Box>
+    button: (
+      <Button key={THOUGHTS_BUTTON} label={WORD_SHOWN} onPress={draw.open}>
+        {[WORD_SHOWN, ...dots, ...rest]}
+      </Button>
     ),
-    ...(wait !== undefined && { redrawIn: wait }),
+    ...timing,
   }
 }

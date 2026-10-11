@@ -35,8 +35,8 @@ In the band above the prompt, Multitask has a dropdown, and thread-chat a thread
 
 - `/multitask` turns Multitask on in a chat (run it again to turn it off). The chat becomes the voice and hands all work to thoughts.
 - Multitask's dropdown reads `Multitask` while it is on and `Focus` while it is off; pick the other to switch.
-- Left of the dropdown, a dot in its colour for each running thought blinks as the thought works, swells a little at each of its notes, and fades out as it ends, as a check, or a cross if it failed. In the desktop app, hover a dot for the thought's name, latest note and its age.
-- `/thoughts`, or the `thoughts` button above the prompt, opens the Thoughts pane: what each thought is doing and how long since its last note, its report, `tell` to send it a message yourself, and `stop`. It lists the 16 most recently ended thoughts (`N more` shows the rest). The thoughts are per chat, and kept when the chat is restarted.
+- Left of the dropdown, the `thoughts` button holds a dot in its colour for each running thought, which blinks as the thought works, swells a little at each of its notes, and fades out as it ends, as a check, or a cross if it failed. In the desktop app, hover a dot for the thought's name, latest note and its age.
+- `/thoughts`, or a click anywhere on the `thoughts` button (a dot included), opens the Thoughts pane: what each thought is doing and how long since its last note, its report, `tell` to send it a message yourself, and `stop`. It lists the 16 most recently ended thoughts (`N more` shows the rest). The thoughts are per chat, and kept when the chat is restarted.
 - The `voiceEffort` setting (Voice effort, in `/config`) sets how hard the voice thinks: `low` (default), `medium`, `high`, or `session` to match the session. Thoughts keep the session's setting.
 
 ### Threads
