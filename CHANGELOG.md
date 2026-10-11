@@ -4,6 +4,8 @@ Notable changes to the thread-chat, multitask and react mods. The format is base
 
 ## Unreleased
 
+## 0.4.0 - 2026-10-11
+
 ### Added
 
 - Added thread summaries to thread-chat: writing in a thread long left gives the agent a summary of it.
