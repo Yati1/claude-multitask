@@ -26,6 +26,22 @@ export type ViewRow = {
   interim?: true
   // the pictures the person pasted with their message, in order
   images?: ViewImage[]
+  // the main conversation's token position (TokenPos) as the row's turn ended, and its
+  // compaction count then: how far the conversation has moved on since is the gap a
+  // thread's summary is for. Absent until the turn ends; a row an earlier version kept
+  // is stamped when the session starts.
+  pos?: number
+  epoch?: number
+}
+
+// The main conversation's token position: how many tokens its context (Claude's whole
+// transcript as the model is sent it, tool output included) has grown by in all, from the
+// context size the engine last reported (none before its first report this run), and how
+// many compactions it has been through.
+export type TokenPos = {
+  pos: number
+  last?: number
+  epoch: number
 }
 
 // A picture the person pasted: its media type, its size where its header tells it, and
@@ -112,6 +128,8 @@ declare module 'claude-code' {
       // whether the thread picker's list is open in the mobile app, which draws no Select:
       // its button opens and closes it
       pickerOpen: boolean
+      // the main conversation's token position, kept with the session's record
+      tokenPos: TokenPos
     }
   }
 }

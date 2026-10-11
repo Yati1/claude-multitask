@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { BoxProps, Elements, EngineInterface, Register, RenderElement, RenderSurface } from 'claude-code'
 
-import type { Brief, Thread, ViewImage, ViewRow } from '../types'
+import type { Brief, Thread, TokenPos, ViewImage, ViewRow } from '../types'
 import {
   PALETTE,
   closestThread,
@@ -47,6 +47,7 @@ import {
   viewKey,
   viewMoveOf,
   viewPlaceOf,
+  viewEntries,
   viewRowOf,
   withImagePaths,
   withInterim,
@@ -54,6 +55,7 @@ import {
   withViewRow,
 } from './pane'
 import type { Picture, ViewDeps, ViewGrowth, ViewInputs, ViewPlace, ViewSpan } from './pane'
+import { START_POS, advancedPos, compactedPos, isPast, threadGaps, tokenPosOf, tokensText, withStamps } from './summaries'
 
 const isOn = atom({ plugin: 'thread-chat', key: 'isOn' } as const, false)
 const threads = atom({ plugin: 'thread-chat', key: 'threads' } as const, [])
@@ -80,6 +82,7 @@ const viewThreads = atom({ plugin: 'thread-chat', key: 'viewThreads' } as const,
 const menuOpen = atom({ plugin: 'thread-chat', key: 'menuOpen' } as const, false)
 const pickerOpen = atom({ plugin: 'thread-chat', key: 'pickerOpen' } as const, false)
 const menuMode = atom({ plugin: 'thread-chat', key: 'menuMode' } as const, '')
+const tokenPos = atom({ plugin: 'thread-chat', key: 'tokenPos' } as const, START_POS)
 // The react mod's switch and reactions, which the thread view draws as the chat does
 // (types/react.d.ts); never written without react, so off and none.
 const reactIsOn = atom({ plugin: 'react', key: 'isOn' } as const, false)
@@ -385,6 +388,8 @@ type Saved = {
   briefed: Brief | null
   // absent from a record kept before the thread view's own filter
   viewThreads: string[]
+  // absent from a record kept before thread summaries
+  tokenPos?: TokenPos
 }
 
 // Keeps the session's switches, threads, merges, recorded meanings, latest rows, picked
@@ -406,6 +411,7 @@ async function save($: EngineInterface) {
     untold: await read($, untold),
     briefed: await read($, briefed),
     viewThreads: await read($, viewThreads),
+    tokenPos: await read($, tokenPos),
   }
   await $.store.set(storeKey(await $.session.id()), saved)
 }
@@ -478,6 +484,9 @@ async function takeUp($: EngineInterface, saved: Partial<Saved>) {
   await update($, untold, all => [...(saved.untold ?? []).filter(note => !all.includes(note)), ...all])
   await update($, briefed, brief => brief ?? saved.briefed ?? null)
   await update($, viewThreads, keys => (keys.length > 0 ? keys : (saved.viewThreads ?? [])))
+  // this run's token position once it has a reading (a reload), else the record's
+  const kept = tokenPosOf(saved.tokenPos)
+  await update($, tokenPos, at => (at.last !== undefined || at.pos > 0 || kept === undefined ? at : kept))
 }
 
 // A row's id as the screen knows it: blocks of one stored row drawn apart take
@@ -2380,7 +2389,52 @@ async function drawThreadControls(
   )
 }
 
-export const register: Register = on => {
+// The main conversation's position once a turn of it ended, from the engine's own count
+// of its context (a free read), and the rows stored since stamped with it: a thread's
+// last message counts from the end of its turn, its own tool output not held against it.
+async function noteTurnEnd($: EngineInterface) {
+  const usage = await $.session.usage().catch(() => undefined)
+  let at = START_POS
+  await update($, tokenPos, was => (at = advancedPos(was, usage?.context.tokens)))
+  await update($, viewRows, rows => withStamps(rows, at))
+}
+
+// How far each thread has fallen behind the conversation, by the sections the thread view
+// places (every thread's, whatever its filter picked).
+async function gapsNow($: EngineInterface) {
+  const inputs = { ...(await viewInputs($)), shown: [] }
+  const { entries } = viewEntries(inputs, viewDeps)
+  return threadGaps(entries, inputs.known, await read($, tokenPos), inputs.list)
+}
+
+// Where the threads stand for their summaries, for `/thread-view trace`.
+async function summaryTraceText($: EngineInterface, catchUpAfter: number): Promise<string> {
+  const at = await read($, tokenPos)
+  const gaps = await gapsNow($)
+  const head =
+    `Thread summaries: token position ${tokensText(at.pos)}` +
+    `${at.last === undefined ? ', no context reading yet' : `, context ${tokensText(at.last)}`}` +
+    `, ${at.epoch} compaction${at.epoch === 1 ? '' : 's'}; catch up after ${tokensText(catchUpAfter)}`
+  return [
+    head,
+    ...gaps.map(
+      g =>
+        `  ${g.name}: ${tokensText(g.gap)} since its last message${g.isCompacted ? ', compacted since' : ''}` +
+        `${isPast(g, catchUpAfter) ? ', past catching up' : ''}`,
+    ),
+  ].join('\n')
+}
+
+// A number setting as `register` gets it, or its default where unset or not a number.
+const numberOption = (value: unknown, fallback: number) => (typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : fallback)
+
+// Tokens of other conversation after which a thread's next message from the person
+// catches the agent up on it.
+const CATCH_UP_AFTER = 75_000
+
+export const register: Register = (on, options) => {
+  const catchUpAfter = numberOption(options.catchUpAfter, CATCH_UP_AFTER)
+
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'threads', description: 'Turn conversation threads on or off in this chat' })
     await $.command.register({ name: VIEW, description: 'Read the threads you pick, without tool rows, in a pane' })
@@ -2438,6 +2492,9 @@ export const register: Register = on => {
     if (keptFilters !== undefined) await update($, filtersChat, () => keptFilters)
     // With threads and the agent switch on, after a reload or a restart, its tool is offered again.
     if ((await read($, isOn)) && (await read($, agentMayCreate))) await offerCreateTool($)
+    // Rows kept by an earlier version count from now: none is past catching up at once.
+    const at = await read($, tokenPos)
+    await update($, viewRows, rows => withStamps(rows, at))
     // A session with threads on keeps the rows it took up from the one it came from;
     // one with them off keeps none on disk. Its record is saved all the same: it stops
     // its next run looking for a session it came from.
@@ -2569,7 +2626,10 @@ export const register: Register = on => {
   // are on: all of them then, those from before they came on too.
   on('turn.complete', async ($, e, next) => {
     const result = await next(e)
-    if (e.agentId === undefined) turnReplies = new Set()
+    if (e.agentId === undefined) {
+      turnReplies = new Set()
+      await noteTurnEnd($)
+    }
     if (e.agentId === undefined && (await read($, isOn))) {
       if ((await read($, threads)).length > 0) await save($)
       const id = await $.session.id()
@@ -2582,7 +2642,7 @@ export const register: Register = on => {
   })
 
   on('command.run', { command: VIEW }, async ($, e) => {
-    if (e.args.trim() === 'trace') return { text: viewTraceText() }
+    if (e.args.trim() === 'trace') return { text: `${viewTraceText()}\n\n${await summaryTraceText($, catchUpAfter)}` }
     if (!(await read($, isOn))) return { text: OFF_TEXT }
     const opened = await openView($)
     return { text: opened.isPlaced ? 'Thread view opened.' : `Thread view not shown: ${opened.reason}` }
@@ -2754,13 +2814,15 @@ export const register: Register = on => {
   })
 
   // A compaction may summarise how threads work away: the model is told again beside
-  // the person's next message.
+  // the person's next message. Every thread is then past catching up.
   on('session.compact', async ($, e, next) => {
     const result = await next(e)
     const isCompacted = e.agentId === undefined && e.trigger !== 'precompute' && result.skip === undefined
-    if (isCompacted && (await read($, briefed)) !== null) {
-      await update($, briefed, () => null)
-      await save($)
+    if (isCompacted) {
+      await update($, tokenPos, compactedPos)
+      const wasBriefed = (await read($, briefed)) !== null
+      if (wasBriefed) await update($, briefed, () => null)
+      if (wasBriefed || (await read($, isOn))) await save($)
     }
     return result
   })
