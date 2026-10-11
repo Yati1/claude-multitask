@@ -1,4 +1,4 @@
-import type { SummaryUsage, Thread, ThreadSummary, TokenPos, ViewRow } from '../types'
+import type { SummaryCall, SummaryCallLog, SummaryCallTotals, SummaryUsage, Thread, ThreadSummary, TokenPos, ViewRow } from '../types'
 import { keyOf } from './parse'
 
 // Thread summaries: how far the main conversation has moved on since each thread's last
@@ -301,6 +301,135 @@ export function usageText(u: SummaryUsage): string {
     `${tokensText(u.input)} in, ${tokensText(u.cacheRead)} cache read, ${tokensText(u.cacheWrite)} cache written, ${tokensText(u.output)} out` +
     `${counted > 0 ? `; ${(u.chars / counted).toFixed(1)} characters a token sent` : ''}`
   )
+}
+
+// The summary calls a session's log keeps: about 50 KB at most.
+export const CALLS_KEPT = 200
+
+const NO_TOTALS: SummaryCallTotals = { calls: 0, failed: 0, input: 0, cacheRead: 0, cacheWrite: 0, output: 0, cost: 0, unpriced: 0, ms: 0 }
+export const NO_CALLS: SummaryCallLog = { calls: [], totals: { line: NO_TOTALS, pack: NO_TOTALS } }
+
+// List prices in dollars a million tokens, prompts up to 100k tokens; over that every
+// token costs five times as much. A cache read costs 0.1 times the input price, a
+// (5-minute) cache write 1.25 times. `haiku` is the alias this mod falls back to.
+const PRICES: Record<string, { input: number; output: number }> = {
+  'claude-haiku-5-5': { input: 0.1, output: 0.5 },
+  haiku: { input: 0.1, output: 0.5 },
+}
+
+// What a call cost at list price; none for a model whose price is not known.
+export function callCost(model: string, t: { input: number; cacheRead: number; cacheWrite: number; output: number }): number | undefined {
+  const price = PRICES[model]
+  if (price === undefined) return undefined
+  const times = t.input + t.cacheRead + t.cacheWrite > 100_000 ? 5 : 1
+  return (times * (t.input * price.input + t.cacheRead * price.input * 0.1 + t.cacheWrite * price.input * 1.25 + t.output * price.output)) / 1_000_000
+}
+
+// Input tokens guessed from characters sent, at the 3 characters a token Haiku 5.5
+// counted real thread text at.
+export const estimatedTokens = (chars: number) => Math.ceil(chars / 3)
+
+const isAnswered = (outcome: SummaryCall['outcome']) => outcome === 'ok' || outcome === 'unparsed'
+
+// The log once a call is added: the latest CALLS_KEPT kept, and the call counted in its
+// kind's totals (its tokens and cost only where the API counted them).
+export function withCall(log: SummaryCallLog, call: SummaryCall): SummaryCallLog {
+  const t = log.totals[call.kind]
+  const billed = call.isEstimated !== true
+  const totals: SummaryCallTotals = {
+    calls: t.calls + 1,
+    failed: t.failed + (isAnswered(call.outcome) ? 0 : 1),
+    input: t.input + (billed ? call.input : 0),
+    cacheRead: t.cacheRead + (billed ? call.cacheRead : 0),
+    cacheWrite: t.cacheWrite + (billed ? call.cacheWrite : 0),
+    output: t.output + (billed ? call.output : 0),
+    cost: t.cost + (billed ? (call.cost ?? 0) : 0),
+    unpriced: t.unpriced + (billed && call.cost === undefined ? 1 : 0),
+    ms: t.ms + call.ms,
+  }
+  return { calls: [...log.calls, call].slice(-CALLS_KEPT), totals: { ...log.totals, [call.kind]: totals } }
+}
+
+// The log once call `n` is found answered but not in the form asked.
+export function withUnparsed(log: SummaryCallLog, n: number): SummaryCallLog {
+  if (!log.calls.some(call => call.n === n)) return log
+  return { ...log, calls: log.calls.map(call => (call.n === n ? { ...call, outcome: 'unparsed' } : call)) }
+}
+
+// The number the next call takes in a session.
+export const nextCallNumber = (log: SummaryCallLog) => log.totals.line.calls + log.totals.pack.calls + 1
+
+const OUTCOMES = new Set(['ok', 'unparsed', 'empty', 'error', 'aborted', 'refused', 'fallback'])
+
+function totalsOf(value: unknown): SummaryCallTotals {
+  if (typeof value !== 'object' || value === null) return NO_TOTALS
+  const v = value as Record<string, unknown>
+  const num = (field: keyof SummaryCallTotals) => (typeof v[field] === 'number' && Number.isFinite(v[field]) ? (v[field] as number) : 0)
+  return {
+    calls: num('calls'),
+    failed: num('failed'),
+    input: num('input'),
+    cacheRead: num('cacheRead'),
+    cacheWrite: num('cacheWrite'),
+    output: num('output'),
+    cost: num('cost'),
+    unpriced: num('unpriced'),
+    ms: num('ms'),
+  }
+}
+
+// A log as a session's file keeps it, each call checked; an empty one where it does not
+// read.
+export function callLogOf(value: unknown): SummaryCallLog {
+  if (typeof value !== 'object' || value === null) return NO_CALLS
+  const { calls, totals } = value as { calls?: unknown; totals?: { line?: unknown; pack?: unknown } }
+  const kept = (Array.isArray(calls) ? calls : []).filter((c): c is SummaryCall => {
+    if (typeof c !== 'object' || c === null) return false
+    const x = c as Record<string, unknown>
+    const isCounted = ['n', 'at', 'chars', 'input', 'cacheRead', 'cacheWrite', 'output', 'ms'].every(f => typeof x[f] === 'number')
+    return isCounted && (x.kind === 'line' || x.kind === 'pack') && typeof x.trigger === 'string' && typeof x.model === 'string' && Array.isArray(x.threads) && OUTCOMES.has(x.outcome as string)
+  })
+  return { calls: kept.slice(-CALLS_KEPT), totals: { line: totalsOf(totals?.line), pack: totalsOf(totals?.pack) } }
+}
+
+const dollars = (n: number) => `$${n < 0.01 ? n.toFixed(5) : n.toFixed(2)}`
+
+function totalsText(name: string, t: SummaryCallTotals): string {
+  if (t.calls === 0) return `  ${name}: no calls`
+  return (
+    `  ${name}: ${t.calls} call${t.calls === 1 ? '' : 's'}${t.failed > 0 ? ` (${t.failed} failed)` : ''}, ` +
+    `${tokensText(t.input)} in, ${tokensText(t.cacheRead)} cache read, ${tokensText(t.cacheWrite)} cache written, ${tokensText(t.output)} out, ` +
+    `${dollars(t.cost)}${t.unpriced > 0 ? ` (${t.unpriced} of a model with no known price)` : ''}, ${(t.ms / t.calls / 1000).toFixed(1)}s a call`
+  )
+}
+
+// One call as the log prints it: number, time, what for, why, model, tokens, cost, time
+// taken and outcome.
+export function callText(call: SummaryCall): string {
+  const time = new Date(call.at).toISOString().slice(11, 19)
+  const what = `${call.kind} ${call.threads.map(name => `"${name}"`).join(', ')}`
+  const tokens =
+    call.isEstimated === true
+      ? `~${tokensText(call.input)} in (estimated)`
+      : `${tokensText(call.input)} in, ${tokensText(call.cacheRead)} read, ${tokensText(call.cacheWrite)} written, ${tokensText(call.output)} out`
+  const cost = call.cost === undefined ? 'cost unknown' : `${call.isEstimated === true ? '~' : ''}${dollars(call.cost)}`
+  return `#${call.n} ${time} ${what} (${call.trigger}) ${call.model}: ${tokens}, ${cost}, ${(call.ms / 1000).toFixed(1)}s, ${call.outcome}${call.why === undefined ? '' : `: ${call.why}`}`
+}
+
+// The log as `/thread-view trace summaries` prints it: the session's totals, then its
+// latest `count` calls, oldest first.
+export function callLogText(log: SummaryCallLog, count: number): string {
+  const { line, pack } = log.totals
+  const all = line.calls + pack.calls
+  if (all === 0) return 'Summary calls: none yet in this session.'
+  const shown = log.calls.slice(-count)
+  return [
+    `Summary calls in this session: ${all}, ${dollars(line.cost + pack.cost)} at list price (estimated tokens left out)`,
+    totalsText('one-line summaries', line),
+    totalsText('packs', pack),
+    `Latest ${shown.length}${all > shown.length ? ` of ${all}` : ''}:`,
+    ...shown.map(call => `  ${callText(call)}`),
+  ].join('\n')
 }
 
 // Whether a call that failed with this API error is worth trying again later.

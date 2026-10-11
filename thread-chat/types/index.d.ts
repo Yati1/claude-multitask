@@ -83,6 +83,51 @@ export type SummaryUsage = {
   chars: number
 }
 
+// One summary call as the log keeps it, for debugging: its number in the session (`n`),
+// when it started by the engine's clock, what it made (a thread's pack, or one-line
+// summaries), why (`trigger`: the turn ending, a thread past a share of the catch-up
+// gap, a compaction starting, read_thread), the threads it was for, the model asked, the
+// characters sent, its tokens as the API counted them (`isEstimated`: none came back,
+// the input guessed from the characters), its cost in dollars at list price (none for a
+// model whose price is not known), how long it took, and what came of it (`fallback`:
+// the model was refused and the next call asks another; `unparsed`: answered, but not
+// in the form asked).
+export type SummaryCall = {
+  n: number
+  at: number
+  kind: 'line' | 'pack'
+  trigger: string
+  threads: string[]
+  model: string
+  chars: number
+  input: number
+  cacheRead: number
+  cacheWrite: number
+  output: number
+  isEstimated?: boolean
+  cost?: number
+  ms: number
+  outcome: 'ok' | 'unparsed' | 'empty' | 'error' | 'aborted' | 'refused' | 'fallback'
+  why?: string
+}
+
+// The totals of a session's summary calls of one kind: estimated tokens left out, so
+// they say what was billed; `unpriced` calls are those of a model with no known price.
+export type SummaryCallTotals = {
+  calls: number
+  failed: number
+  input: number
+  cacheRead: number
+  cacheWrite: number
+  output: number
+  cost: number
+  unpriced: number
+  ms: number
+}
+
+// A session's summary calls: the latest few, and the totals of all of them by kind.
+export type SummaryCallLog = { calls: SummaryCall[]; totals: { line: SummaryCallTotals; pack: SummaryCallTotals } }
+
 // Where the threads stood when the model was last told, beside the person's message:
 // the merges (a merged-away thread's key -> its thread's key) and the agent switch.
 export type Brief = {
@@ -165,6 +210,9 @@ declare module 'claude-code' {
       summaryLines: Record<string, { line: string; at: number }>
       // what the summaries' calls have cost
       summaryUsage: SummaryUsage
+      // each summary call, the latest CALLS_KEPT, for `/thread-view trace summaries`;
+      // kept in a file beside the view's rows, read by no render
+      summaryCalls: SummaryCallLog
       // whether the chat's threads are summarised and the agent caught up on them: the
       // menu's switch, on at first, kept with the session's record
       summariesOn: boolean

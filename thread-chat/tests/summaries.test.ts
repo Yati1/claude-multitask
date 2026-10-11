@@ -2,13 +2,18 @@ import type { On } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 
-import type { ViewRow } from '../types'
+import type { SummaryCall, ViewRow } from '../types'
 import { chunksOf, fingerprintOf, marksOf } from '../hooks/pane'
 import {
+  CALLS_KEPT,
   CUT,
   MAX_INPUT_CHARS,
+  NO_CALLS,
   START_POS,
   advancedPos,
+  callCost,
+  callLogOf,
+  callLogText,
   catchUpNote,
   catchUpPointer,
   compactedPos,
@@ -16,7 +21,9 @@ import {
   parsePack,
   readThreadText,
   verbatimOf,
+  withCall,
   withStamps,
+  withUnparsed,
 } from '../hooks/summaries'
 import type { SummaryEntry } from '../hooks/summaries'
 
@@ -168,6 +175,12 @@ async function summaryTrace($: Engine): Promise<string> {
   const run = await $.command.run({ command: 'thread-view', args: 'trace', origin: { kind: 'composer' }, presentation: {} as never })
   const text = (run as { text?: string }).text ?? ''
   return text.slice(text.indexOf('Thread summaries:'))
+}
+
+// What `/thread-view trace summaries` prints, with `more` after it (a count).
+async function callLog($: Engine, more = ''): Promise<string> {
+  const run = await $.command.run({ command: 'thread-view', args: `trace summaries${more}`, origin: { kind: 'composer' }, presentation: {} as never })
+  return (run as { text?: string }).text ?? ''
 }
 
 // A session's rows as the plugin keeps them: its files, and the store's note of them.
@@ -419,6 +432,12 @@ test('a summary call that fails in passing is tried again later; a model refused
   expect(requests).toHaveLength(3)
   expect(await summaryTrace($)).toContain('summary current')
   expect(await summaryTrace($)).toContain('calls (2 failed)')
+  // each try in the call log, with how many came before
+  let log = await callLog($)
+  expect(log).toMatch(/pack "design" \(93% of the catch-up gap\) claude-haiku-5-5: 0 in, 0 read, 0 written, 0 out, \$0\.00000, \d+\.\ds, error: API error 529 \(overloaded\)/)
+  expect(log).toMatch(/pack "design" \(93% of the catch-up gap, try 2\) [^\n]*error: API error 529/)
+  expect(log).toMatch(/pack "design" \(93% of the catch-up gap, try 3\) claude-haiku-5-5: 2\.0k in, 900 read, 0 written, 500 out, \$0\.00046, \d+\.\ds, ok/)
+  expect(log).toContain('  packs: 3 calls (2 failed), 2.0k in, 900 cache read, 0 cache written, 500 out, $0.00046')
 
   // the model set refused: haiku in its place; refused too, no more calls this run
   model.answer = r => {
@@ -431,10 +450,121 @@ test('a summary call that fails in passing is tried again later; a model refused
   const trace = await summaryTrace($)
   expect(trace).toContain('model haiku;')
   expect(trace).toContain('stopped: the model haiku was refused')
+  // refused before any request: the input guessed from what would have been sent, and
+  // left out of the totals
+  log = await callLog($)
+  expect(log).toMatch(/pack "design" \([^)]*\) claude-haiku-5-5: ~\d+ in \(estimated\), ~\$0\.\d{5}, \d+\.\ds, fallback: [^\n]*; trying haiku/)
+  expect(log).toMatch(/pack "design" \([^)]*, again\) haiku: ~\d+ in \(estimated\), [^\n]*, refused: [^\n]+/)
+  expect(log).toContain('  packs: 5 calls (4 failed), 2.0k in, 900 cache read, 0 cache written, 500 out, $0.00046')
   const asked = requests.length
   await talk($, usage, [['p5', '# perf\nmore', 'a5', '# perf\nok']], 90_000)
   await clock.settle()
   expect(requests).toHaveLength(asked)
+})
+
+// A call as the log keeps it.
+const call = (n: number, extra: Partial<SummaryCall> = {}): SummaryCall => ({
+  n,
+  at: 0,
+  kind: 'line',
+  trigger: 'turn end',
+  threads: ['design'],
+  model: 'claude-haiku-5-5',
+  chars: 3000,
+  input: 1000,
+  cacheRead: 1000,
+  cacheWrite: 0,
+  output: 100,
+  cost: 0.00016,
+  ms: 1500,
+  outcome: 'ok',
+  ...extra,
+})
+
+test('the call log keeps the latest calls and totals of all, by kind, leaving guessed tokens out', () => {
+  // list price: input, cache read 0.1x, write 1.25x, output; five times over 100k
+  const nano = (n: number | undefined) => Math.round((n ?? 0) * 1e9)
+  expect(nano(callCost('claude-haiku-5-5', { input: 1000, cacheRead: 1000, cacheWrite: 1000, output: 100 }))).toBe(285_000)
+  expect(nano(callCost('claude-haiku-5-5', { input: 101_000, cacheRead: 0, cacheWrite: 0, output: 0 }))).toBe(50_500_000)
+  expect(callCost('some-other-model', { input: 1000, cacheRead: 0, cacheWrite: 0, output: 0 })).toBeUndefined()
+
+  let log = NO_CALLS
+  for (let n = 1; n <= CALLS_KEPT + 5; n++) log = withCall(log, call(n))
+  expect(log.calls).toHaveLength(CALLS_KEPT)
+  expect(log.calls[0]?.n).toBe(6)
+  expect(log.totals.line).toMatchObject({ calls: CALLS_KEPT + 5, failed: 0, input: 205_000, output: 20_500 })
+  expect(nano(log.totals.line.cost)).toBe(32_800_000)
+
+  log = withCall(log, call(206, { kind: 'pack', input: 900, isEstimated: true, cost: 0.00009, cacheRead: 0, output: 0, outcome: 'fallback' }))
+  const { cost: _priced, ...unpriced } = call(207, { kind: 'pack', model: 'some-other-model' })
+  log = withCall(log, unpriced)
+  log = withUnparsed(log, 207)
+  expect(log.totals.pack).toMatchObject({ calls: 2, failed: 1, input: 1000, cacheRead: 1000, output: 100, cost: 0, unpriced: 1 })
+  expect(log.calls.at(-1)?.outcome).toBe('unparsed')
+
+  const text = callLogText(log, 2)
+  expect(text.split('\n')).toEqual([
+    'Summary calls in this session: 207, $0.03 at list price (estimated tokens left out)',
+    '  one-line summaries: 205 calls, 205.0k in, 205.0k cache read, 0 cache written, 20.5k out, $0.03, 1.5s a call',
+    '  packs: 2 calls (1 failed), 1.0k in, 1.0k cache read, 0 cache written, 100 out, $0.00000 (1 of a model with no known price), 1.5s a call',
+    'Latest 2 of 207:',
+    '  #206 00:00:00 pack "design" (turn end) claude-haiku-5-5: ~900 in (estimated), ~$0.00009, 1.5s, fallback',
+    '  #207 00:00:00 pack "design" (turn end) some-other-model: 1.0k in, 1.0k read, 0 written, 100 out, cost unknown, 1.5s, unparsed',
+  ])
+  expect(callLogText(NO_CALLS, 30)).toBe('Summary calls: none yet in this session.')
+  // as a file keeps it: each call checked
+  expect(callLogOf(JSON.parse(JSON.stringify(log)))).toEqual(log)
+  expect(callLogOf({ calls: [call(1), { n: 2 }], totals: 'no' })).toEqual({ calls: [call(1)], totals: NO_CALLS.totals })
+})
+
+test("every summary call goes in the session's call log, with why it was made, its tokens, cost and outcome", async ($, on) => {
+  const { usage, model, clock, files } = engine(on, { 'session:session-1': recordOn() })
+  await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
+  usage.tokens = 20_000
+  await talk($, usage, [['p1', '# design\nmake it blue\n# perf\nfaster?', 'a1', '# design\nblue\n# perf\nyes']])
+  await clock.settle()
+  // design 60k behind: its pack made ahead, at 80% of the gap
+  await talk($, usage, [['p2', '# perf\nhow fast?', 'a2', '# perf\ntwice']], 60_000)
+  await clock.settle()
+  // a compaction starting: perf's pack, refused by the API
+  model.answer = () => ({ isAnswered: false, reason: 'api-error', status: 400, error: 'invalid_request', usage: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } })
+  await $.session.compact({ trigger: 'auto', messages: [{ role: 'user', text: 'old', toolUses: [] }] })
+  await clock.settle()
+  // after it: a line reply not in the form asked
+  model.answer = r => ({ isAnswered: true, text: packReply(threadOfRequest(r)), usage: USAGE })
+  model.answerLines = () => ({ isAnswered: true, text: 'no lines here', usage: { ...USAGE, input_tokens: 600, output_tokens: 60 } })
+  await talk($, usage, [['p3', '# design\nand green', 'a3', '# design\ngreen']], 1_000)
+  await clock.settle()
+
+  const log = await callLog($)
+  const time = String.raw`\d\d:\d\d:\d\d`
+  const took = String.raw`\d+\.\ds`
+  expect(log).toMatch(new RegExp(String.raw`#\d+ ${time} line "design", "perf" \(turn end\) claude-haiku-5-5: 600 in, 900 read, 0 written, 60 out, \$0\.00010, ${took}, ok`))
+  expect(log).toMatch(new RegExp(String.raw`pack "design" \(80% of the catch-up gap\) claude-haiku-5-5: 2\.0k in, 900 read, 0 written, 500 out, \$0\.00046, ${took}, ok`))
+  expect(log).toMatch(new RegExp(String.raw`pack "perf" \(compaction start\) claude-haiku-5-5: 0 in, 0 read, 0 written, 0 out, \$0\.00000, ${took}, error: API error 400 \(invalid_request\)`))
+  expect(log).toMatch(new RegExp(String.raw`pack "perf" \(compacted since\) [^\n]*, ok`))
+  expect(log).toMatch(new RegExp(String.raw`line "design" \(turn end\) [^\n]*, unparsed`))
+  const all = Number(/^Summary calls in this session: (\d+),/.exec(log)?.[1])
+  expect(all).toBeGreaterThanOrEqual(6)
+  expect(log).toContain(`Latest ${all}:`)
+
+  // a count lists that many; the trace points to the log; the session's file keeps it
+  const two = await callLog($, ' 2')
+  expect(two).toContain(`Latest 2 of ${all}:`)
+  expect(two.split('\n').filter(line => line.startsWith('  #'))).toHaveLength(2)
+  expect(await summaryTrace($)).toContain('  every call, with its tokens and cost: /thread-view trace summaries')
+  const kept = callLogOf(JSON.parse(files[`${VIEWS}/session-1/summary-calls.json`] ?? '{}'))
+  expect(kept.calls).toHaveLength(all)
+})
+
+test('a restarted session takes up its summary call log from its file', async ($, on) => {
+  const kept = withCall(withCall(NO_CALLS, call(1)), call(2, { kind: 'pack', trigger: 'compaction start' }))
+  const { clock } = engine(on, { 'session:session-1': recordOn() }, { [`${VIEWS}/session-1/summary-calls.json`]: JSON.stringify(kept) })
+  await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
+  await clock.settle()
+  const log = await callLog($)
+  expect(log).toContain('Summary calls in this session: 2,')
+  expect(log).toContain('  #2 00:00:00 pack "design" (compaction start) claude-haiku-5-5: 1.0k in, 1.0k read, 0 written, 100 out, $0.00016, 1.5s, ok')
 })
 
 test("a restarted session takes up its threads' summaries from their file", async ($, on) => {
