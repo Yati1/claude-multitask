@@ -4,7 +4,20 @@ import type { Engine } from 'claude-code/testing'
 
 import type { ViewRow } from '../types'
 import { chunksOf, fingerprintOf, marksOf } from '../hooks/pane'
-import { CUT, MAX_INPUT_CHARS, START_POS, advancedPos, compactedPos, packParts, parsePack, withStamps } from '../hooks/summaries'
+import {
+  CUT,
+  MAX_INPUT_CHARS,
+  START_POS,
+  advancedPos,
+  catchUpNote,
+  catchUpPointer,
+  compactedPos,
+  packParts,
+  parsePack,
+  readThreadText,
+  verbatimOf,
+  withStamps,
+} from '../hooks/summaries'
 import type { SummaryEntry } from '../hooks/summaries'
 
 type Block = { type: string; [field: string]: unknown }
@@ -41,6 +54,7 @@ function engine(on: On, store: Record<string, unknown> = {}, seed: Record<string
   const files: Record<string, string> = { ...seed }
   const usage: { tokens: number | undefined } = { tokens: undefined }
   const prompts: string[] = []
+  const registered: string[] = []
   const requests: ModelRequest[] = []
   const model: { answer: (r: ModelRequest) => ModelAnswer } = {
     answer: r => ({ isAnswered: true, text: packReply(threadOfRequest(r), requests.length), usage: USAGE }),
@@ -81,11 +95,16 @@ function engine(on: On, store: Record<string, unknown> = {}, seed: Record<string
     prompts.push([e.text, ...(e.context ?? [])].join('\n--\n'))
     return { text: e.text }
   })
-  on('tool.register', ($, e) => ({ value: { tool: `mcp__thread-chat__${e.name}` } }))
+  on('tool.register', ($, e) => {
+    registered.push(`${e.name}${e.isDeferred === false ? '' : ' (deferred)'}`)
+    return { value: { tool: `mcp__thread-chat__${e.name}` } }
+  })
   on('command.register', ($, e) => ({ value: { command: e.name } }))
   on('turn.complete', () => ({ text: '' }))
   on('session.compact', () => ({ messages: [{ role: 'user' as const, text: 'the summary', toolUses: [] }] }))
-  return { kept, files, usage, prompts, requests, model, clock }
+  on('ui.render', () => ({ type: 'engine', ref: 0 }))
+  on('ui.message', () => ({}))
+  return { kept, files, usage, prompts, registered, requests, model, clock }
 }
 
 const model = { kind: 'model', model: 'test' } as const
@@ -117,6 +136,11 @@ function storer($: Engine) {
 }
 
 const say = (text: string) => ({ text, origin: { kind: 'composer' as const }, wait: false })
+
+const BAND = {
+  component: 'AbovePrompt',
+  props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 100, scroll: { offset: 0, bodyRows: 10 }, view: {} },
+} as const
 
 const flipThreads = ($: Engine) => $.command.run({ command: 'threads', args: '', origin: { kind: 'composer' }, presentation: {} as never })
 
@@ -232,7 +256,7 @@ test('a restarted session keeps its token position, and rows an earlier version 
     [
       'Thread summaries: token position 500.0k, context 90.0k, 2 compactions; catch up after 75.0k',
       '  design: 0 since its last message',
-      '  model claude-haiku-5-5; no calls yet',
+      '  model claude-haiku-5-5; no calls yet; read_thread offered',
     ].join('\n'),
   )
   usage.tokens = 100_000
@@ -427,4 +451,144 @@ test("a restarted session takes up its threads' summaries from their file", asyn
   // 70k behind, but its summary is current: no call
   expect(requests).toHaveLength(0)
   expect(await summaryTrace($)).toContain('  design: 70.0k since its last message; summary current\n    kept line')
+})
+
+const READ = 'mcp__thread-chat__read_thread'
+
+test('the catch-up note gives a few messages whole, else the summary, marked as a small model\'s, and how to read more', () => {
+  const gap = { key: 'design', name: 'design', lastRow: 'a2', gap: 140_400, isCompacted: false }
+  const few = [entry('p1', 'user', DESIGN, 'make it blue'), entry('a1', 'assistant', DESIGN, 'done')]
+  expect(catchUpNote({ ...gap, lastRow: 'a1' }, undefined, few, READ)).toBe(
+    'Catch-up for thread "design": about 140k tokens of other conversation since its last message. Its messages so far:\n[user]\nmake it blue\n\n[agent]\ndone',
+  )
+  const many = [...few, entry('o1', 'user', PERF, 'other'), entry('p2', 'user', DESIGN, 'w'.repeat(1000)), entry('a2', 'assistant', DESIGN, 'ok')]
+  const current = { name: 'design', short: 'Blue, then green; waiting on the user.', coversRow: 'a2' }
+  expect(catchUpNote(gap, current, many, READ)).toBe(
+    [
+      'Catch-up for thread "design": about 140k tokens of other conversation since its last message. Summary written by a small model from the thread\'s messages; it may miss detail:',
+      'Blue, then green; waiting on the user.',
+      'For the fuller history call mcp__thread-chat__read_thread with {"thread":"design"}.',
+    ].join('\n'),
+  )
+  // an earlier summary, and the messages since it whole; no tool offered, no pointer
+  const earlier = { ...current, coversRow: 'p2' }
+  expect(catchUpNote({ ...gap, isCompacted: true }, earlier, many, undefined)).toBe(
+    [
+      'Catch-up for thread "design": the conversation was compacted since its last message. Summary written by a small model from the thread\'s earlier messages; it may miss detail:',
+      'Blue, then green; waiting on the user.',
+      'Its messages since that summary:\n[agent]\nok',
+    ].join('\n'),
+  )
+  // none yet: its latest messages, the oldest cut where they are many
+  const none = catchUpNote(gap, undefined, [...many, entry('p3', 'user', DESIGN, 'v'.repeat(5000))], READ)
+  expect(none).toStartWith(`Catch-up for thread "design": about 140k tokens of other conversation since its last message. Its latest messages:\n${CUT}\n\n[user]\nvvv`)
+  expect(none).toEndWith(`${CUT}\nFor the fuller history call mcp__thread-chat__read_thread with {"thread":"design"}.`)
+  expect(catchUpPointer(gap, READ)).toBe(
+    'Thread "design" is behind too: about 140k tokens of other conversation since its last message. For the fuller history call mcp__thread-chat__read_thread with {"thread":"design"}.',
+  )
+
+  // read_thread: the long summary and the messages since it
+  expect(readThreadText('design', 'design', gap, { ...earlier, long: 'The long story.' }, many)).toBe(
+    [
+      'Summary of thread "design", written by a small model from its messages; it may miss detail:',
+      '',
+      'The long story.',
+      '',
+      'Messages since that summary (oldest first):',
+      '',
+      '[agent]\nok',
+      '',
+      '(About 140k tokens of other conversation since its last message.)',
+    ].join('\n'),
+  )
+  expect(readThreadText('design', 'design', undefined, undefined, few)).toBe('Messages of thread "design" (oldest first):\n\n[user]\nmake it blue\n\n[agent]\ndone')
+  expect(verbatimOf(many, 'design', undefined, 30)).toEqual({ text: `${CUT}\n\n[agent]\nok`, isCut: true })
+})
+
+// The record of a session with threads on, and `design` and `perf` among them.
+const recordOn = (extra: Record<string, unknown> = {}) => ({
+  isOn: true,
+  threads: [DESIGN, PERF],
+  aliases: {},
+  snaps: {},
+  current: '',
+  deleted: [],
+  sentTo: {},
+  moved: {},
+  untold: [],
+  briefed: { merged: {}, mayCreate: false },
+  viewThreads: [],
+  ...extra,
+})
+
+test('a message to a thread past catching up brings the agent its summary; to one not, nothing', async ($, on) => {
+  const { usage, prompts, registered, clock } = engine(on, { 'session:session-1': recordOn() })
+  await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
+  // threads on as the run started: read_thread is in the tools the model is sent from the start
+  expect(registered).toEqual(['read_thread'])
+  usage.tokens = 20_000
+  await talk($, usage, [
+    ['p1', '# design\nmake it blue', 'a1', `# design\n${'done, blue. '.repeat(100)}`],
+    ['p2', '# perf\nfaster?', 'a2', '# perf\nyes'],
+  ])
+  await talk($, usage, [['p3', '# perf\nmore', 'a3', '# perf\nok']], 80_000)
+  await clock.settle()
+
+  await $.prompt.submit(say('# perf\nand now?'))
+  expect(prompts.at(-1)).toBe('# perf\nand now?')
+  await $.prompt.submit(say('# design\nand green'))
+  expect(prompts.at(-1)).toBe(
+    [
+      '# design\nand green',
+      '--',
+      'Catch-up for thread "design": about 90k tokens of other conversation since its last message. Summary written by a small model from the thread\'s messages; it may miss detail:',
+      'design short 1',
+      'For the fuller history call mcp__thread-chat__read_thread with {"thread":"design"}.',
+    ].join('\n'),
+  )
+  // sent with no heading to the thread picked above the prompt, likewise
+  const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...BAND })
+  await band.select({ key: 'thread-picker', value: 'thread:design' })
+  await $.prompt.submit(say('and red'))
+  expect(prompts.at(-1)).toContain('Catch-up for thread "design"')
+
+  // summaries off in the menu: no note, no call
+  await band.press({ key: 'thread-summaries' })
+  await $.prompt.submit(say('and red'))
+  expect(prompts.at(-1)).not.toContain('Catch-up')
+  expect(await summaryTrace($)).toContain('; off in this chat')
+})
+
+test('read_thread is offered only as a run starts with threads on, and answers for the main conversation', async ($, on) => {
+  const { usage, prompts, registered, requests, clock } = engine(on)
+  await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
+  // threads come on mid-session: no tool now (the model's tools stay as they were); the
+  // note carries the thread's messages and no pointer
+  await flipThreads($)
+  expect(registered).toEqual([])
+  usage.tokens = 20_000
+  await talk($, usage, [['p1', '# design\nmake it blue', 'a1', '# design\ndone']])
+  await talk($, usage, [['p2', '# perf\nfaster?', 'a2', '# perf\nyes']], 80_000)
+  await clock.settle()
+  await $.prompt.submit(say('# design\nand green'))
+  expect(prompts.at(-1)).toContain('Its messages so far:\n[user]\nmake it blue')
+  expect(prompts.at(-1)).not.toContain(READ)
+
+  // the tool, as a run that started with threads on serves it: refused to another agent
+  const denied = await $.tool.call({ tool: READ, tool_use_id: 'r1', thread: 'design', agentId: 'fork-1' } as never)
+  expect((denied as { deny?: string }).deny).toContain('another agent')
+  // design, summarised ahead, by its summary; perf, just written in, word for word
+  const read = await $.tool.call({ tool: READ, tool_use_id: 'r2', thread: 'desgn' } as never)
+  expect(JSON.stringify(read)).toContain('Summary of thread \\"design\\"')
+  const recent = await $.tool.call({ tool: READ, tool_use_id: 'r5', thread: '# Perf' } as never)
+  expect(JSON.stringify(recent)).toContain('Messages of thread \\"perf\\" (oldest first)')
+  const unknown = await $.tool.call({ tool: READ, tool_use_id: 'r3', thread: 'nothing like it' } as never)
+  expect(JSON.stringify(unknown)).toContain('No thread is named \\"nothing like it\\". Threads: \\"design\\", \\"perf\\".')
+
+  // a long thread with no current summary has one made as it is read
+  const asked = requests.length
+  await talk($, usage, [['p3', `# perf\n${'q'.repeat(20_000)}`, 'a3', '# perf\nnoted']], 1_000)
+  const long = await $.tool.call({ tool: READ, tool_use_id: 'r4', thread: 'perf' } as never)
+  expect(requests.length).toBe(asked + 1)
+  expect(JSON.stringify(long)).toContain('perf long')
 })

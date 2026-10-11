@@ -4,6 +4,13 @@ Notable changes to the thread-chat, multitask and react mods. The format is base
 
 ## Unreleased
 
+### Added
+
+- Added thread summaries to thread-chat: writing in a thread long left gives the agent a summary of it.
+- Added a `read_thread` tool to thread-chat for the agent to read a thread's summary and latest messages.
+- Added `Thread summaries` to thread-chat's threads menu, on at first, to stop summary calls in a chat.
+- Added `catchUpAfter` and `summaryModel` settings to thread-chat for when and how threads are summarised.
+
 ### Changed
 
 - Changed multitask's `thoughts` button to sit left of the dropdown and hold the dots, not a running count.

@@ -58,9 +58,12 @@ import type { Picture, ViewDeps, ViewGrowth, ViewInputs, ViewPlace, ViewSpan } f
 import {
   NO_USAGE,
   PACK_SYSTEM,
+  TOOL_TAIL_CHARS,
   RETRY_MS,
   START_POS,
   advancedPos,
+  catchUpNote,
+  catchUpPointer,
   compactedPos,
   isCurrent,
   isPackDue,
@@ -69,11 +72,13 @@ import {
   packParts,
   packPrompt,
   parsePack,
+  readThreadText,
   summariesOf,
   threadGaps,
   tokenPosOf,
   tokensText,
   usageText,
+  verbatimOf,
   withStamps,
   withUsage,
 } from './summaries'
@@ -107,6 +112,9 @@ const tokenPos = atom({ plugin: 'thread-chat', key: 'tokenPos' } as const, START
 const summaries = atom({ plugin: 'thread-chat', key: 'summaries' } as const, {})
 const summaryLines = atom({ plugin: 'thread-chat', key: 'summaryLines' } as const, {})
 const summaryUsage = atom({ plugin: 'thread-chat', key: 'summaryUsage' } as const, NO_USAGE)
+const summariesOn = atom({ plugin: 'thread-chat', key: 'summariesOn' } as const, true)
+const readToolOffered = atom({ plugin: 'thread-chat', key: 'readToolOffered' } as const, false)
+const hasStarted = atom({ plugin: 'thread-chat', key: 'hasStarted' } as const, false)
 // The react mod's switch and reactions, which the thread view draws as the chat does
 // (types/react.d.ts); never written without react, so off and none.
 const reactIsOn = atom({ plugin: 'react', key: 'isOn' } as const, false)
@@ -122,6 +130,7 @@ const MENU = 'threads'
 const THREADS_SWITCH = 'threads-on'
 const AGENT_SWITCH = 'agent-threads'
 const FILTER_SWITCH = 'filter-chat'
+const SUMMARIES_SWITCH = 'thread-summaries'
 // A switch's hit area over its picture, keyed by this and the switch's key.
 const SWITCH_HIT = 'switch:'
 // The thread view's pane id, which is also its command's name and its menu row's key.
@@ -268,12 +277,20 @@ async function flipThreads($: EngineInterface): Promise<boolean> {
   return now
 }
 
-// Flips a switch of the band's menu. The agent's switch or the filter's while threads
-// are off leaves things be.
+// Flips whether the chat's threads are summarised and the agent caught up on them, and
+// keeps the switch for the session's next run. Off, no summary call is made.
+async function flipSummaries($: EngineInterface) {
+  await update($, summariesOn, is => !is)
+  await save($)
+}
+
+// Flips a switch of the band's menu. The agent's switch, the filter's or the summaries'
+// while threads are off leaves things be.
 async function flipMenuSwitch($: EngineInterface, key: string) {
   if (key === THREADS_SWITCH) await flipThreads($)
   else if (key === AGENT_SWITCH && (await read($, isOn))) await flipAgentSwitch($)
   else if (key === FILTER_SWITCH && (await read($, isOn))) await flipFilter($)
+  else if (key === SUMMARIES_SWITCH && (await read($, isOn))) await flipSummaries($)
 }
 
 // What a heading means, by one rule for sending and drawing alike: `+name` a new
@@ -414,6 +431,7 @@ type Saved = {
   viewThreads: string[]
   // absent from a record kept before thread summaries
   tokenPos?: TokenPos
+  summariesOn?: boolean
 }
 
 // Keeps the session's switches, threads, merges, recorded meanings, latest rows, picked
@@ -436,6 +454,7 @@ async function save($: EngineInterface) {
     briefed: await read($, briefed),
     viewThreads: await read($, viewThreads),
     tokenPos: await read($, tokenPos),
+    summariesOn: await read($, summariesOn),
   }
   await $.store.set(storeKey(await $.session.id()), saved)
 }
@@ -1183,6 +1202,7 @@ async function menuSwitches($: EngineInterface): Promise<MenuSwitch[]> {
       ? [
           { key: AGENT_SWITCH, label: 'Agent may start threads', isOn: await read($, agentMayCreate) },
           { key: FILTER_SWITCH, label: 'Filter the chat', isOn: await read($, filtersChat) },
+          { key: SUMMARIES_SWITCH, label: 'Thread summaries', isOn: await read($, summariesOn) },
         ]
       : []),
   ]
@@ -2508,7 +2528,7 @@ type SummaryAnswer = { kind: 'text'; text: string } | { kind: 'retry'; why: stri
 // fixed instructions, the request with all it needs, and the cap on the reply. The threads
 // are there for a way of asking that keeps something per thread (a cached conversation),
 // which would take its new messages from the request.
-type SummaryAsk = { what: string; job: SummaryJob['kind']; keys: string[]; system: string; prompt: string; maxTokens: number }
+type SummaryAsk = { what: string; job: SummaryJob['kind']; keys: string[]; system: string; prompt: string; maxTokens: number; timeoutMs?: number }
 
 // How the summary model is asked: one independent call each time, with all it needs (the
 // thread's messages, and where they do not fit, its last summary). Every job asks through
@@ -2533,7 +2553,7 @@ async function callSummaryModel($: EngineInterface, ask: SummaryAsk): Promise<Su
         prompt,
         maxTokens: attempt === 0 ? maxTokens : maxTokens * 2,
         effort: 'low',
-        timeoutMs: 90_000,
+        timeoutMs: ask.timeoutMs ?? SUMMARY_TIMEOUT_MS,
       })
     } catch (error) {
       if (modelInUse === undefined && model !== FALLBACK_MODEL) {
@@ -2577,7 +2597,7 @@ async function callSummaryModel($: EngineInterface, ask: SummaryAsk): Promise<Su
 // RETRY_MS's length of times.
 async function runSummary($: EngineInterface, job: SummaryJob) {
   try {
-    if (summariesStopped !== undefined || !(await read($, isOn))) return
+    if (summariesStopped !== undefined || !(await read($, isOn)) || !(await read($, summariesOn))) return
     const answer = job.kind === 'pack' ? await makePack($, job.key) : undefined
     if (answer?.kind !== 'retry') return
     const wait = RETRY_MS[job.tries]
@@ -2595,7 +2615,7 @@ async function runSummary($: EngineInterface, job: SummaryJob) {
 // elsewhere: from all of them where they fit one call (so it never drifts), else from its
 // last summary on, or part by part, each building on the one before. Nothing where it is
 // current, or the thread is gone or has no messages.
-async function makePack($: EngineInterface, key: string): Promise<SummaryAnswer | undefined> {
+async function makePack($: EngineInterface, key: string, timeoutMs?: number): Promise<SummaryAnswer | undefined> {
   const { inputs, entries } = await allEntries($)
   const thread = inputs.list.find(t => keyOf(t.name) === key)
   if (thread === undefined) return undefined
@@ -2613,7 +2633,7 @@ async function makePack($: EngineInterface, key: string): Promise<SummaryAnswer 
   for (const [i, part] of parts.entries()) {
     const what = `pack ${thread.name}${parts.length > 1 ? ` (part ${i + 1} of ${parts.length})` : ''}`
     const prompt = packPrompt(thread.name, previous, part)
-    const answer = await askSummaryModel($, { what, job: 'pack', keys: [key], system: PACK_SYSTEM, prompt, maxTokens: PACK_MAX_TOKENS })
+    const answer = await askSummaryModel($, { what, job: 'pack', keys: [key], system: PACK_SYSTEM, prompt, maxTokens: PACK_MAX_TOKENS, timeoutMs })
     if (answer.kind !== 'text') return answer
     const parsed = parsePack(answer.text)
     if (parsed.short === undefined && parsed.long === undefined) await noteSummary($, `${what}: reply not in parts, kept as it was`)
@@ -2641,6 +2661,9 @@ async function makePack($: EngineInterface, key: string): Promise<SummaryAnswer 
 
 // A pack's cap on the reply: its three parts, about 1.5k tokens, and room for thinking.
 const PACK_MAX_TOKENS = 4000
+// How long a summary call may take: one made ahead, and one read_thread waits for.
+const SUMMARY_TIMEOUT_MS = 90_000
+const READ_TIMEOUT_MS = 30_000
 
 // The file beside a session's rows that keeps its threads' summaries.
 const SUMMARIES_FILE = 'summaries.json'
@@ -2685,7 +2708,7 @@ async function takeKeptSummaries($: EngineInterface, id: string, onlyRows?: Read
 // Queues the packs due as a turn ends: each thread (not archived) near catching up, or
 // past it, whose pack is not current. While threads are on.
 async function queueDuePacks($: EngineInterface) {
-  if (summariesStopped !== undefined || !(await read($, isOn))) return
+  if (summariesStopped !== undefined || !(await read($, isOn)) || !(await read($, summariesOn))) return
   const all = await read($, summaries)
   const list = await read($, threads)
   const isArchived = new Set(list.filter(t => t.isArchived === true).map(t => keyOf(t.name)))
@@ -2693,6 +2716,70 @@ async function queueDuePacks($: EngineInterface) {
     if (isArchived.has(gap.key) || !isPackDue(gap, summaryConfig.catchUpAfter) || isCurrent(all[gap.key], gap.lastRow)) continue
     queueSummary($, { kind: 'pack', key: gap.key, tries: 0 })
   }
+}
+
+const READ_TOOL = 'mcp__thread-chat__read_thread'
+const READ_SPEC = {
+  name: 'read_thread',
+  description:
+    "Read a conversation thread's history: a summary of its earlier discussion and its latest messages verbatim. Use it to catch up on a thread you have lost track of.",
+  inputSchema: {
+    type: 'object',
+    properties: { thread: { type: 'string', description: "The thread's name" } },
+    required: ['thread'],
+  },
+  // in the tools the model is sent from the start, so the list never changes mid-session
+  isDeferred: false,
+}
+
+// Offers the agent read_thread; the catch-up notes name it only once it is offered.
+async function offerReadTool($: EngineInterface) {
+  try {
+    await $.tool.register(READ_SPEC)
+    await update($, readToolOffered, () => true)
+  } catch {
+    // the notes carry the thread's messages instead
+  }
+}
+
+// What the agent is told beside the person's message of the threads it goes to (`names`)
+// that are past catching up: a note each for the first three, a pointer for any more.
+// While threads and their summaries are on.
+async function catchUpNotes($: EngineInterface, names: readonly string[]): Promise<string[]> {
+  if (names.length === 0 || !(await read($, summariesOn))) return []
+  const { inputs, entries } = await allEntries($)
+  const gaps = threadGaps(entries, inputs.known, await read($, tokenPos), inputs.list)
+  const keys = new Set(names.map(keyOf))
+  const behind = gaps.filter(g => keys.has(g.key) && isPast(g, summaryConfig.catchUpAfter))
+  if (behind.length === 0) return []
+  const all = await read($, summaries)
+  const tool = (await read($, readToolOffered)) ? READ_TOOL : undefined
+  return [...behind.slice(0, MAX_NOTES).map(g => catchUpNote(g, all[g.key], entries, tool)), ...behind.slice(MAX_NOTES).map(g => catchUpPointer(g, tool))]
+}
+
+const MAX_NOTES = 3
+
+// What read_thread answers for the thread a name means (as a heading would mean it): its
+// summary and its messages since, made now (within READ_TIMEOUT_MS) where it has no current
+// one and more messages than are told whole, while its summaries are on.
+async function readThread($: EngineInterface, raw: unknown): Promise<string> {
+  const typed = typeof raw === 'string' ? nameOf(raw.replace(/^#+/, '')) : ''
+  if (typed === '') return 'Name the thread to read: {"thread": "<name>"}.'
+  const list = await read($, threads)
+  const links = linksFor(await read($, aliases), await read($, deleted), await read($, snaps))
+  const thread = threadOf(resolveHeading(typed, list, links), list, links)
+  if (thread === undefined) return `No thread is named "${typed}". Threads: ${list.map(t => `"${t.name}"`).join(', ') || 'none'}.`
+  const key = keyOf(thread.name)
+  const { inputs, entries } = await allEntries($)
+  const gap = threadGaps(entries, inputs.known, await read($, tokenPos), inputs.list).find(g => g.key === key)
+  let summary = (await read($, summaries))[key]
+  const lastRow = entries.findLast(entry => entry.thread !== undefined && keyOf(entry.thread.name) === key)?.id
+  const isLong = verbatimOf(entries, key, summary?.coversRow, TOOL_TAIL_CHARS).isCut
+  if (!isCurrent(summary, lastRow) && isLong && summariesStopped === undefined && (await read($, summariesOn))) {
+    await makePack($, key, READ_TIMEOUT_MS)
+    summary = (await read($, summaries))[key]
+  }
+  return readThreadText(thread.name, key, gap, summary, entries)
 }
 
 // Where the threads stand for their summaries, for `/thread-view trace`.
@@ -2718,7 +2805,8 @@ async function summaryTraceText($: EngineInterface): Promise<string> {
         `${isPast(g, catchUpAfter) ? ', past catching up' : ''}${stateOf(g.key, g.lastRow)}` +
         `${all[g.key]?.line === undefined ? '' : `\n    ${all[g.key]?.line}`}`,
     ),
-    `  model ${modelInUse ?? summaryConfig.model}; ${usageText(await read($, summaryUsage))}`,
+    `  model ${modelInUse ?? summaryConfig.model}; ${usageText(await read($, summaryUsage))}` +
+      `${(await read($, summariesOn)) ? '' : '; off in this chat'}${(await read($, readToolOffered)) ? '; read_thread offered' : ''}`,
     ...(summariesStopped === undefined ? [] : [`  stopped: ${summariesStopped}`]),
     ...(summaryJobs.size + summaryRunning.size === 0 ? [] : [`  calls running: ${[...summaryRunning].join(', ') || 'none'}; waiting: ${[...summaryJobs.keys()].join(', ') || 'none'}`]),
     ...summaryLog.map(line => `  ${line}`),
@@ -2791,8 +2879,17 @@ export const register: Register = (on, options) => {
     if (keptMayCreate !== undefined) await update($, agentMayCreate, () => keptMayCreate)
     const keptFilters = saved?.filtersChat
     if (keptFilters !== undefined) await update($, filtersChat, () => keptFilters)
+    const keptSummariesOn = saved?.summariesOn
+    if (keptSummariesOn !== undefined) await update($, summariesOn, () => keptSummariesOn)
     // With threads and the agent switch on, after a reload or a restart, its tool is offered again.
     if ((await read($, isOn)) && (await read($, agentMayCreate))) await offerCreateTool($)
+    // read_thread is offered as a run starts with threads and their summaries on, never
+    // later, so the tools the model is sent stay the same all session (a change would have
+    // the main model write its whole prompt cache again); a reload offers it again.
+    const isReload = await read($, hasStarted)
+    const isReadDue = !isReload && (await read($, isOn)) && (await read($, summariesOn))
+    if ((await read($, readToolOffered)) || isReadDue) await offerReadTool($)
+    await update($, hasStarted, () => true)
     // Rows kept by an earlier version count from now: none is past catching up at once.
     const at = await read($, tokenPos)
     await update($, viewRows, rows => withStamps(rows, at))
@@ -2828,8 +2925,9 @@ export const register: Register = (on, options) => {
     // one, after how threads work and where they stand, when the model is to be told.
     const told = await read($, untold)
     if (told.length > 0) await update($, untold, () => [])
-    const send = async (notes: string[]) => {
-      const all = [...(await briefing($)), ...told, ...notes]
+    // The threads it goes to (`to`) that the agent has likely lost track of are caught up on.
+    const send = async (notes: string[], to: readonly string[] = []) => {
+      const all = [...(await briefing($)), ...told, ...notes, ...(await catchUpNotes($, to).catch(() => []))]
       return all.length === 0 ? next(e) : next({ ...e, context: [...(e.context ?? []), ...all] })
     }
 
@@ -2843,18 +2941,24 @@ export const register: Register = (on, options) => {
       const quoted = await quotedThreadOf($, replyQuotesOf(e.text), list)
       if (quoted !== undefined) {
         unsent.push({ text: e.text.trim(), key: keyOf(quoted.name) })
-        return send([
-          `This message belongs to the thread "${quoted.name}": the user replied to part of your message in that thread, so your reply most likely belongs under that thread's heading.`,
-        ])
+        return send(
+          [
+            `This message belongs to the thread "${quoted.name}": the user replied to part of your message in that thread, so your reply most likely belongs under that thread's heading.`,
+          ],
+          [quoted.name],
+        )
       }
       // With a thread picked above the prompt, a message with no heading goes to it.
       const cur = await read($, current)
       const picked = cur === '' ? undefined : list.find(t => keyOf(t.name) === cur && t.isArchived !== true)
       if (picked === undefined) return send([])
       unsent.push({ text: e.text.trim(), key: keyOf(picked.name) })
-      return send([
-        `This message belongs to the thread "${picked.name}": the user posted it there with their thread picker, so your reply most likely belongs under that thread's heading.`,
-      ])
+      return send(
+        [
+          `This message belongs to the thread "${picked.name}": the user posted it there with their thread picker, so your reply most likely belongs under that thread's heading.`,
+        ],
+        [picked.name],
+      )
     }
     await addThreads($, names, 'user')
     // The picker follows the thread of the message's last heading, so the person's next
@@ -2863,9 +2967,9 @@ export const register: Register = (on, options) => {
     const decided = linksOf(meanings)
     if (Object.keys(decided).length > 0) await update($, snaps, all => ({ ...all, ...decided }))
     await save($)
-    if (meanings.length === 0) return send([])
+    if (meanings.length === 0) return send([], names)
 
-    return send([`Thread headings in this message, as the user meant them: ${meanings.map(meaningNote).join('; ')}.`])
+    return send([`Thread headings in this message, as the user meant them: ${meanings.map(meaningNote).join('; ')}.`], names)
   })
 
   // A message sent with no heading to one thread is known by its row once stored, and the
@@ -3098,6 +3202,14 @@ export const register: Register = (on, options) => {
   // memory extraction) that are offered the main loop's tools, carries its loop's
   // agentId and is refused: the engine's own refusal of a fork's call lies beneath
   // next(e), which this hook, answering itself, never calls.
+  // read_thread, offered as a run starts with threads and their summaries on: for the main
+  // conversation alone, as create_thread is, so no hidden fork has a summary made.
+  on('tool.call', { tool: READ_TOOL }, async ($, e) => {
+    if (e.agentId !== undefined) return { deny: 'Only the main conversation reads threads; this call came from another agent.' }
+    if (!(await read($, isOn))) return { deny: 'The user turned conversation threads off.' }
+    return { result: await readThread($, (e as { thread?: unknown }).thread) }
+  })
+
   on('tool.call', { tool: 'mcp__thread-chat__create_thread' }, async ($, e) => {
     if (e.agentId !== undefined) {
       return { deny: 'Only the main conversation starts threads; this call came from another agent.' }

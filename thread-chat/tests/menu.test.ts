@@ -36,6 +36,7 @@ const MENU = 'threads'
 const THREADS_SWITCH = 'threads-on'
 const AGENT_SWITCH = 'agent-threads'
 const FILTER_SWITCH = 'filter-chat'
+const SUMMARIES_SWITCH = 'thread-summaries'
 // The menu's row that opens the thread view, while threads are on.
 const VIEW = 'thread-view'
 
@@ -130,7 +131,7 @@ test("the desktop menu's labels and slide switches flip threads, the agent switc
   // and the filter's (off) join it, then the row that opens the thread view, in the card
   await band.press({ key: THREADS_SWITCH })
   await band.redraw()
-  expect(await switchesOf(band)).toEqual(['On in this chat: on', 'Agent may start threads: off', 'Filter the chat: off'])
+  expect(await switchesOf(band)).toEqual(['On in this chat: on', 'Agent may start threads: off', 'Filter the chat: off', 'Thread summaries: on'])
   expect(keyedIn(keyedIn(await band.drawn(), MENU), VIEW)).toMatchObject({ type: 'Button', props: { label: 'Open thread view', plain: true } })
   expect(await band.find({ text: /start a thread with # name/ })).toBeDefined()
   expect((await $.tool.call({ tool: TOOL, tool_use_id: 't2', name: 'ideas' })).deny).toBeDefined()
@@ -138,20 +139,28 @@ test("the desktop menu's labels and slide switches flip threads, the agent switc
   // the agent's slide switch lets the agent start threads, and back
   await clickSwitch(band, AGENT_SWITCH)
   await band.redraw()
-  expect(await switchesOf(band)).toEqual(['On in this chat: on', 'Agent may start threads: on', 'Filter the chat: off'])
+  expect(await switchesOf(band)).toEqual(['On in this chat: on', 'Agent may start threads: on', 'Filter the chat: off', 'Thread summaries: on'])
   expect((await $.tool.call({ tool: TOOL, tool_use_id: 't3', name: 'ideas' })).deny).toBeUndefined()
   await band.press({ key: AGENT_SWITCH })
   await band.redraw()
-  expect(await switchesOf(band)).toEqual(['On in this chat: on', 'Agent may start threads: off', 'Filter the chat: off'])
+  expect(await switchesOf(band)).toEqual(['On in this chat: on', 'Agent may start threads: off', 'Filter the chat: off', 'Thread summaries: on'])
 
   // the filter's label and slide switch flip it, a plain Button as the others are
   expect((await band.find({ key: FILTER_SWITCH }))?.props).toMatchObject({ label: 'Filter the chat', plain: true })
   await clickSwitch(band, FILTER_SWITCH)
   await band.redraw()
-  expect(await switchesOf(band)).toEqual(['On in this chat: on', 'Agent may start threads: off', 'Filter the chat: on'])
+  expect(await switchesOf(band)).toEqual(['On in this chat: on', 'Agent may start threads: off', 'Filter the chat: on', 'Thread summaries: on'])
   await band.press({ key: FILTER_SWITCH })
   await band.redraw()
-  expect(await switchesOf(band)).toEqual(['On in this chat: on', 'Agent may start threads: off', 'Filter the chat: off'])
+  expect(await switchesOf(band)).toEqual(['On in this chat: on', 'Agent may start threads: off', 'Filter the chat: off', 'Thread summaries: on'])
+
+  // the summaries' label and slide switch turn them off, and on again
+  await clickSwitch(band, SUMMARIES_SWITCH)
+  await band.redraw()
+  expect(await switchesOf(band)).toEqual(['On in this chat: on', 'Agent may start threads: off', 'Filter the chat: off', 'Thread summaries: off'])
+  await band.press({ key: SUMMARIES_SWITCH })
+  await band.redraw()
+  expect(await switchesOf(band)).toEqual(['On in this chat: on', 'Agent may start threads: off', 'Filter the chat: off', 'Thread summaries: on'])
 
   // On in this chat's slide switch turns them off, and the view's row goes
   await clickSwitch(band, THREADS_SWITCH)

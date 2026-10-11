@@ -165,6 +165,14 @@ declare module 'claude-code' {
       summaryLines: Record<string, { line: string; at: number }>
       // what the summaries' calls have cost
       summaryUsage: SummaryUsage
+      // whether the chat's threads are summarised and the agent caught up on them: the
+      // menu's switch, on at first, kept with the session's record
+      summariesOn: boolean
+      // whether the agent was offered read_thread this run: only as a run starts, so the
+      // tools the model is sent stay the same all session
+      readToolOffered: boolean
+      // whether this run's session.start has run: one running again is a reload
+      hasStarted: boolean
     }
   }
 }
