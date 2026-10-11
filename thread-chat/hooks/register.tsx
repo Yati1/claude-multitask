@@ -2704,20 +2704,18 @@ const READ_TIMEOUT_MS = 30_000
 const LINE_MAX_TOKENS = 1500
 
 // Makes the one-line summaries of the threads turns touched, in one call, from each one's
-// line and short summary so far and those turns' sections of it; a thread with a pack
-// waiting or being made is left to it, which writes its line too.
+// line so far and those turns' sections of it; a thread with a pack waiting or being made
+// is left to it, which writes its line too.
 async function makeLines($: EngineInterface, sections: Record<string, string>): Promise<SummaryAnswer | undefined> {
   const list = await read($, threads)
-  const all = await read($, summaries)
   const lines = await read($, summaryLines)
   const inputs: (LineInput & { key: string })[] = []
   for (const [key, messages] of Object.entries(sections)) {
     const thread = list.find(t => keyOf(t.name) === key && t.isArchived !== true)
     const packId = `pack:${key}`
     if (thread === undefined || messages.trim() === '' || summaryJobs.has(packId) || summaryRunning.has(packId)) continue
-    const short = all[key]?.short
     const line = lines[key]?.line
-    inputs.push({ key, name: thread.name, messages, ...(line === undefined ? {} : { line }), ...(short === undefined ? {} : { short }) })
+    inputs.push({ key, name: thread.name, messages, ...(line === undefined ? {} : { line }) })
   }
   if (inputs.length === 0) return undefined
   const what = `lines ${inputs.map(t => t.name).join(', ')}`

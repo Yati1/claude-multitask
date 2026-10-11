@@ -649,8 +649,8 @@ test("each turn's threads get their one-line summaries in one call, from their l
   expect(first?.maxTokens).toBe(1500)
   expect(first?.prompt).toBe(
     [
-      'Thread: design\nCurrent line: (none)\nLatest summary: (none)\nNewest messages (oldest first):\n[user]\nmake it blue\n\n[agent]\nblue',
-      'Thread: perf\nCurrent line: (none)\nLatest summary: (none)\nNewest messages (oldest first):\n[user]\nfaster?\n\n[agent]\nyes',
+      'Thread: design\nCurrent line: (none)\nNewest messages (oldest first):\n[user]\nmake it blue\n\n[agent]\nblue',
+      'Thread: perf\nCurrent line: (none)\nNewest messages (oldest first):\n[user]\nfaster?\n\n[agent]\nyes',
     ].join('\n\n---\n\n'),
   )
   expect(await summaryTrace($)).toContain('  design: 0 since its last message\n    design turn line 1')
@@ -659,7 +659,7 @@ test("each turn's threads get their one-line summaries in one call, from their l
   await talk($, usage, [['p2', '# perf\nhow fast?', 'a2', '# perf\ntwice']])
   await clock.settle()
   expect(lineRequests.at(-1)?.prompt).toBe(
-    'Thread: perf\nCurrent line: perf turn line 1\nLatest summary: (none)\nNewest messages (oldest first):\n[user]\nhow fast?\n\n[agent]\ntwice',
+    'Thread: perf\nCurrent line: perf turn line 1\nNewest messages (oldest first):\n[user]\nhow fast?\n\n[agent]\ntwice',
   )
   // a turn in no thread (none picked above the prompt): no call
   const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...BAND })
