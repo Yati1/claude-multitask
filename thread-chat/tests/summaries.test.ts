@@ -592,3 +592,29 @@ test('read_thread is offered only as a run starts with threads on, and answers f
   expect(requests.length).toBe(asked + 1)
   expect(JSON.stringify(long)).toContain('perf long')
 })
+
+test("a compaction starting has every thread's summary made, and after it every thread is caught up on", async ($, on) => {
+  const { usage, prompts, requests, clock } = engine(on, { 'session:session-1': recordOn() })
+  await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
+  usage.tokens = 20_000
+  await talk($, usage, [
+    ['p1', '# design\nmake it blue', 'a1', `# design\n${'done, blue. '.repeat(100)}`],
+    ['p2', '# perf\nfaster?', 'a2', `# perf\n${'yes, faster. '.repeat(100)}`],
+  ])
+  await clock.settle()
+  expect(requests).toHaveLength(0)
+
+  // a precompute, or a subagent's compaction, makes none
+  await $.session.compact({ trigger: 'precompute', messages: [{ role: 'user', text: 'old', toolUses: [] }] })
+  await $.session.compact({ trigger: 'auto', agentId: 'sub-1', messages: [{ role: 'user', text: 'old', toolUses: [] }] })
+  await clock.settle()
+  expect(requests).toHaveLength(0)
+
+  await $.session.compact({ trigger: 'auto', messages: [{ role: 'user', text: 'old', toolUses: [] }] })
+  await clock.settle()
+  expect(requests.map(threadOfRequest).sort()).toEqual(['design', 'perf'])
+  await $.prompt.submit(say('# perf\nand now?'))
+  expect(prompts.at(-1)).toContain(
+    'Catch-up for thread "perf": the conversation was compacted since its last message. Summary written by a small model from the thread\'s messages; it may miss detail:\nperf short',
+  )
+})

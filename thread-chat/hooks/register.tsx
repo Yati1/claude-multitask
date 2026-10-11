@@ -2705,15 +2705,18 @@ async function takeKeptSummaries($: EngineInterface, id: string, onlyRows?: Read
   )
 }
 
-// Queues the packs due as a turn ends: each thread (not archived) near catching up, or
-// past it, whose pack is not current. While threads are on.
-async function queueDuePacks($: EngineInterface) {
+// Queues the packs due: as a turn ends, each thread (not archived) near catching up, or
+// past it, whose pack is not current; as a compaction starts (`isEvery`), each whose pack
+// is not current, as every thread will be past catching up once it is done. While threads
+// and their summaries are on.
+async function queueDuePacks($: EngineInterface, isEvery = false) {
   if (summariesStopped !== undefined || !(await read($, isOn)) || !(await read($, summariesOn))) return
   const all = await read($, summaries)
   const list = await read($, threads)
   const isArchived = new Set(list.filter(t => t.isArchived === true).map(t => keyOf(t.name)))
   for (const gap of await gapsNow($)) {
-    if (isArchived.has(gap.key) || !isPackDue(gap, summaryConfig.catchUpAfter) || isCurrent(all[gap.key], gap.lastRow)) continue
+    const isDue = isEvery || isPackDue(gap, summaryConfig.catchUpAfter)
+    if (isArchived.has(gap.key) || !isDue || isCurrent(all[gap.key], gap.lastRow)) continue
     queueSummary($, { kind: 'pack', key: gap.key, tries: 0 })
   }
 }
@@ -3231,6 +3234,10 @@ export const register: Register = (on, options) => {
   // A compaction may summarise how threads work away: the model is told again beside
   // the person's next message. Every thread is then past catching up.
   on('session.compact', async ($, e, next) => {
+    // A compaction of the main conversation starting (not a precompute, whose timing is the
+    // engine's own): the threads' summaries are made meanwhile, ready as it ends. Queued, not
+    // awaited: the compaction does not wait on them.
+    if (e.agentId === undefined && e.trigger !== 'precompute') await queueDuePacks($, true).catch(() => undefined)
     const result = await next(e)
     const isCompacted = e.agentId === undefined && e.trigger !== 'precompute' && result.skip === undefined
     if (isCompacted) {
