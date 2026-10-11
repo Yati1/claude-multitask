@@ -4,22 +4,52 @@ import type { Engine } from 'claude-code/testing'
 
 import type { ViewRow } from '../types'
 import { chunksOf, fingerprintOf, marksOf } from '../hooks/pane'
-import { START_POS, advancedPos, compactedPos, withStamps } from '../hooks/summaries'
+import { CUT, MAX_INPUT_CHARS, START_POS, advancedPos, compactedPos, packParts, parsePack, withStamps } from '../hooks/summaries'
+import type { SummaryEntry } from '../hooks/summaries'
 
 type Block = { type: string; [field: string]: unknown }
 
 // Where the plugin keeps sessions' files under the test's configuration folder.
 const VIEWS = '/config/plugins/data/thread-chat-inline/views'
 
+type ModelRequest = { model: string; prompt: string; system?: string; systemBlocks?: readonly { text: string; cache?: true }[]; maxTokens?: number; effort?: string }
+type ModelAnswer =
+  | { isAnswered: true; text: string; usage: Usage }
+  | { isAnswered: false; reason: 'api-error'; status: number | null; error: string; usage: Usage }
+  | { isAnswered: false; reason: 'empty-reply' | 'aborted'; usage: Usage }
+type Usage = { input_tokens: number; output_tokens: number; cache_read_input_tokens: number; cache_creation_input_tokens: number }
+
+const USAGE: Usage = { input_tokens: 2000, output_tokens: 500, cache_read_input_tokens: 900, cache_creation_input_tokens: 0 }
+
+// A pack's reply as the summary model writes it, naming the thread in each part.
+const packReply = (name: string, n = 1) =>
+  `<short>${name} short ${n}</short>
+<long>${name} long ${n}</long>
+<line>${name} line ${n}</line>`
+
+// The thread a pack's request is for.
+const threadOfRequest = (r: ModelRequest) => /^Thread: (.*)$/m.exec(r.prompt)?.[1] ?? ''
+
 // The test stands in for the engine beneath the plugin: the mod store (`kept`, seeded with
 // `store`), the files it reads and writes (`files`, seeded with `seed`), the context size
-// the engine reports (`usage.tokens`, none until set), and the prompts that reach the model,
-// each with the notes beside it.
+// the engine reports (`usage.tokens`, none until set), the prompts that reach the model, each
+// with the notes beside it, and the summary model: the requests it got (`requests`), each
+// answered by `answer` (a pack's reply naming its thread, unless a test says otherwise), or
+// refused where it throws.
 function engine(on: On, store: Record<string, unknown> = {}, seed: Record<string, string> = {}) {
   const kept: Record<string, unknown> = { ...store }
   const files: Record<string, string> = { ...seed }
   const usage: { tokens: number | undefined } = { tokens: undefined }
   const prompts: string[] = []
+  const requests: ModelRequest[] = []
+  const model: { answer: (r: ModelRequest) => ModelAnswer } = {
+    answer: r => ({ isAnswered: true, text: packReply(threadOfRequest(r), requests.length), usage: USAGE }),
+  }
+  const clock = mock.clock(on, { now: 1_000_000 })
+  on('model.complete', ($, e) => {
+    requests.push(e)
+    return { value: model.answer(e) as never }
+  })
   mock.env(on, { CLAUDE_CONFIG_DIR: '/config' })
   const pathOf = (path: string) => path.replace(/\\/g, '/').replace(/^[A-Za-z]:/, '')
   on('fs.read', ($, e) => {
@@ -55,7 +85,7 @@ function engine(on: On, store: Record<string, unknown> = {}, seed: Record<string
   on('command.register', ($, e) => ({ value: { command: e.name } }))
   on('turn.complete', () => ({ text: '' }))
   on('session.compact', () => ({ messages: [{ role: 'user' as const, text: 'the summary', toolUses: [] }] }))
-  return { kept, files, usage, prompts }
+  return { kept, files, usage, prompts, requests, model, clock }
 }
 
 const model = { kind: 'model', model: 'test' } as const
@@ -148,6 +178,7 @@ test("each thread is as far behind as Claude's context grew since its last messa
       'Thread summaries: token position 30.0k, context 50.0k, 0 compactions; catch up after 75.0k',
       '  design: 30.0k since its last message',
       '  perf: 0 since its last message',
+      '  model claude-haiku-5-5; no calls yet',
     ].join('\n'),
   )
 
@@ -201,10 +232,199 @@ test('a restarted session keeps its token position, and rows an earlier version 
     [
       'Thread summaries: token position 500.0k, context 90.0k, 2 compactions; catch up after 75.0k',
       '  design: 0 since its last message',
+      '  model claude-haiku-5-5; no calls yet',
     ].join('\n'),
   )
   usage.tokens = 100_000
   await storer($).done()
   expect(await summaryTrace($)).toContain('  design: 10.0k since its last message')
   expect((kept['session:session-1'] as { tokenPos?: unknown }).tokenPos).toEqual({ pos: 510_000, last: 100_000, epoch: 2 })
+})
+
+const DESIGN = { name: 'design', color: '#e06c75', createdBy: 'user' as const }
+const PERF = { name: 'perf', color: '#61afef', createdBy: 'user' as const }
+const entry = (id: string, role: 'user' | 'assistant', thread: typeof DESIGN | undefined, text: string): SummaryEntry => ({ id, role, thread, text })
+
+test("the summariser reads a thread's messages, with the message either side from elsewhere and […] for the rest", () => {
+  const entries = [
+    entry('o1', 'user', undefined, 'unthreaded start'),
+    entry('p1', 'user', DESIGN, 'make it blue'),
+    entry('a1', 'assistant', DESIGN, 'done, blue'),
+    entry('a1', 'assistant', PERF, `perf part of the same reply ${'x'.repeat(500)}`),
+    entry('p2', 'user', PERF, 'faster?'),
+    entry('a2', 'assistant', PERF, 'yes'),
+    entry('p3', 'user', undefined, 'by the way'),
+    entry('p4', 'user', DESIGN, 'and green'),
+  ]
+  const [part] = packParts(entries, 'design')
+  expect(part?.lastRow).toBe('p4')
+  expect(part?.text).toBe(
+    [
+      '[context: user, no thread]\nunthreaded start',
+      '[user]\nmake it blue',
+      '[agent]\ndone, blue',
+      `[context: agent, thread "perf"]\nperf part of the same reply ${'x'.repeat(372)} ${CUT}`,
+      CUT,
+      '[context: user, no thread]\nby the way',
+      '[user]\nand green',
+    ].join('\n\n'),
+  )
+  // after a row, from the thread's sections after it
+  expect(packParts(entries, 'design', 'a1')[0]?.text).toBe('[context: user, no thread]\nby the way\n\n[user]\nand green')
+  expect(packParts(entries, 'design', 'p4')).toEqual([])
+  expect(packParts(entries, 'gone')).toEqual([])
+
+  // too long with its neighbours: without them; too long even so: in parts that each fit
+  const big = 'y'.repeat(MAX_INPUT_CHARS / 2 - 300)
+  const other = 'z'.repeat(1000)
+  const long = [
+    entry('o0', 'user', PERF, other),
+    entry('p1', 'user', DESIGN, big),
+    entry('o1', 'user', PERF, other),
+    entry('a1', 'assistant', DESIGN, big),
+    entry('o2', 'user', PERF, other),
+  ]
+  const bare = packParts(long, 'design')
+  expect(bare).toHaveLength(1)
+  expect(bare[0]?.text).toBe(`[user]\n${big}\n\n${CUT}\n\n[agent]\n${big}`)
+  const longer = [...long, entry('p2', 'user', DESIGN, big), entry('a2', 'assistant', DESIGN, big)]
+  const parts = packParts(longer, 'design')
+  expect(parts.length).toBeGreaterThan(1)
+  expect(parts.every(p => p.text.length <= MAX_INPUT_CHARS)).toBe(true)
+  expect(parts.at(-1)?.lastRow).toBe('a2')
+})
+
+test("a pack's reply gives each part it holds; one it lacks is left out", () => {
+  expect(parsePack('<short> s </short>\n<long>l\nmore</long><line>a  line\nhere</line>')).toEqual({ short: 's', long: 'l\nmore', line: 'a line here' })
+  expect(parsePack('<short>s</short>')).toEqual({ short: 's' })
+  expect(parsePack('no tags at all')).toEqual({})
+  expect(parsePack(`<line>${'w'.repeat(200)}</line>`).line).toHaveLength(118)
+})
+
+// A thread's messages in turns, the context growing by `grow` tokens at each turn's end.
+async function talk($: Engine, usage: { tokens: number | undefined }, turns: [string, string, string, string][], grow = 10_000) {
+  const { person, reply, done } = storer($)
+  for (const [p, said, a, replied] of turns) {
+    await $.prompt.submit(say(said))
+    await person(p, said)
+    await reply(a, replied)
+    usage.tokens = (usage.tokens ?? 20_000) + grow
+    await done()
+  }
+}
+
+test("a thread's summary is made ahead, at 80% of catching up, by the summary model, and kept", async ($, on) => {
+  const { usage, requests, clock, files } = engine(on)
+  await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
+  await flipThreads($)
+  usage.tokens = 20_000
+  await talk($, usage, [
+    ['p1', '# design\nmake it blue', 'a1', '# design\ndone, blue'],
+    ['p2', '# perf\nfaster?', 'a2', '# perf\nyes'],
+  ])
+  await clock.settle()
+  expect(requests).toHaveLength(0)
+
+  // 59k behind: not yet; 60k: made ahead
+  await talk($, usage, [['p3', '# perf\nmore', 'a3', '# perf\nok']], 49_000)
+  await clock.settle()
+  expect(requests).toHaveLength(0)
+  await talk($, usage, [['p4', '# perf\nstill', 'a4', '# perf\nyes']], 1_000)
+  await clock.settle()
+  expect(requests.map(threadOfRequest)).toEqual(['design'])
+  const [ask] = requests
+  expect(ask?.model).toBe('claude-haiku-5-5')
+  expect(ask?.effort).toBe('low')
+  expect(ask?.maxTokens).toBe(4000)
+  expect(ask?.systemBlocks).toEqual([{ text: expect.stringContaining('running summary of one thread') as never, cache: true }])
+  expect(ask?.prompt).toContain('Previous summary:\n(none)')
+  expect(ask?.prompt).toContain('[user]\nmake it blue\n\n[agent]\ndone, blue\n\n[context: user, thread "perf"]\nfaster?')
+
+  const trace = await summaryTrace($)
+  expect(trace).toContain('  design: 60.0k since its last message; summary current\n    design line 1')
+  expect(trace).toContain('model claude-haiku-5-5; 1 call: 2.0k in, 900 cache read, 0 cache written, 500 out')
+  expect(trace).toMatch(/\d\d:\d\d:\d\d pack design: 2\.0k in/)
+  const kept = JSON.parse(files[`${VIEWS}/session-1/summaries.json`] ?? '{}') as { summaries: Record<string, { short?: string; coversRow?: string }> }
+  expect(kept.summaries.design).toMatchObject({ short: 'design short 1', long: 'design long 1', line: 'design line 1', coversRow: 'a1' })
+
+  // current, it is not made again; a new message, and catching up again, makes it again
+  await talk($, usage, [['p5', '# perf\nagain', 'a5', '# perf\nyes']], 5_000)
+  await clock.settle()
+  expect(requests).toHaveLength(1)
+  await talk($, usage, [['p6', '# design\nand green', 'a6', '# design\ngreen']], 61_000)
+  await talk($, usage, [['p7', '# perf\nsure', 'a7', '# perf\nyes']], 61_000)
+  await clock.settle()
+  expect(requests.map(threadOfRequest)).toEqual(['design', 'perf', 'design'])
+})
+
+test('a summary call that fails in passing is tried again later; a model refused is tried as haiku, then summaries stop', async ($, on) => {
+  const { usage, requests, model, clock } = engine(on)
+  await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
+  await flipThreads($)
+  let overloaded = 2
+  model.answer = r =>
+    overloaded-- > 0
+      ? { isAnswered: false, reason: 'api-error', status: 529, error: 'overloaded', usage: { ...USAGE, input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0 } }
+      : { isAnswered: true, text: packReply(threadOfRequest(r)), usage: USAGE }
+  usage.tokens = 20_000
+  await talk($, usage, [['p1', '# design\nblue', 'a1', '# design\nok']])
+  await talk($, usage, [['p2', '# perf\nfast', 'a2', '# perf\nok']], 70_000)
+  await clock.settle()
+  expect(requests).toHaveLength(1)
+  await clock.advance(5_000)
+  expect(requests).toHaveLength(2)
+  await clock.advance(30_000)
+  expect(requests).toHaveLength(3)
+  expect(await summaryTrace($)).toContain('summary current')
+  expect(await summaryTrace($)).toContain('3 calls (2 failed)')
+
+  // the model set refused: haiku in its place; refused too, no more calls this run
+  model.answer = r => {
+    if (r.model !== 'haiku') throw new Error('model not allowed')
+    throw new Error('haiku not allowed either')
+  }
+  await talk($, usage, [['p3', '# design\ngreen', 'a3', '# design\nok']], 1_000)
+  await talk($, usage, [['p4', '# perf\nfaster', 'a4', '# perf\nok']], 70_000)
+  await clock.settle()
+  const trace = await summaryTrace($)
+  expect(trace).toContain('model haiku;')
+  expect(trace).toContain('stopped: the model haiku was refused')
+  const asked = requests.length
+  await talk($, usage, [['p5', '# perf\nmore', 'a5', '# perf\nok']], 90_000)
+  await clock.settle()
+  expect(requests).toHaveLength(asked)
+})
+
+test("a restarted session takes up its threads' summaries from their file", async ($, on) => {
+  const rows: ViewRow[] = [
+    { id: 'p1', role: 'user', mark: '#designhello', text: '# design\nhello', pos: 0, epoch: 0 },
+    { id: 'a1', role: 'assistant', mark: '#designhi', text: '# design\nhi', pos: 0, epoch: 0 },
+  ]
+  const { note, files } = keptAs('session-1', rows)
+  const record = {
+    isOn: true,
+    threads: [DESIGN],
+    aliases: {},
+    snaps: {},
+    current: 'design',
+    deleted: [],
+    sentTo: {},
+    moved: {},
+    untold: [],
+    briefed: null,
+    viewThreads: [],
+    tokenPos: { pos: 0, last: 30_000, epoch: 0 },
+  }
+  const summary = { name: 'design', short: 'kept short', long: 'kept long', line: 'kept line', coversRow: 'a1', coversPos: 0, madeAt: 5 }
+  const { usage, requests, clock } = engine(on, { 'session:session-1': record, 'view:session-1': note }, {
+    ...files,
+    [`${VIEWS}/session-1/summaries.json`]: JSON.stringify({ summaries: { design: summary } }),
+  })
+  await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
+  usage.tokens = 100_000
+  await storer($).done()
+  await clock.settle()
+  // 70k behind, but its summary is current: no call
+  expect(requests).toHaveLength(0)
+  expect(await summaryTrace($)).toContain('  design: 70.0k since its last message; summary current\n    kept line')
 })

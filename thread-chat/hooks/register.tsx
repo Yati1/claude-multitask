@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { BoxProps, Elements, EngineInterface, Register, RenderElement, RenderSurface } from 'claude-code'
 
-import type { Brief, Thread, TokenPos, ViewImage, ViewRow } from '../types'
+import type { Brief, Thread, ThreadSummary, TokenPos, ViewImage, ViewRow } from '../types'
 import {
   PALETTE,
   closestThread,
@@ -55,7 +55,28 @@ import {
   withViewRow,
 } from './pane'
 import type { Picture, ViewDeps, ViewGrowth, ViewInputs, ViewPlace, ViewSpan } from './pane'
-import { START_POS, advancedPos, compactedPos, isPast, threadGaps, tokenPosOf, tokensText, withStamps } from './summaries'
+import {
+  NO_USAGE,
+  PACK_SYSTEM,
+  RETRY_MS,
+  START_POS,
+  advancedPos,
+  compactedPos,
+  isCurrent,
+  isPackDue,
+  isPassing,
+  isPast,
+  packParts,
+  packPrompt,
+  parsePack,
+  summariesOf,
+  threadGaps,
+  tokenPosOf,
+  tokensText,
+  usageText,
+  withStamps,
+  withUsage,
+} from './summaries'
 
 const isOn = atom({ plugin: 'thread-chat', key: 'isOn' } as const, false)
 const threads = atom({ plugin: 'thread-chat', key: 'threads' } as const, [])
@@ -83,6 +104,9 @@ const menuOpen = atom({ plugin: 'thread-chat', key: 'menuOpen' } as const, false
 const pickerOpen = atom({ plugin: 'thread-chat', key: 'pickerOpen' } as const, false)
 const menuMode = atom({ plugin: 'thread-chat', key: 'menuMode' } as const, '')
 const tokenPos = atom({ plugin: 'thread-chat', key: 'tokenPos' } as const, START_POS)
+const summaries = atom({ plugin: 'thread-chat', key: 'summaries' } as const, {})
+const summaryLines = atom({ plugin: 'thread-chat', key: 'summaryLines' } as const, {})
+const summaryUsage = atom({ plugin: 'thread-chat', key: 'summaryUsage' } as const, NO_USAGE)
 // The react mod's switch and reactions, which the thread view draws as the chat does
 // (types/react.d.ts); never written without react, so off and none.
 const reactIsOn = atom({ plugin: 'react', key: 'isOn' } as const, false)
@@ -2399,41 +2423,314 @@ async function noteTurnEnd($: EngineInterface) {
   await update($, viewRows, rows => withStamps(rows, at))
 }
 
-// How far each thread has fallen behind the conversation, by the sections the thread view
-// places (every thread's, whatever its filter picked).
-async function gapsNow($: EngineInterface) {
+// The sections the thread view places, every thread's whatever its filter picked, with
+// what they were placed from.
+async function allEntries($: EngineInterface) {
   const inputs = { ...(await viewInputs($)), shown: [] }
-  const { entries } = viewEntries(inputs, viewDeps)
+  return { inputs, entries: viewEntries(inputs, viewDeps).entries }
+}
+
+// How far each thread has fallen behind the conversation.
+async function gapsNow($: EngineInterface) {
+  const { inputs, entries } = await allEntries($)
   return threadGaps(entries, inputs.known, await read($, tokenPos), inputs.list)
 }
 
+// Tokens of other conversation after which a thread's next message from the person
+// catches the agent up on it, and the model that writes the summaries: the settings, as
+// `register` last got them.
+const CATCH_UP_AFTER = 75_000
+const SUMMARY_MODEL = 'claude-haiku-5-5'
+// The model tried where the one set is refused (an organisation's list of models may hold
+// the alias and not the id).
+const FALLBACK_MODEL = 'haiku'
+const summaryConfig = { catchUpAfter: CATCH_UP_AFTER, model: SUMMARY_MODEL }
+
+// A summary call to make: a thread's pack (`short`, `long`, `line`), or the one-line
+// summaries of the threads a turn touched; how many times it has been tried.
+type SummaryJob = { kind: 'pack'; key: string; tries: number } | { kind: 'line'; keys: string[]; tries: number }
+// The calls waiting, by what they are for (one per thread's pack, one for the lines), those
+// running, and how many may run at once.
+const summaryJobs = new Map<string, SummaryJob>()
+const summaryRunning = new Set<string>()
+const MAX_SUMMARY_CALLS = 2
+let isPumpDue = false
+// The model refused this run, so the one tried in its place (FALLBACK_MODEL); and why the
+// summaries stopped for the rest of the run, both refused.
+let modelInUse: string | undefined
+let summariesStopped: string | undefined
+// The latest calls and what came of them, for `/thread-view trace`.
+const summaryLog: string[] = []
+const SUMMARY_LOG_KEPT = 16
+
+const jobId = (job: SummaryJob) => (job.kind === 'pack' ? `pack:${job.key}` : 'line')
+
+// A step of the summaries' for the trace, by the engine's clock.
+async function noteSummary($: EngineInterface, what: string) {
+  const now = await $.clock.now().catch(() => Date.now())
+  summaryLog.push(`${new Date(now).toISOString().slice(11, 19)} ${what}`)
+  if (summaryLog.length > SUMMARY_LOG_KEPT) summaryLog.shift()
+}
+
+// Queues a summary call, in place of one queued for the same thread (the one-line job takes
+// in the threads of both); it runs from a timer, never inside the hook that asked for it,
+// so no hook waits on it and no turn's Escape cuts it.
+function queueSummary($: EngineInterface, job: SummaryJob) {
+  const id = jobId(job)
+  const queued = summaryJobs.get(id)
+  const merged = job.kind === 'line' && queued?.kind === 'line' ? { ...job, keys: [...new Set([...queued.keys, ...job.keys])] } : job
+  summaryJobs.set(id, merged)
+  pumpSummaries($)
+}
+
+function pumpSummaries($: EngineInterface) {
+  if (isPumpDue) return
+  isPumpDue = true
+  $.clock.after(0, () => {
+    isPumpDue = false
+    for (const [id, job] of summaryJobs) {
+      if (summaryRunning.size >= MAX_SUMMARY_CALLS) break
+      if (summaryRunning.has(id)) continue
+      summaryJobs.delete(id)
+      summaryRunning.add(id)
+      void runSummary($, job).finally(() => {
+        summaryRunning.delete(id)
+        if (summaryJobs.size > 0) pumpSummaries($)
+      })
+    }
+  })
+}
+
+// What came of a summary call: its text, a failure worth trying again later, or one not.
+type SummaryAnswer = { kind: 'text'; text: string } | { kind: 'retry'; why: string } | { kind: 'failed'; why: string }
+
+// What a job asks the summary model: which job and the threads it is for (`keys`), the
+// fixed instructions, the request with all it needs, and the cap on the reply. The threads
+// are there for a way of asking that keeps something per thread (a cached conversation),
+// which would take its new messages from the request.
+type SummaryAsk = { what: string; job: SummaryJob['kind']; keys: string[]; system: string; prompt: string; maxTokens: number }
+
+// How the summary model is asked: one independent call each time, with all it needs (the
+// thread's messages, and where they do not fit, its last summary). Every job asks through
+// here, so another way of asking replaces this one alone.
+const askSummaryModel = ($: EngineInterface, ask: SummaryAsk) => callSummaryModel($, ask)
+
+// One independent call to the summary model: its instructions marked for the prompt cache,
+// effort low (its thinking counts against the cap). A model refused is tried once more as
+// FALLBACK_MODEL, then the summaries stop for the run; an empty reply is tried once more
+// with room for twice the words.
+async function callSummaryModel($: EngineInterface, ask: SummaryAsk): Promise<SummaryAnswer> {
+  const { what, system, prompt, maxTokens } = ask
+  const chars = system.length + prompt.length
+  const started = Date.now()
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const model = modelInUse ?? summaryConfig.model
+    let result: Awaited<ReturnType<EngineInterface['model']['complete']>>
+    try {
+      result = await $.model.complete({
+        model,
+        system: [{ text: system, cache: true }],
+        prompt,
+        maxTokens: attempt === 0 ? maxTokens : maxTokens * 2,
+        effort: 'low',
+        timeoutMs: 90_000,
+      })
+    } catch (error) {
+      if (modelInUse === undefined && model !== FALLBACK_MODEL) {
+        modelInUse = FALLBACK_MODEL
+        await noteSummary($, `${what}: model ${model} refused (${String(error)}); trying ${FALLBACK_MODEL}`)
+        continue
+      }
+      summariesStopped = `the model ${model} was refused: ${String(error)}`
+      await noteSummary($, `${what}: ${summariesStopped}; summaries stop for this run`)
+      return { kind: 'failed', why: summariesStopped }
+    }
+    const isFailed = !result.isAnswered
+    await update($, summaryUsage, all => withUsage(all, result.usage, chars, isFailed))
+    const u = result.usage
+    const spent = `${tokensText(u.input_tokens)} in, ${tokensText(u.cache_read_input_tokens)} cache read, ${tokensText(u.cache_creation_input_tokens)} cache written, ${tokensText(u.output_tokens)} out, ${((Date.now() - started) / 1000).toFixed(1)}s`
+    if (result.isAnswered) {
+      await noteSummary($, `${what}: ${spent}`)
+      return { kind: 'text', text: result.text }
+    }
+    if (result.reason === 'empty-reply' && attempt === 0) {
+      await noteSummary($, `${what}: empty reply (${spent}); trying with more room`)
+      continue
+    }
+    if (result.reason === 'api-error') {
+      const why = `API error ${result.status ?? 'with no response'} (${result.error})`
+      if (result.error === 'authentication_failed') {
+        summariesStopped = why
+        await noteSummary($, `${what}: ${why}; summaries stop for this run`)
+        return { kind: 'failed', why }
+      }
+      await noteSummary($, `${what}: ${why}`)
+      return isPassing(result.status, result.error) ? { kind: 'retry', why } : { kind: 'failed', why }
+    }
+    await noteSummary($, `${what}: ${result.reason}`)
+    return { kind: 'failed', why: result.reason }
+  }
+  return { kind: 'failed', why: 'no answer' }
+}
+
+// Runs a summary call; one that failed in passing is queued again after a wait, at most
+// RETRY_MS's length of times.
+async function runSummary($: EngineInterface, job: SummaryJob) {
+  try {
+    if (summariesStopped !== undefined || !(await read($, isOn))) return
+    const answer = job.kind === 'pack' ? await makePack($, job.key) : undefined
+    if (answer?.kind !== 'retry') return
+    const wait = RETRY_MS[job.tries]
+    if (wait === undefined) {
+      await noteSummary($, `${jobId(job)}: given up after ${job.tries + 1} tries`)
+      return
+    }
+    $.clock.after(wait, () => queueSummary($, { ...job, tries: job.tries + 1 }))
+  } catch (error) {
+    await noteSummary($, `${jobId(job)}: threw ${String(error)}`).catch(() => undefined)
+  }
+}
+
+// Makes a thread's pack from its messages, with the message before and after each from
+// elsewhere: from all of them where they fit one call (so it never drifts), else from its
+// last summary on, or part by part, each building on the one before. Nothing where it is
+// current, or the thread is gone or has no messages.
+async function makePack($: EngineInterface, key: string): Promise<SummaryAnswer | undefined> {
+  const { inputs, entries } = await allEntries($)
+  const thread = inputs.list.find(t => keyOf(t.name) === key)
+  if (thread === undefined) return undefined
+  const was = (await read($, summaries))[key]
+  const lastRow = entries.findLast(entry => entry.thread !== undefined && keyOf(entry.thread.name) === key)?.id
+  if (lastRow === undefined || isCurrent(was, lastRow)) return undefined
+  let parts = packParts(entries, key)
+  let previous: string | undefined
+  const coversRow = was?.coversRow
+  if (parts.length > 1 && was?.long !== undefined && coversRow !== undefined && entries.some(entry => entry.id === coversRow)) {
+    parts = packParts(entries, key, coversRow)
+    previous = was.long
+  }
+  let made: ReturnType<typeof parsePack> = {}
+  for (const [i, part] of parts.entries()) {
+    const what = `pack ${thread.name}${parts.length > 1 ? ` (part ${i + 1} of ${parts.length})` : ''}`
+    const prompt = packPrompt(thread.name, previous, part)
+    const answer = await askSummaryModel($, { what, job: 'pack', keys: [key], system: PACK_SYSTEM, prompt, maxTokens: PACK_MAX_TOKENS })
+    if (answer.kind !== 'text') return answer
+    const parsed = parsePack(answer.text)
+    if (parsed.short === undefined && parsed.long === undefined) await noteSummary($, `${what}: reply not in parts, kept as it was`)
+    made = { ...made, ...parsed }
+    previous = parsed.long ?? previous
+  }
+  if (made.short === undefined && made.long === undefined && made.line === undefined) return { kind: 'failed', why: 'unparsed' }
+  const now = await $.clock.now()
+  const pos = inputs.known.find(row => row.id === lastRow)?.pos
+  const summary: ThreadSummary = {
+    ...was,
+    name: thread.name,
+    ...made,
+    coversRow: lastRow,
+    ...(pos === undefined ? {} : { coversPos: pos }),
+    madeAt: now,
+    ...(made.line === undefined ? {} : { lineAt: now }),
+  }
+  await update($, summaries, all => ({ ...all, [key]: summary }))
+  const line = made.line
+  if (line !== undefined) await update($, summaryLines, all => ({ ...all, [key]: { line, at: now } }))
+  await keepSummaries($)
+  return { kind: 'text', text: '' }
+}
+
+// A pack's cap on the reply: its three parts, about 1.5k tokens, and room for thinking.
+const PACK_MAX_TOKENS = 4000
+
+// The file beside a session's rows that keeps its threads' summaries.
+const SUMMARIES_FILE = 'summaries.json'
+
+// Keeps the threads' summaries, and what their calls cost, for the session's next run:
+// best effort, as for its rows.
+async function keepSummaries($: EngineInterface) {
+  try {
+    const folder = await rowsFolder($, await $.session.id())
+    if (folder === undefined) return
+    const kept = { summaries: await read($, summaries), usage: await read($, summaryUsage) }
+    await $.fs.write(`${folder}/${SUMMARIES_FILE}`, JSON.stringify(kept))
+  } catch {
+    // kept with the next summary
+  }
+}
+
+// Takes up the summaries a session's file kept, where this run holds none (a restart, a
+// resume); `onlyRows` keeps those made from these rows alone (a rewind or fork keeps
+// those of the rows it took).
+async function takeKeptSummaries($: EngineInterface, id: string, onlyRows?: ReadonlySet<string>) {
+  if (Object.keys(await read($, summaries)).length > 0) return
+  const folder = await rowsFolder($, id).catch(() => undefined)
+  const text = folder === undefined ? undefined : await $.fs.read(`${folder}/${SUMMARIES_FILE}`).catch(() => undefined)
+  if (text === undefined) return
+  let kept: { summaries?: unknown; usage?: unknown }
+  try {
+    kept = JSON.parse(text) as { summaries?: unknown; usage?: unknown }
+  } catch {
+    return
+  }
+  const all = Object.fromEntries(
+    Object.entries(summariesOf(kept.summaries)).filter(([, s]) => onlyRows === undefined || (s.coversRow !== undefined && onlyRows.has(s.coversRow))),
+  )
+  if (Object.keys(all).length === 0) return
+  await update($, summaries, () => all)
+  await update($, summaryLines, () =>
+    Object.fromEntries(Object.entries(all).flatMap(([key, s]) => (s.line === undefined ? [] : [[key, { line: s.line, at: s.lineAt ?? s.madeAt ?? 0 }]]))),
+  )
+}
+
+// Queues the packs due as a turn ends: each thread (not archived) near catching up, or
+// past it, whose pack is not current. While threads are on.
+async function queueDuePacks($: EngineInterface) {
+  if (summariesStopped !== undefined || !(await read($, isOn))) return
+  const all = await read($, summaries)
+  const list = await read($, threads)
+  const isArchived = new Set(list.filter(t => t.isArchived === true).map(t => keyOf(t.name)))
+  for (const gap of await gapsNow($)) {
+    if (isArchived.has(gap.key) || !isPackDue(gap, summaryConfig.catchUpAfter) || isCurrent(all[gap.key], gap.lastRow)) continue
+    queueSummary($, { kind: 'pack', key: gap.key, tries: 0 })
+  }
+}
+
 // Where the threads stand for their summaries, for `/thread-view trace`.
-async function summaryTraceText($: EngineInterface, catchUpAfter: number): Promise<string> {
+async function summaryTraceText($: EngineInterface): Promise<string> {
+  const { catchUpAfter } = summaryConfig
   const at = await read($, tokenPos)
   const gaps = await gapsNow($)
+  const all = await read($, summaries)
   const head =
     `Thread summaries: token position ${tokensText(at.pos)}` +
     `${at.last === undefined ? ', no context reading yet' : `, context ${tokensText(at.last)}`}` +
     `, ${at.epoch} compaction${at.epoch === 1 ? '' : 's'}; catch up after ${tokensText(catchUpAfter)}`
+  const stateOf = (key: string, lastRow: string | undefined) => {
+    const s = all[key]
+    if (s?.coversRow === undefined) return ''
+    return isCurrent(s, lastRow) ? '; summary current' : '; summary of an earlier message'
+  }
   return [
     head,
     ...gaps.map(
       g =>
         `  ${g.name}: ${tokensText(g.gap)} since its last message${g.isCompacted ? ', compacted since' : ''}` +
-        `${isPast(g, catchUpAfter) ? ', past catching up' : ''}`,
+        `${isPast(g, catchUpAfter) ? ', past catching up' : ''}${stateOf(g.key, g.lastRow)}` +
+        `${all[g.key]?.line === undefined ? '' : `\n    ${all[g.key]?.line}`}`,
     ),
+    `  model ${modelInUse ?? summaryConfig.model}; ${usageText(await read($, summaryUsage))}`,
+    ...(summariesStopped === undefined ? [] : [`  stopped: ${summariesStopped}`]),
+    ...(summaryJobs.size + summaryRunning.size === 0 ? [] : [`  calls running: ${[...summaryRunning].join(', ') || 'none'}; waiting: ${[...summaryJobs.keys()].join(', ') || 'none'}`]),
+    ...summaryLog.map(line => `  ${line}`),
   ].join('\n')
 }
 
 // A number setting as `register` gets it, or its default where unset or not a number.
 const numberOption = (value: unknown, fallback: number) => (typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : fallback)
 
-// Tokens of other conversation after which a thread's next message from the person
-// catches the agent up on it.
-const CATCH_UP_AFTER = 75_000
-
 export const register: Register = (on, options) => {
-  const catchUpAfter = numberOption(options.catchUpAfter, CATCH_UP_AFTER)
+  summaryConfig.catchUpAfter = numberOption(options.catchUpAfter, CATCH_UP_AFTER)
+  summaryConfig.model = typeof options.summaryModel === 'string' && options.summaryModel.trim() !== '' ? options.summaryModel.trim() : SUMMARY_MODEL
 
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'threads', description: 'Turn conversation threads on or off in this chat' })
@@ -2477,8 +2774,12 @@ export const register: Register = (on, options) => {
         if (rows.length > 0) {
           taken = rowsUpTo(rows, await $.session.messages().catch(() => []))
           await update($, viewRows, () => taken)
+          // its threads' summaries made from the rows it took
+          await takeKeptSummaries($, parent, new Set(taken.map(row => row.id)))
         }
       }
+    } else {
+      await takeKeptSummaries($, id)
     }
     if (saved?.threads !== undefined) await takeUp($, saved)
     // Threads held on (a reload) stay on; else they are as the session, or the one it
@@ -2637,12 +2938,14 @@ export const register: Register = (on, options) => {
       await takeKeptPaths($, id)
       const rows = await read($, viewRows)
       if (rows.length > 0) await keepViewRows($, id, rows)
+      // threads near catching up get their summaries made ahead
+      await queueDuePacks($)
     }
     return result
   })
 
   on('command.run', { command: VIEW }, async ($, e) => {
-    if (e.args.trim() === 'trace') return { text: `${viewTraceText()}\n\n${await summaryTraceText($, catchUpAfter)}` }
+    if (e.args.trim() === 'trace') return { text: `${viewTraceText()}\n\n${await summaryTraceText($)}` }
     if (!(await read($, isOn))) return { text: OFF_TEXT }
     const opened = await openView($)
     return { text: opened.isPlaced ? 'Thread view opened.' : `Thread view not shown: ${opened.reason}` }

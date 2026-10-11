@@ -55,6 +55,34 @@ export type ViewImage = {
   data?: string
 }
 
+// What a small model keeps of one thread: `short`, where it stands, for the note beside
+// the person's message; `long`, its history for an agent that forgot it, for the
+// read_thread tool; `line`, one line for the person scanning their threads. `coversRow` is
+// the thread's last message the summary was made from, at token position `coversPos`.
+export type ThreadSummary = {
+  name: string
+  short?: string
+  long?: string
+  line?: string
+  coversRow?: string
+  coversPos?: number
+  // when it was made, and when its line was, by the engine's clock
+  madeAt?: number
+  lineAt?: number
+}
+
+// What the summaries' calls have cost in all, as the API counted it, and the characters
+// they sent.
+export type SummaryUsage = {
+  calls: number
+  failed: number
+  input: number
+  output: number
+  cacheRead: number
+  cacheWrite: number
+  chars: number
+}
+
 // Where the threads stood when the model was last told, beside the person's message:
 // the merges (a merged-away thread's key -> its thread's key) and the agent switch.
 export type Brief = {
@@ -130,6 +158,13 @@ declare module 'claude-code' {
       pickerOpen: boolean
       // the main conversation's token position, kept with the session's record
       tokenPos: TokenPos
+      // each thread's summaries by its key, kept in a file beside the view's rows
+      summaries: Record<string, ThreadSummary>
+      // each thread's one-line summary by its key, and when it was made: what the band and
+      // the thread view draw
+      summaryLines: Record<string, { line: string; at: number }>
+      // what the summaries' calls have cost
+      summaryUsage: SummaryUsage
     }
   }
 }
