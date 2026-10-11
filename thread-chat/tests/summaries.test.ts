@@ -770,3 +770,50 @@ test("the thread view's filter tags show their thread's one-line summary under t
   expect(allIn(await terminal.drawn(), el => typeof el.hover?.scope === 'string')).toEqual([])
   await terminal.unmount()
 })
+
+test('a move, a merge or a deletion has the summaries of the threads it changed made again, or dropped', async ($, on) => {
+  const rows: ViewRow[] = [
+    { id: 'p1', role: 'user', mark: '#designblue', text: '# design\nblue', pos: 0, epoch: 0 },
+    { id: 'a1', role: 'assistant', mark: '#designok', text: '# design\nok', pos: 0, epoch: 0 },
+    { id: 'p2', role: 'user', mark: '#perffast', text: '# perf\nfast', pos: 0, epoch: 0 },
+    { id: 'a2', role: 'assistant', mark: '#perfok', text: '# perf\nok', pos: 0, epoch: 0 },
+  ]
+  const { note, files } = keptAs('session-1', rows)
+  const made = (name: string, coversRow: string) => ({ name, short: `${name} short`, long: `${name} long`, line: `${name} line`, coversRow, coversPos: 0 })
+  const engineFiles = {
+    ...files,
+    [`${VIEWS}/session-1/summaries.json`]: JSON.stringify({ summaries: { design: made('design', 'a1'), perf: made('perf', 'a2') } }),
+  }
+  const { files: written } = engine(on, { 'session:session-1': recordOn({ tokenPos: { pos: 0, last: 30_000, epoch: 0 } }), 'view:session-1': note }, engineFiles)
+  await $.session.start({ cwd: '.', surface: 'terminal', isInteractive: true })
+  expect(await summaryTrace($)).toContain('  design: 0 since its last message; summary current')
+
+  // the person's message moved from design to perf: both are to be made again
+  const row = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', component: 'UserMessage', requestId: 'p1', props: { text: '# design\nblue', origin: { kind: 'composer' }, isExpanded: false } })
+  await row.press({ key: 'tag:design' })
+  await row.redraw()
+  await row.press({ key: 'pick:perf' })
+  await row.unmount()
+  let trace = await summaryTrace($)
+  expect(trace).toContain('  design: 0 since its last message; summary of an earlier message')
+  expect(trace).toContain('  perf: 0 since its last message; summary of an earlier message')
+
+  // perf merged into design: perf's summary goes, design's is made again
+  await $.command.run({ command: 'merge-threads', args: 'perf into design', origin: { kind: 'composer' }, presentation: {} as never })
+  trace = await summaryTrace($)
+  expect(trace).not.toContain('perf line')
+  expect(trace).toContain('  design: 0 since its last message; summary of an earlier message\n    design line')
+
+  // design deleted: its summary goes
+  const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...BAND })
+  await band.press({ key: 'threads' })
+  await band.redraw()
+  await band.press({ key: 'threads:manage' })
+  await band.redraw()
+  await band.press({ key: 'threads:delete:design' })
+  await band.redraw()
+  await band.press({ key: 'threads:delete-yes' })
+  expect(await summaryTrace($)).not.toContain('design line')
+  const left = JSON.parse(written[`${VIEWS}/session-1/summaries.json`] ?? '{}') as { summaries?: Record<string, unknown> }
+  expect(Object.keys(left.summaries ?? { unread: true })).toEqual([])
+})

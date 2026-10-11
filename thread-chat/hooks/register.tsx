@@ -1123,6 +1123,7 @@ async function moveTo($: EngineInterface, to: string, isNew = false) {
   const into = isNew ? `the new thread "${list.find(t => keyOf(t.name) === to)?.name ?? to}" they started for it` : where(to)
   await update($, untold, all => [...all, `The user moved ${what} from ${where(from)} to ${into}.`])
   await save($)
+  await reviseSummaries($, [], [from, to].filter(key => key !== ''))
 }
 
 // Starts the thread the person named in the open picker, as a heading or create_thread
@@ -1466,7 +1467,9 @@ async function mergeThreads($: EngineInterface, fromKey: string, toKey: string) 
   await update($, threads, all => all.filter(t => keyOf(t.name) !== fromKey))
   await update($, current, key => (key === fromKey ? toKey : key))
   await update($, viewThreads, keys => [...new Set(keys.map(key => (key === fromKey ? toKey : key)))])
+  await update($, activeThread, key => (key === fromKey ? toKey : key))
   await save($)
+  await reviseSummaries($, [fromKey], [toKey])
 }
 
 // Archives a thread, or brings it back: archived, it leaves the pickers and the thread
@@ -1498,11 +1501,13 @@ async function deleteThread($: EngineInterface, key: string) {
   await update($, deleted, all => (all.includes(key) ? all : [...all, key]))
   await update($, current, cur => (cur === key ? '' : cur))
   await update($, viewThreads, keys => keys.filter(k => k !== key))
+  await update($, activeThread, k => (k === key ? '' : k))
   await update($, untold, all => [
     ...all,
     `The user deleted the thread "${name}": its messages no longer belong to any thread. Do not write under its heading unless they start it again.`,
   ])
   await save($)
+  await reviseSummaries($, [key], [])
 }
 
 // The text the person's bubble shows: a known thread's heading line goes, as the
@@ -2763,6 +2768,27 @@ async function queueTurnLines($: EngineInterface) {
   queueSummary($, { kind: 'line', sections, tries: 0 })
 }
 
+// The threads' summaries once the threads `gone` are gone (merged away, deleted) and those
+// of `changed` (merged into, a message moved into or out of) are to be made again: kept
+// meanwhile as made from earlier messages, so the next due pack reads all of the thread's.
+async function reviseSummaries($: EngineInterface, gone: readonly string[], changed: readonly string[]) {
+  const all = await read($, summaries)
+  if (![...gone, ...changed].some(key => all[key] !== undefined)) return
+  await update($, summaries, was => {
+    const next = { ...was }
+    for (const key of gone) delete next[key]
+    for (const key of changed) {
+      const s = next[key]
+      if (s === undefined) continue
+      const { coversRow: _row, coversPos: _pos, ...earlier } = s
+      next[key] = earlier
+    }
+    return next
+  })
+  if (gone.length > 0) await update($, summaryLines, was => Object.fromEntries(Object.entries(was).filter(([key]) => !gone.includes(key))))
+  await keepSummaries($)
+}
+
 // The file beside a session's rows that keeps its threads' summaries.
 const SUMMARIES_FILE = 'summaries.json'
 
@@ -2895,7 +2921,7 @@ async function summaryTraceText($: EngineInterface): Promise<string> {
     `, ${at.epoch} compaction${at.epoch === 1 ? '' : 's'}; catch up after ${tokensText(catchUpAfter)}`
   const stateOf = (key: string, lastRow: string | undefined) => {
     const s = all[key]
-    if (s?.coversRow === undefined) return ''
+    if (s?.short === undefined && s?.long === undefined) return ''
     return isCurrent(s, lastRow) ? '; summary current' : '; summary of an earlier message'
   }
   return [
