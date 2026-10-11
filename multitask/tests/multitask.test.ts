@@ -40,6 +40,8 @@ type Seen = {
   // the engine raised to it, which the test raises through raised() (seen.raising counts them)
   isAutoMode?: boolean
   raising: number
+  // how many times the band above the prompt was drawn
+  bandDraws: number
 }
 
 // What auto mode answers a SendMessage of the mod's that the mod's own allowance (its
@@ -77,7 +79,7 @@ function engine(
   agents: AgentInfo[] = [{ id: 'agent-1', description: 'auth-bug', type: 'multitask:thought', status: 'running' }],
   store: Record<string, unknown> | null = {},
 ): Seen {
-  const seen: Seen = { prompts: [], sends: [], ran: [], efforts: [], aborts: [], spawns: 0, names: [], registered: [], raising: 0 }
+  const seen: Seen = { prompts: [], sends: [], ran: [], efforts: [], aborts: [], spawns: 0, names: [], registered: [], raising: 0, bandDraws: 0 }
   if (store !== null) mock.store(on, store)
   on('session.id', () => ({ value: 'session-1' }))
   on('session.start', ($, e) => ({ cwd: e.cwd }))
@@ -90,7 +92,10 @@ function engine(
   on('command.register', ($, e) => ({ value: { command: e.name } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('ui.message', () => ({}))
-  on('ui.render', () => ({ type: 'engine', ref: 0 }))
+  on('ui.render', ($, e) => {
+    if (e.component === 'AbovePrompt') seen.bandDraws++
+    return { type: 'engine', ref: 0 }
+  })
   // Only the real engine can hand back a spawned agent's id; the agent list stands in.
   on('agent.spawn', ($, e) => {
     seen.spawns++
@@ -1788,7 +1793,25 @@ const sayer = ($: Engine, agentId: string) => (uuid: string, text: string) =>
     agentId,
   })
 
-test('the band has a dot for each running thought, left of the dropdown, that pulses white at each note and fades out as its turn ends', async ($, on) => {
+// What else a thought does as it works, which is no note: a tool call, and its result.
+const worker = ($: Engine, agentId: string) => async (uuid: string) => {
+  await $.session.append({
+    message: { type: 'assistant', role: 'assistant', content: [{ type: 'tool_use', id: `call-${uuid}`, name: 'Read', input: {} }] },
+    door: 'response',
+    origin: { kind: 'model', model: 'test' },
+    uuid: `${uuid}-call`,
+    agentId,
+  })
+  await $.session.append({
+    message: { type: 'user', role: 'user', content: [{ type: 'tool_result', tool_use_id: `call-${uuid}`, content: 'the file' }] },
+    door: 'tool-result',
+    origin: { kind: 'tool', tool: 'Read' },
+    uuid: `${uuid}-result`,
+    agentId,
+  })
+}
+
+test('the band has a dot for each running thought, left of the dropdown, that blinks white as it works, swells at each note and fades out as its turn ends', async ($, on) => {
   engine($, on)
   const clock = mock.clock(on, { now: 1_000_000 })
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
@@ -1816,16 +1839,43 @@ test('the band has a dot for each running thought, left of the dropdown, that pu
   expect(cardIn(await dot())?.hover?.display).toBe('flex')
   expect(linesIn(cardIn(await dot()))).toEqual(['auth-bug', 'No notes yet', 'started just now'])
 
-  // A note pulses it white and back; drawn again meanwhile, the pulse carries on where it
-  // had got to; over, the dot is drawn still.
-  await says('u1', 'Checking the token')
-  const pulse = pictureIn(await dot())
-  expect(pulse).toContain(`<animate attributeName="fill" values="${color};#ffffff;${color}"`)
-  expect(pulse).toContain('begin="0ms"')
+  // A tool call and its result blink it white and back; drawn again meanwhile, the blink
+  // carries on where it had got to; over, the dot is drawn still.
+  const works = worker($, 'agent-1')
+  await works('w1')
+  const blink = pictureIn(await dot())
+  expect(blink).toContain(`<animate attributeName="fill" values="${color};#ffffff;${color}"`)
+  expect(blink).toContain('begin="0ms"')
+  expect(blink).not.toContain('attributeName="r"')
   await clock.advance(400)
   await band.redraw()
   expect(pictureIn(await dot())).toContain('begin="-400ms"')
   await clock.advance(700)
+  await band.redraw()
+  expect(pictureIn(await dot())).not.toContain('<animate')
+
+  // A note swells it to 1.3 times as wide and back, about the same centre of the same box,
+  // with no blink; drawn again meanwhile, it carries on; over, the dot is drawn still.
+  await says('u1', 'Checking the token')
+  const swell = pictureIn(await dot())
+  expect(swell).toContain('<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 14 14">')
+  expect(swell).toContain('<circle cx="7" cy="7" r="3.5"')
+  expect(swell).toContain('<animate attributeName="r" values="3.5;4.7;3.5"')
+  expect(swell).toContain('begin="0ms"')
+  expect(swell).not.toContain('attributeName="fill"')
+  await clock.advance(400)
+  await band.redraw()
+  expect(pictureIn(await dot())).toContain('begin="-400ms"')
+  // a blink meanwhile runs beside it, each carried on alone
+  await works('w2')
+  const both = pictureIn(await dot())
+  expect(both).toContain('<animate attributeName="r" values="3.5;4.7;3.5" keyTimes="0;0.5;1" dur="1000ms" begin="-400ms"')
+  expect(both).toContain(`<animate attributeName="fill" values="${color};#ffffff;${color}" keyTimes="0;0.25;1" dur="1000ms" begin="0ms"`)
+  await clock.advance(700)
+  await band.redraw()
+  expect(pictureIn(await dot())).not.toContain('attributeName="r"')
+  expect(pictureIn(await dot())).toContain('begin="-700ms"')
+  await clock.advance(300)
   await band.redraw()
   expect(pictureIn(await dot())).not.toContain('<animate')
 
@@ -1849,7 +1899,7 @@ test('the band has a dot for each running thought, left of the dropdown, that pu
   expect(pictureIn(await dot())).toContain(`fill="${color}"`)
 })
 
-test("on the terminal a dot is a glyph in its thought's colour, inverted a moment at each note, a check as its turn ends", async ($, on) => {
+test("on the terminal a dot is a glyph in its thought's colour, white a moment as it works, inverted a moment at each note, a check as its turn ends", async ($, on) => {
   engine($, on)
   const clock = mock.clock(on, { now: 1_000_000 })
   await $.session.start({ cwd: '.', surface: 'terminal', isInteractive: true })
@@ -1861,6 +1911,11 @@ test("on the terminal a dot is a glyph in its thought's colour, inverted a momen
   const color = '#4fa3e0'
   expect(glyphIn(await dot())).toEqual({ glyph: '●', color, inverse: undefined })
   expect(cardIn(await dot())).toBeUndefined()
+  await worker($, 'agent-1')('w1')
+  expect(glyphIn(await dot())).toEqual({ glyph: '●', color: '#ffffff', inverse: undefined })
+  await clock.advance(400)
+  expect(glyphIn(await dot())).toEqual({ glyph: '●', color, inverse: undefined })
+  await clock.advance(600)
   await says('u1', 'Checking the token')
   expect(glyphIn(await dot())).toEqual({ glyph: '●', color, inverse: true })
   // back to itself once the pulse is over, with nothing else changing
@@ -1872,6 +1927,57 @@ test("on the terminal a dot is a glyph in its thought's colour, inverted a momen
   expect(glyphIn(await dot())).toEqual({ glyph: '✓', color, inverse: undefined })
   await clock.advance(1500)
   expect(await dot()).toBeUndefined()
+})
+
+test("a dot blinks once a second at most however busy its thought, and only a blink's start draws the band again", async ($, on) => {
+  const seen = engine($, on)
+  const clock = mock.clock(on, { now: 1_000_000 })
+  await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
+  await $.command.run({ command: 'multitask', args: '', origin: { kind: 'composer' }, presentation: {} as never })
+  await $.tool.call({ tool: 'mcp__multitask__think', tool_use_id: 'c1', name: 'auth bug', task: 'Find why login fails' })
+  const works = worker($, 'agent-1')
+  const band = await $.ui.mount({ plugin: 'multitask', surface: 'desktop', ...BAND })
+  const picture = async () => pictureIn(dotIn(await band.drawn(), 'agent-1'))
+
+  // (The kit draws the band again, if anything asked it to, as the drawing is read.)
+  const drawsNow = async () => {
+    await band.drawn()
+    return seen.bandDraws
+  }
+  await works('w1')
+  const first = await picture()
+  expect(first).toContain('begin="0ms"')
+  const draws = await drawsNow()
+
+  // What it does under a second later starts no blink and draws nothing: the blink drawn
+  // carries on of itself.
+  await clock.advance(300)
+  await works('w2')
+  expect(await drawsNow()).toBe(draws)
+  await clock.advance(400)
+  await works('w3')
+  expect(await drawsNow()).toBe(draws)
+  expect(await picture()).toBe(first)
+
+  // The first row a second or more after it starts the next blink, a picture of its own.
+  await clock.advance(300)
+  await works('w4')
+  expect(await drawsNow()).toBe(draws + 1)
+  const second = await picture()
+  expect(second).toContain('begin="0ms"')
+  expect(second).not.toBe(first)
+
+  // Over, it ends of itself: nothing draws the band again.
+  await clock.advance(5000)
+  expect(await drawsNow()).toBe(draws + 1)
+
+  // An ended thought's rows blink nothing.
+  await $.turn.complete({ ...finished('agent-1'), answer: 'Found it.' })
+  await clock.settle()
+  await clock.advance(1500)
+  const ended = await drawsNow()
+  await works('w5')
+  expect(await drawsNow()).toBe(ended)
 })
 
 test('the band shows eight dots at most, in the order their thoughts started, and counts the rest; a stopped one fades without a mark', async ($, on) => {
