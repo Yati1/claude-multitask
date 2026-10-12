@@ -1,6 +1,6 @@
 # The README demo
 
-`../demo.gif` is drawn from `scene.html`, a recreation of the Claude desktop app's Code tab (dark theme) showing the three mods: thread-chat's tagged sections, its band (thread picker, `+`, `☰` and the summary line) and thread view, multitask's `thoughts` button with a thought's dot, and react's reaction. All its content is made up.
+`../demo.gif` is drawn from `scene.html`, a recreation of the Claude desktop app's Code tab (dark theme) showing the three mods: thread-chat's tagged sections, its band (thread picker, `+`, `☰` and the summary line) and its thread view, opened from a tag's `ᯤ`, multitask's `thoughts` button with a thought's dot, and react's reaction. All its content is made up.
 
 ## Regenerate
 
@@ -22,4 +22,4 @@ npm run build
 
 ## Change it
 
-The storyboard is the data at the top of the script in `scene.html`: the messages and when they appear (`MSGS`), the picked thread (`PICKS`), the picker's menu (`MENU`), each thread's summary line (`SUMMARIES`), the band's `☰` (`VIEW`), when the thread view's pane is open (`PANE`), its filter (`FILTER`), the thought's blinks, notes and end, and the cursor's path. Every state is a function of the time, so to check a moment without rendering it all, open `scene.html?t=6800` in a browser, open `scene.html?play` to watch it loop, or run `npm run snap -- 6800 12000` for stills in `snaps/`.
+The storyboard is the data at the top of the script in `scene.html`: the messages and when they appear (`MSGS`), the picked thread (`PICKS`), the picker's menu (`MENU`), each thread's summary line (`SUMMARIES`), the tag whose `ᯤ` opens the thread view, with when it is hovered and clicked (`OPEN`), when the thread view's pane is open (`PANE`), its filter (`FILTER`), the thought's blinks, notes and end, and the cursor's path. Every state is a function of the time, so to check a moment without rendering it all, open `scene.html?t=6800` in a browser, open `scene.html?play` to watch it loop, or run `npm run snap -- 6800 12000` for stills in `snaps/`.
