@@ -110,7 +110,7 @@ test('/threads alone asks for this chat alone, the current option marked, and ch
   expect(await status($)).toBe('Threads: off in this chat (your choice) · off in new chats')
 })
 
-test('a dismissed question changes nothing; an answer of what is so, or of neither, changes nothing', async ($, on) => {
+test('a dismissed question, or an answer of neither, changes nothing; an answer of what is so makes it this chat\'s choice', async ($, on) => {
   const answers: Record<string, string> = {}
   const { seen } = engine(on, answers)
   await start($)
@@ -119,13 +119,15 @@ test('a dismissed question changes nothing; an answer of what is so, or of neith
   expect(await threads($)).toBe(unchanged)
   expect(seen.asked).toEqual([`${HERE} [This chat] On / Off (current)`])
 
-  answers[HERE] = 'Off (current)'
-  expect(await threads($)).toBe(unchanged)
-
   answers[HERE] = 'not sure'
   expect(await threads($)).toBe(unchanged)
-  expect(seen.asked).toHaveLength(3)
+  expect(seen.asked).toHaveLength(2)
   expect(await status($)).toBe('Threads: off in this chat (following the default) · off in new chats')
+
+  answers[HERE] = 'Off (current)'
+  expect(await threads($)).toBe('Threads are already off; this chat now keeps them off.')
+  expect(await status($)).toBe('Threads: off in this chat (your choice) · off in new chats')
+  expect(await threads($)).toBe('Threads are already off in this chat.')
 })
 
 test('where no one can be asked, /threads and /threads default say how threads are instead', async ($, on) => {
@@ -140,11 +142,11 @@ test('where no one can be asked, /threads and /threads default say how threads a
   expect(seen.asked).toEqual([])
 })
 
-test('/threads on, off, enable, disable and toggle set this chat; what is so already changes nothing and says so', async ($, on) => {
+test('/threads on, off, enable, disable and toggle set this chat; what is so already becomes this chat\'s choice and says so', async ($, on) => {
   const { seen } = engine(on, {})
   await start($)
-  expect(await threads($, 'off')).toBe('Threads are already off in this chat.')
-  expect(await status($)).toBe('Threads: off in this chat (following the default) · off in new chats')
+  expect(await threads($, 'off')).toBe('Threads are already off; this chat now keeps them off.')
+  expect(await status($)).toBe('Threads: off in this chat (your choice) · off in new chats')
   expect(await threads($, 'ON')).toBe(ON_TEXT)
   expect(await threads($, 'enable')).toBe('Threads are already on in this chat.')
   expect(await threads($, 'disable')).toBe(OFF_TEXT)
@@ -166,12 +168,13 @@ test('/threads default asks for new chats alone; default on|off sets it; what is
   delete answers[NEW]
   expect(await threads($, 'default')).toBe('No change. Threads: on in this chat (following the default) · on in new chats')
   expect(await threads($, 'default enable')).toBe('Threads are already on by default in new chats.')
-  // on already, by the default, `on` changes nothing: the chat still follows the default
-  expect(await threads($, 'on')).toBe('Threads are already on in this chat.')
-  expect(await status($)).toBe('Threads: on in this chat (following the default) · on in new chats')
+  // on already, by the default, `on` makes it this chat's choice, which the default no longer turns off
+  expect(await threads($, 'on')).toBe('Threads are already on; this chat now keeps them on.')
+  expect(await status($)).toBe('Threads: on in this chat (your choice) · on in new chats')
+  expect(await threads($, 'default off')).toBe(`New chats now start with threads off, ${WHERE} This chat keeps them on; /threads off turns them off here.`)
+  expect(await status($)).toBe('Threads: on in this chat (your choice) · off in new chats')
   // a chat that chose keeps its choice, and says how to change it
   await threads($, 'off')
-  expect(await threads($, 'default off')).toBe(`New chats now start with threads off, ${WHERE}`)
   expect(await threads($, 'default on')).toBe(`New chats now start with threads on, ${WHERE} This chat keeps them off; /threads on turns them on here.`)
   expect(store.isOnByDefault).toBe(true)
 })

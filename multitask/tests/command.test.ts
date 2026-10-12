@@ -100,7 +100,7 @@ test('/multitask alone asks for this chat alone, the current option marked, and 
   expect(await status($)).toBe('Multitask: off in this chat (your choice) · off in new chats')
 })
 
-test('a dismissed question changes nothing; an answer of what is so, or of neither, changes nothing', async ($, on) => {
+test('a dismissed question, or an answer of neither, changes nothing; an answer of what is so makes it this chat\'s choice', async ($, on) => {
   const answers: Record<string, string> = {}
   const { seen } = engine(on, answers)
   await start($)
@@ -109,13 +109,15 @@ test('a dismissed question changes nothing; an answer of what is so, or of neith
   expect(await multitask($)).toBe(unchanged)
   expect(seen.asked).toEqual([`${HERE} [This chat] On / Off (current)`])
 
-  answers[HERE] = 'Off (current)'
-  expect(await multitask($)).toBe(unchanged)
-
   answers[HERE] = 'later'
   expect(await multitask($)).toBe(unchanged)
-  expect(seen.asked).toHaveLength(3)
+  expect(seen.asked).toHaveLength(2)
   expect(await status($)).toBe('Multitask: off in this chat (following the default) · off in new chats')
+
+  answers[HERE] = 'Off (current)'
+  expect(await multitask($)).toBe('Multitask is already off; this chat now keeps it off.')
+  expect(await status($)).toBe('Multitask: off in this chat (your choice) · off in new chats')
+  expect(await multitask($)).toBe('Multitask is already off in this chat.')
 })
 
 test('where no one can be asked, /multitask, /multitask default and /multitask mode say how it is instead', async ($, on) => {
@@ -128,10 +130,11 @@ test('where no one can be asked, /multitask, /multitask default and /multitask m
   expect(seen.asked).toEqual([])
 })
 
-test('/multitask on, off, enable, disable and toggle set this chat; what is so already changes nothing and says so', async ($, on) => {
+test('/multitask on, off, enable, disable and toggle set this chat; what is so already becomes this chat\'s choice and says so', async ($, on) => {
   const { seen } = engine(on, {})
   await start($)
-  expect(await multitask($, 'off')).toBe('Multitask is already off in this chat.')
+  expect(await multitask($, 'off')).toBe('Multitask is already off; this chat now keeps it off.')
+  expect(await status($)).toBe('Multitask: off in this chat (your choice) · off in new chats')
   expect(await multitask($, 'enable')).toBe(ON_TEXT)
   expect(await multitask($, 'on')).toBe('Multitask is already on in this chat.')
   // on in Focus, `on` leaves the mode be
@@ -158,8 +161,12 @@ test('/multitask default asks for new chats alone; default on|off sets it; what 
   delete answers[NEW]
   expect(await multitask($, 'default')).toBe('No change. Multitask: on in this chat (following the default), Focus mode · on in new chats')
   expect(await multitask($, 'default on')).toBe('Multitask is already on by default in new chats.')
+  // on already, by the default, `on` makes it this chat's choice, staying in Focus, which the default no longer turns off
+  expect(await multitask($, 'on')).toBe('Multitask is already on; this chat now keeps it on.')
+  expect(await status($)).toBe('Multitask: on in this chat (your choice), Focus mode · on in new chats')
+  expect(await multitask($, 'default disable')).toBe(`Multitask is now off by default, ${WHERE} This chat keeps it on; \`/multitask off\` turns it off here.`)
+  expect(await status($)).toBe('Multitask: on in this chat (your choice), Focus mode · off in new chats')
   await multitask($, 'off')
-  expect(await multitask($, 'default disable')).toBe(`Multitask is now off by default, ${WHERE}`)
   expect(await multitask($, 'default enable')).toBe(`Multitask is now on by default, ${WHERE} This chat keeps it off; \`/multitask on\` turns it on here.`)
 })
 

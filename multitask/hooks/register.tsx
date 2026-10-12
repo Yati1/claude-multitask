@@ -419,12 +419,14 @@ async function setMode($: EngineInterface, now: boolean) {
 }
 
 // `/multitask on|off`: turns the mod on in this chat, in Multitask mode, or off, leaving
-// Multitask mode; the chat's own choice from then on, whatever the default. What to say.
+// Multitask mode; the chat's own choice from then on, whatever the default. On already,
+// it stays in the mode it is in. What to say.
 async function setEnabled($: EngineInterface, now: boolean): Promise<string> {
+  const wasEnabled = await isEnabled($)
   await update($, choice, () => now)
-  await setMode($, now)
+  if (!now || !wasEnabled) await setMode($, now)
   await keepSwitch($)
-  redescribe($)
+  if (wasEnabled !== now) redescribe($)
   await closeIfOff($)
   return now ? ON_TEXT : OFF_TEXT
 }

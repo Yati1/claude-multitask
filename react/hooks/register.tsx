@@ -42,10 +42,11 @@ function textsOf(content: readonly Block[]): string[] {
 // be: nothing beside the person's messages, replies go on as they come, and messages
 // and replies are the engine's drawing alone.
 async function setHere($: EngineInterface, now: boolean): Promise<string> {
+  const was = await read($, isOn)
   await update($, isOn, () => now)
   await update($, choice, () => now)
   await keep($)
-  redescribe($)
+  if (was !== now) redescribe($)
   return now
     ? 'Reactions are on in this chat: the agent may acknowledge a message with an emoji reaction on it instead of a reply.'
     : 'Reactions are off in this chat.'

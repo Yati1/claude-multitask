@@ -14,9 +14,11 @@ import type { AskOptions } from 'claude-code'
 //   default on | enable        on in new chats, and in chats never switched
 //   default off | disable      off in new chats, and in chats never switched
 //
-// Setting either to what it is already changes nothing and says so. Anything else changes
-// nothing and says how to use it. Where no one can be asked (a `-p` run draws nowhere),
-// the command says how it is instead. Its line in the command menu says how it is too.
+// Setting the chat to what it is already still makes it the person's choice there, so a
+// default set later leaves the chat be, and says it was so; setting the default to what it
+// is already changes nothing and says so. Anything else changes nothing and says how to use
+// it. Where no one can be asked (a `-p` run draws nowhere), the command says how it is
+// instead. Its line in the command menu says how it is too.
 //
 // The engine lets `$` reach only functions declared in the file that uses it, so this file
 // never touches the session: each mod's command hook hands it what it needs (Session).
@@ -52,7 +54,8 @@ export type Session = {
   canAsk: () => Promise<boolean>
   // `$.ui.ask`: the label picked, or typed text; rejects when dismissed
   ask: (question: string, options: AskOptions) => Promise<string>
-  // turns it on or off in this chat as the person's choice; what to say
+  // turns it on or off in this chat as the person's choice; what to say. Called with what
+  // the chat is already, it records the choice and changes nothing else.
   setHere: (isOn: boolean) => Promise<string>
   // turns it on or off by default; what to say
   setDefault: (isOn: boolean) => Promise<string>
@@ -118,9 +121,19 @@ async function askOnOff(session: Session, question: string, header: string, isOn
   return picked === undefined ? undefined : picked === 0
 }
 
+// Makes `isOn`, which the chat is already, the person's choice there, as `on` or `off`
+// does; says it was so, and, where the chat followed the default, that it now keeps it.
+async function keepHere(session: Session, names: Names, state: State, isOn: boolean): Promise<string> {
+  await session.setHere(isOn)
+  const already = `${names.noun} ${names.be} already ${onOff(isOn)}`
+  if (state.choiceHere === isOn) return `${already} in this chat.`
+  return `${already}; this chat now keeps ${names.be === 'are' ? 'them' : 'it'} ${onOff(isOn)}.`
+}
+
 // Asks whether it is on in this chat (the bare command) or, with `isDefault`, in new chats
-// (`/<command> default`), and changes it as answered. A dismissed question, or an answer
-// of what is so already, changes nothing and says how it is.
+// (`/<command> default`), and changes it as answered. A dismissed question changes nothing
+// and says how it is; so does an answer of the default it is already. An answer of what
+// the chat is already makes it the person's choice there.
 async function askOne(session: Session, names: Names, isDefault: boolean): Promise<string> {
   if (!(await session.canAsk())) return statusOf(names, await session.state())
   const before = await session.state()
@@ -128,8 +141,9 @@ async function askOne(session: Session, names: Names, isDefault: boolean): Promi
     ? await askOnOff(session, `${names.noun} in new chats?`, 'New chats', before.isOnByDefault)
     : await askOnOff(session, `${names.noun} in this chat?`, 'This chat', before.isOnHere)
   const now = await session.state()
-  if (isOn === undefined || isOn === (isDefault ? now.isOnByDefault : now.isOnHere)) return `No change. ${statusOf(names, now)}`
-  return isDefault ? session.setDefault(isOn) : session.setHere(isOn)
+  if (isOn === undefined || (isDefault && isOn === now.isOnByDefault)) return `No change. ${statusOf(names, now)}`
+  if (isDefault) return session.setDefault(isOn)
+  return isOn === now.isOnHere ? keepHere(session, names, now, isOn) : session.setHere(isOn)
 }
 
 // Runs the command with the person's arguments (any the mod takes beside these handled
@@ -141,7 +155,7 @@ export async function runSwitch(session: Session, names: Names, args: string): P
   const state = await session.state()
   if (words.length === 1) {
     const value = valueOf(first)
-    if (value === state.isOnHere) return `${names.noun} ${names.be} already ${onOff(value)} in this chat.`
+    if (value === state.isOnHere) return keepHere(session, names, state, value)
     if (value !== undefined) return session.setHere(value)
     if (first === 'toggle') return session.setHere(!state.isOnHere)
     if (first === 'status') return statusOf(names, state)
