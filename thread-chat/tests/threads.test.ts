@@ -741,6 +741,123 @@ for (const [isOn, kept] of KEPT_SWITCHES) {
   })
 }
 
+// The person's `/threads <args>`: `default` flips whether threads are on in new chats.
+const runThreads = ($: Engine, args: string) =>
+  $.command.run({ command: 'threads', args, origin: { kind: 'composer' }, presentation: {} as never })
+
+// A store the test reads back, as the mod kept it, seeded with `seed`.
+function keptStore(on: On, seed: Record<string, unknown> = {}): Record<string, unknown> {
+  const kept: Record<string, unknown> = { ...seed }
+  on('store.get', ($, e) => ({ value: kept[e.key] }))
+  on('store.set', ($, e) => {
+    kept[e.key] = e.value
+    return { value: undefined }
+  })
+  on('store.keys', () => ({ value: Object.keys(kept) }))
+  return kept
+}
+
+// Whether threads are on, as the band shows it: on, its menu's `On in this chat` switch;
+// off, nothing of the mod's.
+const threadsShown = async (band: Band) => (await switchOf(band, THREADS_SWITCH)) === 'on'
+
+test('/threads default flips whether threads are on in new chats, kept for every session, and says what it is now', async ($, on) => {
+  const kept = keptStore(on)
+  const prompts = engine(on, null)
+  await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
+  const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...BAND })
+  const record = () => kept['session:session-1'] as { isOn: boolean; choice: boolean | null }
+  const where = 'as do chats where you have not turned them on or off.'
+  expect(await band.drawn()).toEqual({ type: 'engine', ref: 0 })
+  expect(record()).toMatchObject({ isOn: false, choice: null })
+
+  // This chat, never switched, follows the default: threads come on, and the model is told
+  expect((await runThreads($, 'default')).text).toBe(`New chats now start with threads on, ${where}`)
+  expect(kept.isOnByDefault).toBe(true)
+  await band.redraw()
+  expect(await threadsShown(band)).toBe(true)
+  await $.prompt.submit(say('hello'))
+  expect(prompts.at(-1)).toContain('# Conversation threads')
+  expect(record()).toMatchObject({ isOn: true, choice: null })
+  // and off again with it
+  expect((await runThreads($, 'Default')).text).toBe(`New chats now start with threads off, ${where}`)
+  expect(kept.isOnByDefault).toBe(false)
+  await band.redraw()
+  expect(await band.drawn()).toEqual({ type: 'engine', ref: 0 })
+
+  // Turned off from the menu, it keeps its own choice whatever the default
+  await runThreads($, 'default')
+  await band.redraw()
+  await flipSwitch(band, THREADS_SWITCH)
+  expect(record()).toMatchObject({ isOn: false, choice: false })
+  expect((await runThreads($, 'default')).text).toBe(`New chats now start with threads off, ${where}`)
+  expect((await runThreads($, 'default')).text).toBe(`New chats now start with threads on, ${where} This chat keeps them off; /threads turns them on here.`)
+  await band.redraw()
+  expect(await band.drawn()).toEqual({ type: 'engine', ref: 0 })
+
+  // and turned on with /threads, likewise
+  expect((await flipThreads($)).text).toContain('Threads are on')
+  expect((await runThreads($, 'default')).text).toBe(`New chats now start with threads off, ${where} This chat keeps them on; /threads turns them off here.`)
+  await band.redraw()
+  expect(await threadsShown(band)).toBe(true)
+  expect(record()).toMatchObject({ isOn: true, choice: true })
+  expect(kept.isOnByDefault).toBe(false)
+})
+
+test('a new chat starts with threads on where the default is on, with no choice of its own', async ($, on) => {
+  const kept = keptStore(on, { isOnByDefault: true })
+  const registered: string[] = []
+  const prompts = engine(on, null, undefined, registered)
+  await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
+  const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...BAND })
+  expect(await threadsShown(band)).toBe(true)
+  expect(await band.find({ text: /start a thread with # name/ })).toBeDefined()
+  expect(registered).toEqual(['read_thread'])
+  await $.prompt.submit(say('hello'))
+  expect(prompts.at(-1)).toContain('# Conversation threads')
+  expect(kept['session:session-1']).toMatchObject({ isOn: true, choice: null })
+})
+
+// A session's record, the default kept for every session, and whether threads come on as
+// it restarts: the person's own choice wins; with none, the default as it is now. A record
+// kept before choices were chose on if it was on, and off if it was off with threads.
+const KEPT_DESIGN = [{ name: 'design', color: '#4fa3e0', createdBy: 'user' }]
+const KEPT_CHOICES = [
+  [{ isOn: false, choice: false, threads: KEPT_DESIGN }, true, false, 'chose off, the default on'],
+  [{ isOn: true, choice: true, threads: KEPT_DESIGN }, false, true, 'chose on, the default off'],
+  [{ isOn: true, choice: null, threads: KEPT_DESIGN }, false, false, 'never chose, the default now off'],
+  [{ isOn: false, choice: null, threads: [] }, true, true, 'never chose, the default now on'],
+  [{ isOn: false, threads: KEPT_DESIGN }, true, false, 'kept off with threads before choices were, the default on'],
+  [{ isOn: false, threads: [] }, true, true, 'kept off with none before choices were, the default on'],
+] as const
+
+for (const [record, isOnByDefault, isShown, kept] of KEPT_CHOICES) {
+  test(`a restarted session is on as the person chose there, else as the default (${kept})`, async ($, on) => {
+    engine(on, { isOnByDefault, 'session:session-1': { ...record, aliases: {}, snaps: {} } })
+    await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
+    const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...BAND })
+    expect(await threadsShown(band)).toBe(isShown)
+  })
+}
+
+test('a rewound session, under a new id, keeps the choice of the session it came from over the default', async ($, on) => {
+  const said = ['# design\nwhy is the band two rows high?', 'It wraps because both mods share one row.', '# design\nhow long do the tests take?']
+  const kept = keptStore(on, {
+    isOnByDefault: true,
+    'session:old': { isOn: false, choice: false, threads: KEPT_DESIGN, aliases: {}, snaps: {} },
+    'view:old': said.map((text, i) => ({ id: `row-${i}`, role: 'user', mark: markOf(text) })),
+  })
+  engine(on, null)
+  on('session.messages', () => ({ value: said.map(text => ({ role: 'user' as const, text, toolUses: [] })) }))
+  await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
+  const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...BAND })
+  expect(await band.drawn()).toEqual({ type: 'engine', ref: 0 })
+  expect(kept['session:session-1']).toMatchObject({ isOn: false, choice: false })
+  await flipThreads($)
+  await band.redraw()
+  expect(await choiceKeys(band)).toContain('design')
+})
+
 test("a session keeps the menu's agent and filter switches for its next run", async ($, on) => {
   const kept: Record<string, unknown> = {}
   on('store.get', ($, e) => ({ value: kept[e.key] }))

@@ -138,9 +138,15 @@ export type Brief = {
 declare module 'claude-code' {
   interface PluginState {
     'thread-chat': {
-      // whether threads are on in the session: the person turns them on and off with
-      // /threads; off, the mod leaves the session be
+      // whether threads are on in the session: as the person last chose there with
+      // /threads (or the menu), else as the default; off, the mod leaves the session be
       isOn: boolean
+      // the person's own choice in the session, kept over the default; null until they
+      // make one
+      choice: boolean | null
+      // whether threads are on in a session with no choice of its own, as the person
+      // last set with /threads default (kept for every session); off until they set it
+      isOnByDefault: boolean
       threads: Thread[]
       // a merged-away thread's key -> the key of the thread it now belongs to
       aliases: Record<string, string>
