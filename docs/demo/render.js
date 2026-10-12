@@ -1,8 +1,8 @@
 // node render.js            -- every frame of scene.html into frames/ (with frames/index.json)
 // node render.js snap 6800  -- stills of the given moments (ms) into snaps/
 //
-// Drives a local Chrome or Edge, headless, at 880x560 and 1x: the browser named by
-// CHROME_PATH, else the first found in the usual places.
+// Drives a local Chrome or Edge, headless, at the scene's size (its SIZE) and 1x: the
+// browser named by CHROME_PATH, else the first found in the usual places.
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -48,9 +48,10 @@ function browserPath() {
   });
   try {
     const page = await browser.newPage();
-    await page.setViewport({ width: 880, height: 560, deviceScaleFactor: 1 });
     await page.goto(pathToFileURL(path.join(__dirname, 'scene.html')).href);
     await page.waitForFunction('window.ready === true');
+    const [W, H] = await page.evaluate('window.SIZE');
+    await page.setViewport({ width: W, height: H, deviceScaleFactor: 1 });
     if (mode === 'snap') {
       const dir = path.join(__dirname, 'snaps');
       fs.mkdirSync(dir, { recursive: true });
@@ -73,7 +74,7 @@ function browserPath() {
       await page.screenshot({ path: path.join(dir, f) });
       list.push({ t, f });
     }
-    fs.writeFileSync(path.join(dir, 'index.json'), JSON.stringify({ step: STEP_MS, samples, list }));
+    fs.writeFileSync(path.join(dir, 'index.json'), JSON.stringify({ width: W, height: H, step: STEP_MS, samples, list }));
     console.log('frames', list.length, 'in', dir);
   } finally {
     await browser.close();
