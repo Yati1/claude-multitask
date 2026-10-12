@@ -15,6 +15,7 @@ import {
   reactionsHeld,
   withReaction,
 } from './reactions'
+import { watchSwitch } from './ui-switch'
 
 const isOn = atom({ plugin: 'react', key: 'isOn' } as const, false)
 const choice = atom({ plugin: 'react', key: 'choice' } as const, null)
@@ -354,6 +355,7 @@ function withBadge(
 }
 
 export const register: Register = on => {
+  watchSwitch(on)
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'react',

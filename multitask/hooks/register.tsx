@@ -37,6 +37,7 @@ import {
 } from './prompts'
 import { TELL_FIELD, drawThoughts } from './pane'
 import { BLINK_MS, FADE_MS, drawThoughtsButton } from './band'
+import { watchSwitch } from './ui-switch'
 
 const isOn = atom({ plugin: 'multitask', key: 'isOn' } as const, false)
 const thoughts = atom({ plugin: 'multitask', key: 'thoughts' } as const, [])
@@ -1074,6 +1075,7 @@ function lighterEffort<E>(effort: E, chosen: string): E {
 }
 
 export const register: Register = (on, options) => {
+  watchSwitch(on)
   const voiceEffort = typeof options.voiceEffort === 'string' ? options.voiceEffort : 'low'
 
   on('session.start', async ($, e, next) => {

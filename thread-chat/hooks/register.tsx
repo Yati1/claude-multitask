@@ -96,6 +96,7 @@ import {
   withUsage,
 } from './summaries'
 import type { LineInput } from './summaries'
+import { watchSwitch } from './ui-switch'
 
 const isOn = atom({ plugin: 'thread-chat', key: 'isOn' } as const, false)
 const threads = atom({ plugin: 'thread-chat', key: 'threads' } as const, [])
@@ -3046,6 +3047,7 @@ const CALLS_SHOWN = 30
 const numberOption = (value: unknown, fallback: number) => (typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : fallback)
 
 export const register: Register = (on, options) => {
+  watchSwitch(on)
   summaryConfig.catchUpAfter = numberOption(options.catchUpAfter, CATCH_UP_AFTER)
   summaryConfig.model = typeof options.summaryModel === 'string' && options.summaryModel.trim() !== '' ? options.summaryModel.trim() : SUMMARY_MODEL
 
