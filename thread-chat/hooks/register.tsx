@@ -1231,10 +1231,23 @@ async function moveToNewThread($: EngineInterface, typed: string) {
   await moveTo($, keyOf(name), isNew)
 }
 
-// A part's thread tag with a small button beside it that opens the move picker, or
-// with no thread, a "+ thread" button. A Button, never a Client: every Client of a
-// plugin shares one frame on the desktop, and one per tag of a long transcript
-// overran its render deadline, which tore the frame down for every Client.
+// The glyph of a tag's filter button, a hollow funnel-like triangle unlike the
+// move picker's "▾" beside it; a Button's label is text, so no picture.
+const TAG_FILTER_GLYPH = '▽'
+const TAG_FILTER_KEY = 'tag-filter:'
+
+// Opens the thread view showing the thread `key` alone: its filter picks that one.
+async function viewThreadAlone($: EngineInterface, key: string) {
+  if (!(await read($, isOn))) return
+  await filterView($, () => [key])
+  await openView($)
+}
+
+// A part's thread tag with small buttons beside it: one opens the move picker, the
+// other the thread view on that thread alone; with no thread, a "+ thread" button.
+// Buttons, never Clients: every Client of a plugin shares one frame on the desktop,
+// and one per tag of a long transcript overran its render deadline, which tore the
+// frame down for every Client.
 function drawMovableTag(
   $: EngineInterface,
   e: Parameters<EngineInterface['ui']['resolve']>[0] & { requestId: string },
@@ -1245,10 +1258,11 @@ function drawMovableTag(
   const row = e.requestId
   const place = thread === undefined ? '' : keyOf(thread.name)
   const { Box, Button } = $.ui.resolve(e)
-  // The desktop draws it chromeless and faint, bright under the pointer.
+  // The desktop draws them chromeless and faint, bright under the pointer.
   const look = e.surface === 'desktop' ? ({ plain: true, dimColor: true } as const) : ({ variant: 'secondary' } as const)
-  // With the pointer anywhere on the tag, its name included, the button lights in the
-  // thread's colour, showing where to press; the cursor stays the surface's own.
+  // With the pointer anywhere on the tag, its name included, the buttons light in the
+  // thread's colour, showing where to press; the cursor stays the surface's own. An
+  // archived thread, which the view's filter does not offer, has no filter button.
   return (
     <Box key={`tagbox:${place}`} flexDirection="row" columnGap={e.surface === 'desktop' ? 0 : 1} alignItems="center">
       {thread !== undefined && drawTag($, e, thread, align, inset)}
@@ -1259,6 +1273,15 @@ function drawMovableTag(
         hover={{ color: thread?.color ?? 'text' }}
         onPress={() => togglePicker($, row, place)}
       />
+      {thread !== undefined && thread.isArchived !== true && (
+        <Button
+          key={TAG_FILTER_KEY + place}
+          label={TAG_FILTER_GLYPH}
+          {...look}
+          hover={{ color: thread.color }}
+          onPress={() => viewThreadAlone($, place)}
+        />
+      )}
     </Box>
   )
 }

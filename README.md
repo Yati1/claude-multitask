@@ -48,7 +48,7 @@ In the band above the prompt, Multitask, while it is on, has a dropdown, and thr
 - While threads are off, thread-chat shows nothing: no picker or menu above the prompt, no thread tags, no thread view. Your threads are kept for when `/threads` turns them on again.
 - A `# name` heading in a message starts a thread, or replies to it if it exists. Close or abbreviated names find the existing thread. The agent replies under the same headings.
 - `#+name` starts a new thread even when an existing one is close.
-- To put a message in a thread, hover it for `+ thread` (desktop app); to move it to another, press `▾` beside its thread tag.
+- To put a message in a thread, hover it for `+ thread` (desktop app); to move it to another, press `▾` beside its thread tag. Press `▽` beside it to open the thread view on that thread alone.
 - The thread picker above the prompt, a dropdown named for the picked thread and tinted in its colour, picks the thread messages without a heading go to, or `No thread`. A heading still wins, and moves the picker to its thread.
 - `New thread` in the threads menu starts a thread by name and picks it; `Manage threads` there merges, archives or deletes threads.
 - Archived threads leave the pickers but keep their messages; `Manage threads` brings them back, as does a heading naming one. Deleting a thread takes its tag off its messages.
