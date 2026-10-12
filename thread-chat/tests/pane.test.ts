@@ -44,7 +44,8 @@ function engine(on: On, store: Record<string, unknown> = {}, seed: Record<string
   const opened: string[] = []
   const closed: string[] = []
   const transcript: SessionMessage[] = []
-  const kept: Record<string, unknown> = { ...store }
+  // the welcome line dismissed: welcome.test.ts covers it
+  const kept: Record<string, unknown> = { welcome: ['thread-chat'], ...store }
   const files: Record<string, string> = { ...seed }
   const bytes: Record<string, string> = {}
   const writes: string[] = []

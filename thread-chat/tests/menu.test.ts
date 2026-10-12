@@ -4,7 +4,8 @@ import type { Engine } from 'claude-code/testing'
 
 // The test stands in for the engine beneath the plugin.
 function engine(on: On) {
-  mock.store(on, {})
+  // the welcome line dismissed: welcome.test.ts covers it
+  mock.store(on, { welcome: ['thread-chat'] })
   on('session.id', () => ({ value: 'session-1' }))
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('prompt.submit', ($, e) => ({ text: e.text }))

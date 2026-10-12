@@ -25,7 +25,8 @@ function engine(
   registered: string[] = [],
 ): string[] {
   const prompts: string[] = []
-  if (store !== null) mock.store(on, store)
+  // the welcome line dismissed: welcome.test.ts covers it
+  if (store !== null) mock.store(on, { welcome: ['thread-chat'], ...store })
   on('session.id', () => ({ value: 'session-1' }))
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('prompt.submit', ($, e) => {
@@ -747,7 +748,8 @@ const runThreads = ($: Engine, args: string) =>
 
 // A store the test reads back, as the mod kept it, seeded with `seed`.
 function keptStore(on: On, seed: Record<string, unknown> = {}): Record<string, unknown> {
-  const kept: Record<string, unknown> = { ...seed }
+  // the welcome line dismissed: welcome.test.ts covers it
+  const kept: Record<string, unknown> = { welcome: ['thread-chat'], ...seed }
   on('store.get', ($, e) => ({ value: kept[e.key] }))
   on('store.set', ($, e) => {
     kept[e.key] = e.value

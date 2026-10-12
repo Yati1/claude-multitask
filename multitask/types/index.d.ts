@@ -91,6 +91,10 @@ declare module 'claude-code' {
       // where the turn through the palette's first colours stands: the index of the next a
       // thought takes, unless a running thought holds it
       colorTurn: number
+      // the mods the welcome line above the prompt was last dismissed with, as this mod's
+      // store kept them (hooks/welcome.tsx); written as the session starts, so the other
+      // mods know this one is installed
+      welcome: { seen: string[] }
     }
   }
 }
