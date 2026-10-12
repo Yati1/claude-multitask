@@ -962,9 +962,13 @@ test("a thread tag's filter button opens the view on that thread alone; none whi
       ((box?.children ?? []) as unknown[]).flatMap(child =>
         typeof child === 'object' && child !== null ? [(child as Drawn).props?.key ?? (child as Drawn).type] : [],
       )
-    expect(keysOf(keyedIn(drawn, 'tagbox:perf'))).toEqual([surface === 'desktop' ? 'Svg' : 'Text', 'tag:perf'])
-    const ends = parentIn(drawn, child => child.props?.key === 'tag-filter:perf')
-    expect(keysOf(ends)).toEqual(['tag-filter:design', 'tag-filter:perf'])
+    // (on the desktop each button in the Box its tip hangs from, the filter buttons drawn
+    // last first and laid out right to left: threads.test.ts covers the tips)
+    const holderOf = (key: string) => (surface === 'desktop' ? `tip:${key}` : key)
+    expect(keysOf(keyedIn(drawn, 'tagbox:perf'))).toEqual([surface === 'desktop' ? 'Svg' : 'Text', holderOf('tag:perf')])
+    const ends = parentIn(drawn, child => child.props?.key === holderOf('tag-filter:perf'))
+    const endKeys = ['tag-filter:design', 'tag-filter:perf'].map(holderOf)
+    expect(keysOf(ends)).toEqual(surface === 'desktop' ? endKeys.reverse() : endKeys)
     expect(ends?.props?.flexGrow).toBe(1)
     const line = parentIn(drawn, child => child.props?.key === 'tagbox:perf')
     const tagKeys = ['tagbox:design', 'tagbox:perf']
@@ -983,8 +987,8 @@ test("a thread tag's filter button opens the view on that thread alone; none whi
     const replied = await (
       await $.ui.mount({ plugin: 'thread-chat', surface, ...replyRow('# design\nuse a queue', `r-line-${surface}`) })
     ).drawn()
-    const head = parentIn(replied, child => child.props?.key === 'tag-filter:design')
-    expect(keysOf(head)).toEqual(['Box', 'tag-filter:design'])
+    const head = parentIn(replied, child => child.props?.key === holderOf('tag-filter:design'))
+    expect(keysOf(head)).toEqual(['Box', holderOf('tag-filter:design')])
     expect(keyedIn((head?.children as Drawn[])[0], 'tagbox:design')).toBeDefined()
     expect((head?.children as Drawn[])[0]?.props?.flexGrow).toBe(1)
     expect(parentIn(replied, child => child === head)?.props?.borderStyle).toBe('round')

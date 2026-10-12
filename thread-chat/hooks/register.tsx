@@ -1130,16 +1130,20 @@ function drawTagRow(
 ): RenderElement {
   const { Box } = $.ui.resolve(e)
   const isOnRight = isOnRightOf(e.surface)
+  // On the desktop the ends are drawn last first and laid out right to left, the same
+  // order on the screen: each one's tip reaches over those after it, and is drawn over
+  // them only if it comes after them.
+  const isReversed = e.surface === 'desktop'
   // the ends take the row's spare room, against the edge away from the tags
   const far = ends.length > 0 && (
     <Box
-      flexDirection="row"
+      flexDirection={isReversed ? 'row-reverse' : 'row'}
       columnGap={e.surface === 'desktop' ? 0 : 1}
       alignItems="center"
       flexGrow={1}
-      justifyContent={isOnRight ? 'flex-start' : 'flex-end'}
+      justifyContent={isReversed || !isOnRight ? 'flex-end' : 'flex-start'}
     >
-      {ends}
+      {isReversed ? [...ends].reverse() : ends}
     </Box>
   )
   if (far !== false && e.surface === 'desktop') {
@@ -1331,6 +1335,53 @@ const tagButtonLook = (surface: RenderSurface) =>
 // scope is at most 64 characters, so the row and the place go in hashed.
 const tagScope = (row: string, place: string) => `tag:${hashOf(`${row}|${place}`)}`
 
+// What a tag's buttons do, in their tips.
+const MOVE_TIP = 'Move to another thread'
+const FILTER_TIP = 'Show this thread in the thread view'
+// A tip's room beyond its words, in columns: its padding, its ring and the words' slack.
+const TIP_ROOM = 3
+// A tip's fill, the theme's raised surface, as the thread view's summary cards have.
+const TIP_FILL = 'userMessageBackgroundHover'
+
+// A tag's button with its tip on the desktop: what it does, in a card at its side
+// (`side`, toward the middle of its line), shown while the pointer is on the button, the
+// keyed Box round it. A message's row clips what leaves it and floats no card the
+// pointer reveals, as the band does, so the card stays on the button's own line, over
+// what is there: a card under it could go under the engine's drawing of the message.
+// One line high, as wide as its words. Elsewhere, no pointer shows a tip: the button alone.
+function withTip(
+  $: EngineInterface,
+  e: Parameters<EngineInterface['ui']['resolve']>[0],
+  key: string,
+  button: RenderElement,
+  tip: string,
+  side: 'before' | 'after',
+): RenderElement {
+  if (e.surface !== 'desktop') return button
+  const { Box, Text } = $.ui.resolve(e)
+  const width = tip.length + TIP_ROOM
+  return (
+    <Box key={`tip:${key}`} flexShrink={0}>
+      {button}
+      <Box
+        position="absolute"
+        top={0}
+        {...(side === 'before' ? { left: -width } : { right: -width })}
+        width={width}
+        paddingX={1}
+        paddingY={0}
+        justifyContent="center"
+        borderStyle="round"
+        backgroundColor={TIP_FILL}
+        display="none"
+        hover={{ display: 'flex' }}
+      >
+        <Text wrap="truncate">{tip}</Text>
+      </Box>
+    </Box>
+  )
+}
+
 // A part's thread tag with its move picker's "▾" beside it; with no thread, a
 // "+ thread" button. Buttons, never Clients: every Client of a plugin shares one
 // frame on the desktop, and one per tag of a long transcript overran its render
@@ -1348,6 +1399,16 @@ function drawMovableTag(
   // With the pointer anywhere on the tag, its name included, the buttons light in the
   // thread's colour, showing where to press; the cursor stays the surface's own.
   const scope = thread === undefined ? undefined : tagScope(row, place)
+  const button = (
+    <Button
+      key={`tag:${place}`}
+      label={thread === undefined ? '+ thread' : '▾'}
+      {...tagButtonLook(e.surface)}
+      hover={{ color: thread?.color ?? 'text', ...(scope === undefined ? {} : { scope }) }}
+      onPress={() => togglePicker($, row, place)}
+    />
+  )
+  // "+ thread" says what it does; the "▾" says it in a tip, toward the line's middle
   return (
     <Box
       key={`tagbox:${place}`}
@@ -1357,29 +1418,27 @@ function drawMovableTag(
       {...(scope === undefined ? {} : { hover: { scope } })}
     >
       {thread !== undefined && drawTag($, e, thread, align, inset)}
-      <Button
-        key={`tag:${place}`}
-        label={thread === undefined ? '+ thread' : '▾'}
-        {...tagButtonLook(e.surface)}
-        hover={{ color: thread?.color ?? 'text', ...(scope === undefined ? {} : { scope }) }}
-        onPress={() => togglePicker($, row, place)}
-      />
+      {thread === undefined
+        ? button
+        : withTip($, e, `tag:${place}`, button, MOVE_TIP, align === 'end' ? 'before' : 'after')}
     </Box>
   )
 }
 
 // A tag's filter button, which opens the thread view on that thread alone, drawn as
-// its "▾" is and lit with it, at the far end of the tag's line. An archived thread,
-// which the view's filter does not offer, has none.
+// its "▾" is and lit with it, at the far end of the tag's line, its tip at its `side`,
+// toward the line's middle. An archived thread, which the view's filter does not
+// offer, has none.
 function drawTagFilter(
   $: EngineInterface,
   e: Parameters<EngineInterface['ui']['resolve']>[0] & { requestId: string },
   thread: Thread,
+  side: 'before' | 'after',
 ): RenderElement | undefined {
   if (thread.isArchived === true) return undefined
   const place = keyOf(thread.name)
   const { Button } = $.ui.resolve(e)
-  return (
+  const button = (
     <Button
       key={TAG_FILTER_KEY + place}
       label={TAG_FILTER_GLYPH}
@@ -1388,6 +1447,7 @@ function drawTagFilter(
       onPress={() => viewThreadAlone($, place)}
     />
   )
+  return withTip($, e, TAG_FILTER_KEY + place, button, FILTER_TIP, side)
 }
 
 // What the multitask plugin's voice says when it says nothing; that plugin draws it as nothing.
@@ -3807,7 +3867,7 @@ export const register: Register = (on, options) => {
             tags.map(t => drawMovableTag($, e, t, align)),
             side,
             rowFit,
-            tags.flatMap(t => drawTagFilter($, e, t) ?? []),
+            tags.flatMap(t => drawTagFilter($, e, t, isOnRightOf(e.surface) ? 'after' : 'before') ?? []),
           )}
         {message}
       </Box>
@@ -3914,7 +3974,7 @@ export const register: Register = (on, options) => {
         tag
       )
       // the tag's filter button at the line's far end, the tag and picker taking the room before it
-      const filter = isFirstOfPlace ? drawTagFilter($, e, thread) : undefined
+      const filter = isFirstOfPlace ? drawTagFilter($, e, thread, 'before') : undefined
       const head =
         filter === undefined ? (
           start
