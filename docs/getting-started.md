@@ -10,12 +10,12 @@ A quick start for each mod; every detail is in [the README](../README.md#use).
 
 Also:
 
-- Close or abbreviated names find an existing thread; `#+name` always starts a new one.
 - The thread picker above the prompt picks the thread for messages without a heading; `+` after it starts a new thread.
 - Hover a message for `+ thread` to put it in a thread (desktop app). Beside its thread tag, `▾` moves it to another and `ᯤ` opens the thread view on that thread alone.
 - `/threads agent`, `filter` and `summaries`, with `on` or `off`: let the agent start threads, show only the picked thread in the chat, and show its one-line summary above the prompt.
 - `/threads manage` lists your threads in the chat to merge, archive or delete them; `/merge-threads <thread> into <thread>` merges two.
 - When you come back to a thread after a long gap, the agent gets a short summary of it.
+- Automatically fixes minor typos in thread names. Use `#+name` to skip that and start a new thread.
 
 ## multitask: talk while it works
 
