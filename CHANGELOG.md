@@ -18,6 +18,10 @@ Notable changes to the thread-chat, multitask and react mods. The format is base
 - Changed `/multitask` to turn multitask on or off in a chat, starting in Multitask mode.
 - Changed multitask to show nothing above the prompt while off, unless a thought it started is running.
 
+### Removed
+
+- Removed `/react place` from react: the desktop reaction always sits on your message's corner.
+
 ## 0.4.0 - 2026-10-11
 
 ### Added
