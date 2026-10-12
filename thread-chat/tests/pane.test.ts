@@ -918,6 +918,78 @@ test("/thread-view and the Threads menu's row open the view, once threads are on
   expect(closed).toEqual(['thread-view', 'thread-view'])
 })
 
+// The chat's rows: a person's message, and a reply.
+const userRow = (text: string, requestId: string) =>
+  ({ component: 'UserMessage', props: { text, origin: { kind: 'composer' }, isExpanded: false }, requestId }) as const
+const replyRow = (text: string, requestId: string) =>
+  ({ component: 'AssistantMessage', props: { text, isFirstOfReply: true }, requestId }) as const
+
+test("a thread tag's filter button opens the view on that thread alone; none while threads are off or the thread is archived", async ($, on) => {
+  const { opened, kept } = engine(on)
+  await flipThreads($)
+  await $.prompt.submit(say('# design\na\n# perf\nb\n# docs\nc'))
+  const viewThreads = () => (kept['session:session-1'] as { viewThreads?: unknown }).viewThreads
+  const pane = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...PANE })
+  await pressFilter(pane, 'design')
+  await pressFilter(pane, 'docs')
+  expect(await filterOf(pane)).toEqual(['design *', 'perf', 'docs *'])
+
+  for (const surface of ['terminal', 'desktop'] as const) {
+    opened.length = 0
+    // beside each tag's "▾" in its keyed Box, drawn as the "▾" is (dim, chromeless on the
+    // desktop), in the thread's colour with the pointer on the tag
+    const mine = await $.ui.mount({ plugin: 'thread-chat', surface, ...userRow('# design\nhi\n# perf\nfast?', `u-${surface}`) })
+    const drawn = await mine.drawn()
+    const button = keyedIn(drawn, 'tag-filter:perf')
+    const move = keyedIn(drawn, 'tag:perf')
+    expect(button?.type).toBe('Button')
+    expect(button?.props?.label).toBe('▽')
+    expect(button?.hover).toEqual({ color: PALETTE[1] })
+    const { key: _k, label: _l, ...look } = button?.props ?? {}
+    const { key: _mk, label: _ml, ...moveLook } = move?.props ?? {}
+    expect(look).toEqual(moveLook)
+    const box = parentIn(drawn, child => child.props?.key === 'tag-filter:perf')
+    expect(box?.props?.key).toBe('tagbox:perf')
+    expect((box?.children as Drawn[]).map(child => child.props?.key ?? child.type)).toEqual([
+      ...(surface === 'desktop' ? ['Svg'] : ['Text']),
+      'tag:perf',
+      'tag-filter:perf',
+    ])
+
+    // pressed, it opens the view, its filter picking that thread and no other
+    await mine.press({ key: 'tag-filter:perf' })
+    expect(opened).toEqual(['thread-view'])
+    expect(viewThreads()).toEqual(['perf'])
+    expect(await filterOf(pane)).toEqual(['design', 'perf *', 'docs'])
+
+    // a reply's tag has one too
+    const reply = await $.ui.mount({ plugin: 'thread-chat', surface, ...replyRow('# design\nuse a queue', `r-${surface}`) })
+    await reply.press({ key: 'tag-filter:design' })
+    expect(opened).toEqual(['thread-view', 'thread-view'])
+    expect(viewThreads()).toEqual(['design'])
+    expect(await filterOf(pane)).toEqual(['design *', 'perf', 'docs'])
+  }
+
+  // an archived thread, which the view's filter does not offer, keeps its "▾" but has no filter button
+  const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...BAND })
+  await band.press({ key: 'threads' })
+  await band.redraw()
+  await band.press({ key: 'threads:manage' })
+  await band.redraw()
+  await band.press({ key: 'threads:archive:docs' })
+  const archived = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...replyRow('# docs\nc\n# perf\nd', 'r-archived') })
+  expect(await archived.find({ key: 'tag:docs' })).toBeDefined()
+  expect(await archived.find({ key: 'tag-filter:docs' })).toBeUndefined()
+  expect(await archived.find({ key: 'tag-filter:perf' })).toBeDefined()
+
+  // threads off: no tags, so no filter buttons
+  await flipThreads($)
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const row = await $.ui.mount({ plugin: 'thread-chat', surface, ...userRow('# design\nhi', `u-off-${surface}`) })
+    expect(await row.find({ key: 'tag-filter:design' })).toBeUndefined()
+  }
+})
+
 // A drawing that throws leaves the engine to draw its own pane, which for the thread
 // view is an empty one: the view went blank, saying nothing. It says why instead.
 test('a thread view that fails to draw says why rather than going blank', async ($, on) => {
