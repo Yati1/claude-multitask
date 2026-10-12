@@ -88,7 +88,7 @@ test('/react alone asks for this chat alone, the current option marked, and chan
   expect(await status($)).toBe('Reactions: on in this chat (your choice) · on in new chats')
 })
 
-test('a dismissed question changes nothing; an answer of what is so, or of neither, changes nothing', async ($, on) => {
+test('a dismissed question, or an answer of neither, changes nothing; an answer of what is so makes it this chat\'s choice', async ($, on) => {
   const answers: Record<string, string> = {}
   const { seen } = engine(on, answers)
   await start($)
@@ -97,14 +97,15 @@ test('a dismissed question changes nothing; an answer of what is so, or of neith
   expect(await react($)).toBe(unchanged)
   expect(seen.asked).toEqual([`${HERE} [This chat] On (current) / Off`])
 
-  // the current option picked
-  answers[HERE] = 'On (current)'
-  expect(await react($)).toBe(unchanged)
-
   // typed under "Other": a word that is neither changes nothing; one of the options counts as it
   answers[HERE] = 'maybe later'
   expect(await react($)).toBe(unchanged)
-  expect(seen.asked).toHaveLength(3)
+  expect(seen.asked).toHaveLength(2)
+
+  // the current option picked
+  answers[HERE] = 'On (current)'
+  expect(await react($)).toBe('Reactions are already on; this chat now keeps them on.')
+  expect(await status($)).toBe('Reactions: on in this chat (your choice) · on in new chats')
   answers[HERE] = 'off'
   expect(await react($)).toBe(OFF_TEXT)
   expect(await status($)).toBe('Reactions: off in this chat (your choice) · on in new chats')
@@ -119,17 +120,20 @@ test('where no one can be asked, /react and /react default say how reactions are
   expect(seen.asked).toEqual([])
 })
 
-test('/react on, off, enable, disable and toggle set this chat; what is so already changes nothing and says so', async ($, on) => {
+test('/react on, off, enable, disable and toggle set this chat; what is so already becomes this chat\'s choice and says so', async ($, on) => {
   const { seen } = engine(on, {})
   await start($)
-  expect(await react($, 'on')).toBe('Reactions are already on in this chat.')
-  expect(await status($)).toBe('Reactions: on in this chat (following the default) · on in new chats')
+  expect(await react($, 'on')).toBe('Reactions are already on; this chat now keeps them on.')
+  expect(await status($)).toBe('Reactions: on in this chat (your choice) · on in new chats')
+  // a default off leaves it on here
+  expect(await react($, 'default off')).toBe(`Reactions are now off by default, ${WHERE} This chat keeps them on; \`/react off\` turns them off here.`)
+  expect(await status($)).toBe('Reactions: on in this chat (your choice) · off in new chats')
   expect(await react($, 'Disable')).toBe(OFF_TEXT)
   expect(await react($, 'off')).toBe('Reactions are already off in this chat.')
   expect(await react($, 'enable')).toBe(ON_TEXT)
   expect(await react($, 'toggle')).toBe(OFF_TEXT)
   expect(await react($, 'toggle')).toBe(ON_TEXT)
-  expect(await status($)).toBe('Reactions: on in this chat (your choice) · on in new chats')
+  expect(await status($)).toBe('Reactions: on in this chat (your choice) · off in new chats')
   expect(seen.asked).toEqual([])
 })
 
