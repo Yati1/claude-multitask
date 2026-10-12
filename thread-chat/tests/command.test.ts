@@ -53,7 +53,10 @@ function engine(on: On, answers: Record<string, string>, surfaces: readonly ('de
 const start = ($: Engine) => $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
 const threads = async ($: Engine, args = '') =>
   (await $.command.run({ command: 'threads', args, origin: { kind: 'composer' }, presentation: {} as never })).text
-const status = ($: Engine) => threads($, 'status')
+// How threads are, here and in new chats: the first part of what `/threads status` says,
+// the settings after it.
+const status = async ($: Engine) => (await threads($, 'status'))?.split('\n\n')[0]
+const settings = async ($: Engine) => (await threads($, 'status'))?.split('\n\n')[1]
 const say = ($: Engine, text: string) => $.prompt.submit({ text, origin: { kind: 'composer' }, wait: false })
 // A command's line in the menu.
 const describe = async ($: Engine, command = 'threads') =>
@@ -72,7 +75,18 @@ const NEW = 'Threads in new chats?'
 const ON_TEXT = 'Threads are on: start or reply to one with a # name heading (or + thread in the desktop app).'
 const OFF_TEXT = 'Threads are off. They are kept for when /threads turns them on again.'
 const WHERE = 'as do chats where you have not turned them on or off.'
-const USAGE = 'Usage: `/threads [on|off|toggle|status|default [on|off]]`; with no argument it asks.'
+const USAGE = 'Usage: `/threads [on|off|toggle|status|manage|agent|filter|summaries [on|off]|default [on|off]]`; with no argument it asks.'
+const OFF_HERE = 'Threads are off in this chat; /threads turns them on.'
+// The settings' questions, and what is said as each comes on or goes off.
+const AGENT = 'May the agent start threads in this chat?'
+const FILTER = 'Filter the chat to the picked thread?'
+const SUMMARY = "Show the picked thread's one-line summary above the prompt?"
+const AGENT_ON = 'The agent may now start threads in this chat.'
+const AGENT_OFF = 'The agent may no longer start threads in this chat.'
+const FILTER_ON = "The chat is now filtered to the picked thread: it shows that thread's messages, and those since your last message in no thread."
+const FILTER_OFF = 'The chat is no longer filtered: it shows every message.'
+const SUMMARY_ON = "The picked thread's one-line summary now shows above the prompt (the latest thread's, with none picked)."
+const SUMMARY_OFF = 'The thread summary no longer shows above the prompt.'
 
 test('/threads alone asks for this chat alone, the current option marked, and changes it as answered', async ($, on) => {
   const answers: Record<string, string> = { [HERE]: 'On', [NEW]: 'On' }
@@ -120,6 +134,9 @@ test('where no one can be asked, /threads and /threads default say how threads a
   const now = 'Threads: off in this chat (following the default) · off in new chats'
   expect(await threads($)).toBe(now)
   expect(await threads($, 'default')).toBe(now)
+  // a setting alone says how it is
+  await threads($, 'on')
+  expect(await threads($, 'agent')).toBe('Agent may start threads: off.')
   expect(seen.asked).toEqual([])
 })
 
@@ -162,7 +179,7 @@ test('/threads default asks for new chats alone; default on|off sets it; what is
 test('anything else changes nothing and says how to use /threads', async ($, on) => {
   const { seen, store } = engine(on, {})
   await start($)
-  for (const args of ['sideways', 'on now', 'status please', 'default maybe', 'default off please', 'default toggle']) {
+  for (const args of ['sideways', 'on now', 'status please', 'default maybe', 'default off please', 'default toggle', 'agent maybe', 'filter on now', 'manage now']) {
     expect(await threads($, args)).toBe(USAGE)
   }
   expect(await status($)).toBe('Threads: off in this chat (following the default) · off in new chats')
@@ -173,7 +190,7 @@ test('anything else changes nothing and says how to use /threads', async ($, on)
 test("the menu's line for /threads says how threads are, here and in new chats, and is asked for again as that changes", async ($, on) => {
   const { seen } = engine(on, {})
   await start($)
-  expect(seen.hint).toBe('[on|off|toggle|status|default [on|off]]')
+  expect(seen.hint).toBe('[on|off|toggle|status|manage|agent|filter|summaries|default [on|off]]')
   expect(await describe($)).toBe('Threads: off here · off in new chats')
   // the mod's other commands keep their own lines
   expect(await describe($, 'thread-view')).toBe('as registered')
@@ -193,4 +210,52 @@ test("the menu's line for /threads says how threads are, here and in new chats, 
   await threads($, 'on')
   await threads($, 'status')
   expect(seen.invalidated).toBe(now)
+})
+
+test('/threads status says how threads are, here and in new chats, then the settings', async ($, on) => {
+  engine(on, {})
+  await start($)
+  expect(await threads($, 'status')).toBe(
+    'Threads: off in this chat (following the default) · off in new chats\n\nAgent may start threads: off · Filter the chat: off · Show thread summary: off',
+  )
+})
+
+test('/threads agent, filter and summaries set a setting, or alone ask, the current option marked; off, they set nothing', async ($, on) => {
+  const answers: Record<string, string> = { [AGENT]: 'On' }
+  const { seen, store } = engine(on, answers)
+  await start($)
+
+  // off, threads have no settings to set, and nothing is asked
+  expect(await threads($, 'filter on')).toBe(OFF_HERE)
+  expect(await threads($, 'agent')).toBe(OFF_HERE)
+  expect(seen.asked).toEqual([])
+  await threads($, 'on')
+
+  // alone, a setting is asked about, and set as answered
+  expect(await threads($, 'agent')).toBe(AGENT_ON)
+  expect(seen.asked).toEqual([`${AGENT} [Agent] On / Off (current)`])
+  expect(await settings($)).toBe('Agent may start threads: on · Filter the chat: off · Show thread summary: off')
+
+  // with a value, it is set; what is so already changes nothing and says so
+  expect(await threads($, 'agent on')).toBe('Agent may start threads: already on.')
+  expect(await threads($, 'filter on')).toBe(FILTER_ON)
+  expect(await threads($, 'summaries enable')).toBe(SUMMARY_ON)
+  expect(await settings($)).toBe('Agent may start threads: on · Filter the chat: on · Show thread summary: on')
+  expect(seen.asked).toHaveLength(1)
+
+  // a dismissed question, or an answer of what is so, changes nothing
+  expect(await threads($, 'filter')).toBe('No change. Filter the chat: on.')
+  answers[FILTER] = 'On (current)'
+  expect(await threads($, 'filter')).toBe('No change. Filter the chat: on.')
+  answers[FILTER] = 'Off'
+  answers[SUMMARY] = 'Off'
+  expect(await threads($, 'filter')).toBe(FILTER_OFF)
+  expect(await threads($, 'summaries')).toBe(SUMMARY_OFF)
+  expect(seen.asked.slice(-2)).toEqual([`${FILTER} [Filter] On (current) / Off`, `${SUMMARY} [Summary] On (current) / Off`])
+  expect(await threads($, 'agent off')).toBe(AGENT_OFF)
+  expect(await settings($)).toBe('Agent may start threads: off · Filter the chat: off · Show thread summary: off')
+
+  // each is kept with the chat's record for its next run
+  await threads($, 'filter on')
+  expect(store['session:session-1']).toMatchObject({ agentMayCreate: false, filtersChat: true, summaryLineShown: false })
 })

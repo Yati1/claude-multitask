@@ -168,7 +168,8 @@ const BAND = {
   props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 100, scroll: { offset: 0, bodyRows: 10 }, view: {} },
 } as const
 
-const flipThreads = ($: Engine) => $.command.run({ command: 'threads', args: 'toggle', origin: { kind: 'composer' }, presentation: {} as never })
+const threads = ($: Engine, args: string) => $.command.run({ command: 'threads', args, origin: { kind: 'composer' }, presentation: {} as never })
+const flipThreads = ($: Engine) => threads($, 'toggle')
 
 // The summaries part of `/thread-view trace`.
 async function summaryTrace($: Engine): Promise<string> {
@@ -670,7 +671,8 @@ const recordOn = (extra: Record<string, unknown> = {}) => ({
 })
 
 test('a message to a thread past catching up brings the agent its summary; to one not, nothing', async ($, on) => {
-  const { usage, prompts, registered, clock } = engine(on, { 'session:session-1': recordOn() })
+  // summaries are always on: a record an earlier version kept with them switched off counts for nothing
+  const { usage, prompts, registered, clock } = engine(on, { 'session:session-1': recordOn({ summariesOn: false }) })
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
   // threads on as the run started: read_thread is in the tools the model is sent from the start
   expect(registered).toEqual(['read_thread'])
@@ -699,12 +701,7 @@ test('a message to a thread past catching up brings the agent its summary; to on
   await band.select({ key: 'thread-picker', value: 'thread:design' })
   await $.prompt.submit(say('and red'))
   expect(prompts.at(-1)).toContain('Catch-up for thread "design"')
-
-  // summaries off in the menu: no note, no call
-  await band.press({ key: 'thread-summaries' })
-  await $.prompt.submit(say('and red'))
-  expect(prompts.at(-1)).not.toContain('Catch-up')
-  expect(await summaryTrace($)).toContain('; off in this chat')
+  expect(await summaryTrace($)).not.toContain('off in this chat')
 })
 
 test('read_thread is offered only as a run starts with threads on, and answers for the main conversation', async ($, on) => {
@@ -799,7 +796,7 @@ test("each turn's threads get their one-line summaries in one call, from their l
   expect(lineRequests).toHaveLength(2)
 })
 
-test("the band's line shows the picked thread's one-line summary, or the latest turn's thread's, while its switch is on", async ($, on) => {
+test("the band's line shows the picked thread's one-line summary, or the latest turn's thread's, while /threads summaries is on", async ($, on) => {
   const { usage, clock } = engine(on, { 'session:session-1': recordOn() })
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
   usage.tokens = 20_000
@@ -812,18 +809,14 @@ test("the band's line shows the picked thread's one-line summary, or the latest 
     const band = await $.ui.mount({ plugin: 'thread-chat', surface, ...BAND })
     // off at first
     expect(await band.find({ key: 'summary-line-row' })).toBeUndefined()
-    if ((await band.find({ key: 'summary-line' })) === undefined) {
-      await band.press({ key: 'threads' })
-      await band.redraw()
-    }
-    await band.press({ key: 'summary-line' })
+    await threads($, 'summaries on')
     await band.redraw()
     // no thread picked: the thread the latest turn touched
     expect((await band.find({ key: 'summary-line-row' }))?.text).toBe('perf turn line 1')
     await band.select({ key: 'thread-picker', value: 'thread:design' })
     await band.redraw()
     expect((await band.find({ key: 'summary-line-row' }))?.text).toBe('design turn line 1')
-    await band.press({ key: 'summary-line' })
+    await threads($, 'summaries off')
     await band.redraw()
     expect(await band.find({ key: 'summary-line-row' })).toBeUndefined()
     await band.select({ key: 'thread-picker', value: 'none' })
@@ -934,15 +927,13 @@ test('a move, a merge or a deletion has the summaries of the threads it changed 
   expect(trace).not.toContain('perf line')
   expect(trace).toContain('  design: 0 since its last message; summary of an earlier message\n    design line')
 
-  // design deleted: its summary goes
-  const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...BAND })
-  await band.press({ key: 'threads' })
-  await band.redraw()
-  await band.press({ key: 'threads:manage' })
-  await band.redraw()
-  await band.press({ key: 'threads:delete:design' })
-  await band.redraw()
-  await band.press({ key: 'threads:delete-yes' })
+  // design deleted, from /threads manage: its summary goes
+  const { text = '' } = await threads($, 'manage')
+  const props = { command: 'threads', args: 'manage', text, isErrored: false }
+  const panel = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', component: 'CommandOutput', props, requestId: 'manage-1' })
+  await panel.press({ key: 'threads:delete:design' })
+  await panel.redraw()
+  await panel.press({ key: 'threads:delete-yes' })
   expect(await summaryTrace($)).not.toContain('design line')
   const left = JSON.parse(written[`${VIEWS}/session-1/summaries.json`] ?? '{}') as { summaries?: Record<string, unknown> }
   expect(Object.keys(left.summaries ?? { unread: true })).toEqual([])

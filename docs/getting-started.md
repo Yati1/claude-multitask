@@ -50,8 +50,9 @@ A chat keeps its own choice, also when it is restarted. The default applies to n
 
 - Start a message with `# name` to put it in that thread, creating it if needed; close or abbreviated names find the existing thread. `#+name` always starts a new one. The agent replies under the same headings.
 - The thread picker above the prompt picks the thread for messages without a heading.
-- The threads menu (the cog, `⚙`) has `New thread`, `Manage threads` (merge, archive, delete), `Filter the chat`, `Open thread view`, `Agent may start threads`, `Thread summaries` and `Show thread summary`.
-- `/thread-view` opens the thread view: a pane showing the threads you switch on.
+- After the picker, `+` starts a thread and `☰` opens the thread view (also `/thread-view`): a pane showing the threads you switch on.
+- `/threads manage` lists your threads in the chat, with buttons to merge, archive or delete each.
+- `/threads filter`, `/threads agent` and `/threads summaries`, each with `on` or `off` (alone, it asks): show only the picked thread's messages, let the agent start threads, and show the picked thread's one-line summary above the prompt. `/threads status` lists them.
 - `/merge-threads <thread> into <thread>` merges two threads.
 - Settings, in `/config`: `catchUpAfter`, how much other conversation (in tokens) passes before the agent gets a summary of a thread you write in again; `summaryModel`, the model that writes those summaries.
 
