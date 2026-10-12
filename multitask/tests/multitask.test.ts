@@ -777,7 +777,7 @@ test('a new chat starts in Multitask mode while the default is on, and leaves it
   expect((await $.tool.call({ tool: 'mcp__multitask__think', tool_use_id: 'c1', name: 'a', task: 'x' })).deny).toBeDefined()
 })
 
-test('turning Multitask off in a chat leaves Multitask mode and the band, but `thoughts` while a thought is left', async ($, on) => {
+test('turning Multitask off in a chat leaves Multitask mode and the band, but `thoughts` while a thought is running', async ($, on) => {
   const seen = engine($, on)
   mock.clock(on)
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
@@ -803,7 +803,10 @@ test('turning Multitask off in a chat leaves Multitask mode and the band, but `t
   await $.prompt.submit({ text: 'still plain', origin: { kind: 'composer' }, wait: false })
   expect(seen.prompts.at(-1)).toBe('still plain')
 
-  // the thought stopped, the band is the other mods' alone; a reload offers no tools
+  // its turn ended, the band is the other mods' alone; a reload offers no tools
+  await $.turn.complete({ ...finished('agent-1'), answer: 'Found it.' })
+  await band.redraw()
+  expect(await band.drawn()).toEqual({ type: 'engine', ref: 0 })
   await $.tool.call({ tool: 'mcp__multitask__stop', tool_use_id: 'c3', name: 'auth-bug' })
   await band.redraw()
   expect(await band.drawn()).toEqual({ type: 'engine', ref: 0 })
