@@ -15,6 +15,8 @@ import {
   reactionsHeld,
   withReaction,
 } from './reactions'
+import { argumentHint, descriptionOf, runSwitch } from './command'
+import type { Names, Session, State } from './command'
 import { watchSwitch } from './ui-switch'
 
 const isOn = atom({ plugin: 'react', key: 'isOn' } as const, false)
@@ -38,19 +40,23 @@ function textsOf(content: readonly Block[]): string[] {
 // the default (`/react default`), on until they choose. Off, the mod leaves the session
 // be: nothing beside the person's messages, replies go on as they come, and messages
 // and replies are the engine's drawing alone.
-async function flip($: EngineInterface): Promise<boolean> {
-  let now = false
-  await update($, isOn, was => (now = !was))
+async function setHere($: EngineInterface, now: boolean): Promise<string> {
+  await update($, isOn, () => now)
   await update($, choice, () => now)
   await keep($)
+  redescribe($)
   return now
+    ? 'Reactions are on in this chat: the agent may acknowledge a message with an emoji reaction on it instead of a reply.'
+    : 'Reactions are off in this chat.'
 }
 
 // Sets the switch to the session's own choice, else the default.
 async function settle($: EngineInterface) {
   const chosen = await read($, choice)
   const now = chosen ?? (await read($, isOnByDefault))
+  if ((await read($, isOn)) === now) return
   await update($, isOn, () => now)
+  redescribe($)
 }
 
 // Whether reactions are on in new sessions, and in those never switched with /react:
@@ -62,19 +68,45 @@ async function takeUpDefault($: EngineInterface) {
   if (typeof chosen === 'boolean') await update($, isOnByDefault, () => chosen)
 }
 
-// `/react default`: flips the default, which this session follows too unless the person
-// switched it with /react; says what the default now is.
-async function flipDefault($: EngineInterface): Promise<string> {
-  let now = true
-  await update($, isOnByDefault, was => (now = !was))
+// `/react default on|off`: sets the default, which this session follows too unless the
+// person switched it with /react; says what the default now is.
+async function setDefault($: EngineInterface, now: boolean): Promise<string> {
+  await update($, isOnByDefault, () => now)
   await $.store.set(DEFAULT_KEY, now).catch(() => undefined)
   await settle($)
   await keep($)
+  redescribe($)
   const word = now ? 'on' : 'off'
   const said = `Reactions are now ${word} by default, in new chats and in chats where you have not used \`/react\`.`
   const chosen = await read($, choice)
   if (chosen === null || chosen === now) return said
-  return `${said} This chat keeps them ${chosen ? 'on' : 'off'}; \`/react\` turns them ${chosen ? 'off' : 'on'} here.`
+  return `${said} This chat keeps them ${chosen ? 'on' : 'off'}; \`/react ${chosen ? 'off' : 'on'}\` turns them ${chosen ? 'off' : 'on'} here.`
+}
+
+// `/react` and its arguments, as every mod's switch takes them (command.ts).
+const NAMES: Names = { command: 'react', noun: 'Reactions', be: 'are' }
+
+async function stateOf($: EngineInterface): Promise<State> {
+  return { isOnHere: await read($, isOn), choiceHere: await read($, choice), isOnByDefault: await read($, isOnByDefault), detail: '' }
+}
+
+function sessionOf($: EngineInterface): Session {
+  return {
+    state: () => stateOf($),
+    canAsk: async () => (await $.session.surfaces().catch(() => [])).length > 0,
+    ask: (question, options) => $.ui.ask(question, options),
+    setHere: now => setHere($, now),
+    setDefault: now => setDefault($, now),
+  }
+}
+
+// Has the menu ask for /react's line again, as what it says has changed.
+function redescribe($: EngineInterface) {
+  try {
+    $.ui.invalidate('command.describe')
+  } catch {
+    // the menu keeps the line it had
+  }
 }
 
 // Where a session's switch and reactions are kept between runs of the app: whether it
@@ -332,8 +364,8 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'react',
-      description: 'Turn emoji reactions on or off in this chat',
-      argumentHint: '[default]',
+      description: 'Turn emoji reactions on or off in this chat, or by default in new chats',
+      argumentHint: argumentHint(NAMES),
     })
     // A restarted or resumed session takes up the choice and reactions it kept; a
     // rewound or forked one, those of the session it came from. Never switched, it
@@ -342,20 +374,16 @@ export const register: Register = on => {
     await takeUp($)
     await settle($)
     await keep($)
+    redescribe($)
     return next(e)
   })
 
-  // `/react` flips reactions on or off in this chat; `/react default` flips the default.
-  on('command.run', { command: 'react' }, async ($, e) => {
-    const [word = ''] = e.args.trim().split(/\s+/)
-    if (word.toLowerCase() === 'default') return { text: await flipDefault($) }
-    const now = await flip($)
-    return {
-      text: now
-        ? 'Reactions are on in this chat: the agent may acknowledge a message with an emoji reaction on it instead of a reply.'
-        : 'Reactions are off in this chat.',
-    }
-  })
+  // `/react` asks whether reactions are on in this chat, then in new chats; its arguments
+  // set either, or say how they are (command.ts).
+  on('command.run', { command: 'react' }, async ($, e) => ({ text: await runSwitch(sessionOf($), NAMES, e.args) }))
+
+  // The menu's line for /react says whether reactions are on here and in new chats.
+  on('command.describe', { command: 'react' }, async ($, e, next) => next({ ...e, description: descriptionOf(NAMES, await stateOf($)) }))
 
   // Beside the person's message the model is told when reactions came on or went off:
   // that is the one way it is told. A system prompt section would not follow the switch,

@@ -161,7 +161,7 @@ const say = (text: string) => ({ text, origin: { kind: 'composer' as const }, wa
 
 // The person's /threads, which turns threads on in the chat, or off again.
 const flipThreads = ($: Engine) =>
-  $.command.run({ command: 'threads', args: '', origin: { kind: 'composer' }, presentation: {} as never })
+  $.command.run({ command: 'threads', args: 'toggle', origin: { kind: 'composer' }, presentation: {} as never })
 
 const BAND = {
   component: 'AbovePrompt',

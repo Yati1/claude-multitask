@@ -144,7 +144,7 @@ async function openMenu(band: Band) {
 
 // The person's /threads, which turns threads on in the chat, or off again.
 const flipThreads = ($: Engine) =>
-  $.command.run({ command: 'threads', args: '', origin: { kind: 'composer' }, presentation: {} as never })
+  $.command.run({ command: 'threads', args: 'toggle', origin: { kind: 'composer' }, presentation: {} as never })
 
 // A thread's tag in a drawing: its name in capitals on the terminal, a picture elsewhere.
 async function tagOf(
@@ -741,7 +741,7 @@ for (const [isOn, kept] of KEPT_SWITCHES) {
   })
 }
 
-// The person's `/threads <args>`: `default` flips whether threads are on in new chats.
+// The person's `/threads <args>`.
 const runThreads = ($: Engine, args: string) =>
   $.command.run({ command: 'threads', args, origin: { kind: 'composer' }, presentation: {} as never })
 
@@ -761,7 +761,7 @@ function keptStore(on: On, seed: Record<string, unknown> = {}): Record<string, u
 // off, nothing of the mod's.
 const threadsShown = async (band: Band) => (await switchOf(band, THREADS_SWITCH)) === 'on'
 
-test('/threads default flips whether threads are on in new chats, kept for every session, and says what it is now', async ($, on) => {
+test('/threads default on|off sets whether threads are on in new chats, kept for every session, and says what it is now', async ($, on) => {
   const kept = keptStore(on)
   const prompts = engine(on, null)
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
@@ -772,7 +772,7 @@ test('/threads default flips whether threads are on in new chats, kept for every
   expect(record()).toMatchObject({ isOn: false, choice: null })
 
   // This chat, never switched, follows the default: threads come on, and the model is told
-  expect((await runThreads($, 'default')).text).toBe(`New chats now start with threads on, ${where}`)
+  expect((await runThreads($, 'default on')).text).toBe(`New chats now start with threads on, ${where}`)
   expect(kept.isOnByDefault).toBe(true)
   await band.redraw()
   expect(await threadsShown(band)).toBe(true)
@@ -780,24 +780,24 @@ test('/threads default flips whether threads are on in new chats, kept for every
   expect(prompts.at(-1)).toContain('# Conversation threads')
   expect(record()).toMatchObject({ isOn: true, choice: null })
   // and off again with it
-  expect((await runThreads($, 'Default')).text).toBe(`New chats now start with threads off, ${where}`)
+  expect((await runThreads($, 'Default Off')).text).toBe(`New chats now start with threads off, ${where}`)
   expect(kept.isOnByDefault).toBe(false)
   await band.redraw()
   expect(await band.drawn()).toEqual({ type: 'engine', ref: 0 })
 
   // Turned off from the menu, it keeps its own choice whatever the default
-  await runThreads($, 'default')
+  await runThreads($, 'default enable')
   await band.redraw()
   await flipSwitch(band, THREADS_SWITCH)
   expect(record()).toMatchObject({ isOn: false, choice: false })
-  expect((await runThreads($, 'default')).text).toBe(`New chats now start with threads off, ${where}`)
-  expect((await runThreads($, 'default')).text).toBe(`New chats now start with threads on, ${where} This chat keeps them off; /threads turns them on here.`)
+  expect((await runThreads($, 'default disable')).text).toBe(`New chats now start with threads off, ${where}`)
+  expect((await runThreads($, 'default on')).text).toBe(`New chats now start with threads on, ${where} This chat keeps them off; /threads on turns them on here.`)
   await band.redraw()
   expect(await band.drawn()).toEqual({ type: 'engine', ref: 0 })
 
   // and turned on with /threads, likewise
   expect((await flipThreads($)).text).toContain('Threads are on')
-  expect((await runThreads($, 'default')).text).toBe(`New chats now start with threads off, ${where} This chat keeps them on; /threads turns them off here.`)
+  expect((await runThreads($, 'default off')).text).toBe(`New chats now start with threads off, ${where} This chat keeps them on; /threads off turns them off here.`)
   await band.redraw()
   expect(await threadsShown(band)).toBe(true)
   expect(record()).toMatchObject({ isOn: true, choice: true })
