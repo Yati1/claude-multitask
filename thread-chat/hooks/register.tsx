@@ -1364,8 +1364,6 @@ const tagScope = (row: string, place: string) => `tag:${hashOf(`${row}|${place}`
 // What a tag's buttons do, in their tips.
 const MOVE_TIP = 'Move to another thread'
 const FILTER_TIP = 'Show this thread in the thread view'
-// A tip's room beyond its words, in columns: its padding, its ring and the words' slack.
-const TIP_ROOM = 3
 // A tip's fill, the theme's raised surface, as the thread view's summary cards have.
 const TIP_FILL = 'userMessageBackgroundHover'
 
@@ -1374,7 +1372,11 @@ const TIP_FILL = 'userMessageBackgroundHover'
 // keyed Box round it. A message's row clips what leaves it and floats no card the
 // pointer reveals, as the band does, so the card stays on the button's own line, over
 // what is there: a card under it could go under the engine's drawing of the message.
-// One line high, as wide as its words. Elsewhere, no pointer shows a tip: the button alone.
+// One line high, as wide as its words and a column either side: it hangs from a Box of
+// no width at the button's near edge, so it needs no width of its own, which a count of
+// its characters overstated, the desktop's sans words being narrower than its columns.
+// Its words never wrap (`truncate`), so drawn without a width it is just their width.
+// Elsewhere, no pointer shows a tip: the button alone.
 function withTip(
   $: EngineInterface,
   e: Parameters<EngineInterface['ui']['resolve']>[0],
@@ -1385,18 +1387,14 @@ function withTip(
 ): RenderElement {
   if (e.surface !== 'desktop') return button
   const { Box, Text } = $.ui.resolve(e)
-  const width = tip.length + TIP_ROOM
-  return (
-    <Box key={`tip:${key}`} flexShrink={0}>
-      {button}
+  const card = (
+    <Box width={0} flexShrink={0}>
       <Box
         position="absolute"
         top={0}
-        {...(side === 'before' ? { left: -width } : { right: -width })}
-        width={width}
+        {...(side === 'before' ? { right: 0 } : { left: 0 })}
         paddingX={1}
         paddingY={0}
-        justifyContent="center"
         borderStyle="round"
         backgroundColor={TIP_FILL}
         display="none"
@@ -1404,6 +1402,17 @@ function withTip(
       >
         <Text wrap="truncate">{tip}</Text>
       </Box>
+    </Box>
+  )
+  return side === 'before' ? (
+    <Box key={`tip:${key}`} flexShrink={0}>
+      {card}
+      {button}
+    </Box>
+  ) : (
+    <Box key={`tip:${key}`} flexShrink={0}>
+      {button}
+      {card}
     </Box>
   )
 }

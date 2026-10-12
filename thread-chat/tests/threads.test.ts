@@ -1776,12 +1776,16 @@ test('what opens the picker or picks a thread lights under the pointer', async (
 
 // A tag button's tip, from the drawing it is in: the keyed Box round the button, the
 // card the pointer on it reveals, the card's words, and which side of the button it is
-// set against (a negative offset as wide as the card puts it just past that edge).
+// set against (hung from a Box of no width there, its near edge against that Box).
 function tipOf(tree: unknown, key: string) {
   const holder = pathTo(tree, n => n.props?.key === key)?.at(-2)
-  const [button, card] = (holder?.children ?? []) as Drawn[]
-  const width = card?.props?.width
-  const words = ((card?.children?.[0] as Drawn | undefined)?.children ?? []).join('')
+  const children = (holder?.children ?? []) as Drawn[]
+  const button = children.find(child => child.props?.key === key)
+  // the card hangs from a Box of no width at the button's near edge
+  const anchor = children.find(child => child !== button)
+  const at = anchor === undefined ? -1 : children.indexOf(anchor)
+  const card = anchor?.children?.[0] as Drawn | undefined
+  const text = card?.children?.[0] as Drawn | undefined
   return {
     holder: holder?.props?.key,
     button: button?.props?.key,
@@ -1792,9 +1796,18 @@ function tipOf(tree: unknown, key: string) {
       JSON.stringify(card?.hover) === JSON.stringify({ display: 'flex' }),
     // on the button's line, never above or below it, where its row would clip it
     top: card?.props?.top,
-    side: card?.props?.left === -Number(width) ? 'before' : card?.props?.right === -Number(width) ? 'after' : undefined,
-    words,
-    fits: typeof width === 'number' && width > words.length,
+    side:
+      anchor?.props?.width !== 0
+        ? undefined
+        : at === 0 && card?.props?.right === 0
+          ? 'before'
+          : at === 1 && card?.props?.left === 0
+            ? 'after'
+            : undefined,
+    words: (text?.children ?? []).join(''),
+    // as wide as its words and a column either side: no width guessed from their count,
+    // and words that never wrap, which would narrow it to a column of letters
+    fits: card?.props?.width === undefined && card?.props?.paddingX === 1 && text?.props?.wrap === 'truncate',
   }
 }
 
