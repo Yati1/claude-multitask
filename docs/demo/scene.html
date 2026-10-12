@@ -6,7 +6,7 @@
   SUMMARIES, OPEN, PANE, FILTER, the thought's times, the cursor's PATH). All content is
   made up.
 
-  Open it in a browser to look: ?t=6800 shows one moment, ?play runs it in a loop.
+  Open it in a browser to look: ?t=12000 shows one moment, ?play runs it in a loop.
   The app's own font, Anthropic Sans, is read from fonts/ (see fonts.js); without it a
   system font stands in and the text sets a little differently.
 -->
@@ -118,100 +118,100 @@ const MSGS = [
   { role: 'reply', at: -1, secs: [{ th: 'bugs', text: 'Fixed: the timer now keeps counting while its tab is in the background.', start: -1, end: -1 }] },
   { role: 'user', th: 'docs', text: 'Add a quick start section to the README', at: -1 },
   { role: 'reply', at: -1, secs: [{ th: 'docs', text: 'Added a Quick start section to the README: clone, install and run the app in three commands.', start: -1, end: -1 }] },
-  { role: 'user', th: 'design', text: 'Make the recipe cards more compact', typed: '# Design Make the recipe cards more compact', type: [200, 1000], at: 1100 },
-  { role: 'reply', at: 1300, secs: [{ th: 'design', text: 'Done: the cards have tighter padding and show the cook time beside the title, so four fit in a row.', start: 1300, end: 1950 }] },
-  { role: 'user', th: 'bugs', text: 'Search misses titles with capitals. Fix it and note it in the docs', type: [3450, 4250], at: 4400 },
-  { role: 'status', text: 'Used 3 tools', at: 4650 },
-  { role: 'reply', at: 4850, secs: [
-    { th: 'bugs', text: 'Fixed: search now ignores case, and a new test covers it.', start: 4850, end: 5250 },
-    { th: 'docs', text: 'Added the search fix to the changelog.', start: 5350, end: 5650 } ] },
-  { role: 'user', th: 'bugs', text: 'Run the whole test suite and fix anything that fails', type: [9350, 10000], at: 10150 },
-  { role: 'reply', at: 10350, secs: [{ th: 'bugs', text: 'On it: a thought is running the suite in the background.', start: 10350, end: 10750 }] },
-  { role: 'relay', text: '◦ thought update: Test run', at: 13250 },
-  { role: 'reply', at: 13450, secs: [{ th: 'bugs', text: 'All 128 tests pass. Two date tests assumed UTC; the parser now keeps the local day.', start: 13450, end: 14050 }] },
-  { role: 'user', th: 'bugs', text: 'Great, thanks!', type: [14550, 14850], at: 15000, reactAt: 15450 },
+  { role: 'user', th: 'design', text: 'Make the recipe cards more compact', typed: '# Design Make the recipe cards more compact', type: [600, 1800], at: 1950 },
+  { role: 'reply', at: 2150, secs: [{ th: 'design', text: 'Done: the cards have tighter padding and show the cook time beside the title, so four fit in a row.', start: 2150, end: 2800 }] },
+  { role: 'user', th: 'bugs', text: 'Search misses titles with capitals. Fix it and note it in the docs', type: [6600, 8000], at: 8150 },
+  { role: 'status', text: 'Used 3 tools', at: 8400 },
+  { role: 'reply', at: 8600, secs: [
+    { th: 'bugs', text: 'Fixed: search now ignores case, and a new test covers it.', start: 8600, end: 9000 },
+    { th: 'docs', text: 'Added the search fix to the changelog.', start: 9100, end: 9400 } ] },
+  { role: 'user', th: 'bugs', text: 'Run the whole test suite and fix anything that fails', type: [16200, 17300], at: 17450 },
+  { role: 'reply', at: 17650, secs: [{ th: 'bugs', text: 'On it: a thought is running the suite in the background.', start: 17650, end: 18050 }] },
+  { role: 'relay', text: '◦ thought update: Test run', at: 23100 },
+  { role: 'reply', at: 23300, secs: [{ th: 'bugs', text: 'All 128 tests pass. Two date tests assumed UTC; the parser now keeps the local day.', start: 23300, end: 23900 }] },
+  { role: 'user', th: 'bugs', text: 'Great, thanks!', type: [25300, 25750], at: 25900, reactAt: 26400 },
 ];
-const END = 16700;
+const END = 28800;
 
 // Thread the picker posts to, over time.
-const PICKS = [[-1, 'docs'], [1100, 'design'], [3200, 'bugs']];
+const PICKS = [[-1, 'docs'], [1950, 'design'], [5900, 'bugs']];
 // Menu of the picker: open from..to, hovered item over time.
-const MENU = { open: 2700, close: 3200, hot: [[2700, 'design'], [2900, 'bugs']] };
+const MENU = { open: 5000, close: 5900, hot: [[5000, 'design'], [5550, 'bugs']] };
 // Each thread's one-line summary over time, shown under the band while it is picked; a
 // new one comes a little after a turn in the thread ends.
 const SUMMARIES = {
   docs: [[-1, 'The README has a quick start: clone, install and run the app in three commands.']],
   design: [[-1, 'Recipe list layout: spacing, card sizes and the grid.'],
-    [2400, 'Recipe cards are compact: tighter padding and the cook time beside the title.']],
+    [3700, 'Recipe cards are compact: tighter padding and the cook time beside the title.']],
   bugs: [[-1, 'The cooking timer keeps counting while its tab is in the background.'],
-    [6000, 'Search ignores case now, with a test; the timer keeps counting in background tabs.'],
-    [14400, 'All 128 tests pass; the date parser keeps the local day; search ignores case.']],
+    [10300, 'Search ignores case now, with a test; the timer keeps counting in background tabs.'],
+    [24800, 'All 128 tests pass; the date parser keeps the local day; search ignores case.']],
 };
 // The filter button `ᯤ` of the thread tag `th` in the reply that appears `at`: hovered
 // (the tag's buttons light in its colour and its tip shows) from `hover`, clicked at
 // `click`, which opens the thread view on that thread alone.
-const OPEN = { at: 4850, th: 'bugs', hover: 6150, click: 6900, tip: 'Show this thread in the thread view' };
+const OPEN = { at: 8600, th: 'bugs', hover: 11320, click: 12720, tip: 'Show this thread in the thread view' };
 // The side pane with the thread view: open from..to. The column moves beside it while it shows.
-const PANE = { open: OPEN.click, close: 9050, fade: 150 };
+const PANE = { open: OPEN.click, close: 15550, fade: 150 };
 // The thread view's filter, set to the thread from the moment it opens. The tab's close
 // button: hovered.
 const FILTER = { pick: OPEN.click, th: OPEN.th };
-const TABX_HOT = [8850, 9050];
+const TABX_HOT = [15300, 15550];
 // The thought: start, the rows of its conversation (each blinks its dot), its notes (each
 // swells it), end.
-const TH_START = 10450;
-const BLINKS = [10600, 11450, 12400];
-const NOTES = [[10950, 'Running 128 tests'], [11950, 'Two date tests fail; fixing the parser']];
-const TH_END = 12950;
+const TH_START = 17750;
+const BLINKS = [17900, 19200, 20950];
+const NOTES = [[18600, 'Running 128 tests'], [20500, 'Two date tests fail; fixing the parser']];
+const TH_END = 22800;
 const PULSE_MS = 1000, BLINK_MS = 1000, BLINK_PEAK_MS = 250, FADE_MS = 1500;
-const CARD = [11350, 12650];
+const CARD = [19100, 22400];
 
 // Cursor path: [t, target, dx, dy] ; target is a selector, '@' and a selector for where
 // that was last seen, or [x,y]. Visible spans.
-const CURSOR_SPANS = [[2150, 3550], [5750, 9300], [10600, 12950]];
+const CURSOR_SPANS = [[4300, 6350], [10800, 15900], [18200, 22800]];
 const PATH = [
-  [2150, [560, 340]],
-  [2650, '#picker-sel', -8, 2],
-  [2750, '#picker-sel', -8, 2],
-  [2950, '#mi-bugs', -30, 1],
-  [3250, '#mi-bugs', -30, 1],
-  [3550, [330, 470]],
-  [5750, [560, 340]],
-  [6150, '#openbtn', 1, 2],
+  [4300, [560, 340]],
+  [4950, '#picker-sel', -8, 2],
+  [5300, '#picker-sel', -8, 2],
+  [5600, '#mi-bugs', -30, 1],
+  [5950, '#mi-bugs', -30, 1],
+  [6350, [330, 470]],
+  [10800, [560, 340]],
+  [11320, '#openbtn', 1, 2],
   // held where it pressed: the chat moves from under the pointer as the pane opens
-  [6200, '@#openbtn', 1, 2],
-  [6950, '@#openbtn', 1, 2],
+  [11370, '@#openbtn', 1, 2],
+  [12770, '@#openbtn', 1, 2],
   // off the view's tags, which show their summaries under the pointer
-  [7400, [690, 270]],
-  [8500, [690, 270]],
-  [8850, '#tabx', 1, 2],
-  [9050, '#tabx', 1, 2],
-  [9300, [640, 300]],
-  [10600, [560, 330]],
-  [11350, '#dot0', 2, 3],
-  [12650, '#dot0', 2, 3],
-  [12950, [640, 380]],
+  [13350, [690, 270]],
+  [14850, [690, 270]],
+  [15300, '#tabx', 1, 2],
+  [15550, '#tabx', 1, 2],
+  [15900, [640, 300]],
+  [18200, [560, 330]],
+  [19100, '#dot0', 2, 3],
+  [22400, '#dot0', 2, 3],
+  [22800, [640, 380]],
 ];
 
 // Moments that between them show every colour drawn (menu, the `ᯤ`'s tip, pane, filter,
 // the thought's dot, card and check, chip, all threads, the summaries), from which
 // encode.js builds the GIF's one palette.
-const SAMPLES = [0, 1950, 2900, 5700, 6600, 7200, 8000, 11000, 11600, 13100, 15700];
+const SAMPLES = [0, 2800, 5700, 9900, 12100, 13020, 14100, 18300, 19350, 22950, 26650];
 
 // ---------------------------------------------------------------- storyboard, in short
-//  0.2s  "# Design ..." is typed and sent; the picker follows to Design; the reply
+//  0.6s  "# Design ..." is typed and sent; the picker follows to Design; the reply
 //        streams in under a blue DESIGN section, and Design's summary under the band
 //        is written afresh.
-//  2.2s  the picker's menu switches to Bugs (its tint turns red); the next message has
+//  4.3s  the picker's menu switches to Bugs (its tint turns red); the next message has
 //        no heading and goes to Bugs; the reply covers two threads: BUGS and DOCS.
-//  5.8s  the `ᯤ` on the reply's BUGS tag (the tag's buttons lit red, its tip: "Show this
+// 10.8s  the `ᯤ` on the reply's BUGS tag (the tag's buttons lit red, its tip: "Show this
 //        thread in the thread view") opens the thread view beside the chat, filtered to
 //        BUGS, so only Bugs sections show; then its tab is closed.
-//  9.4s  a task for a thought, in the chat alone: the voice answers at once; an amber dot
+// 16.2s  a task for a thought, in the chat alone: the voice answers at once; an amber dot
 //        appears in the band's `thoughts` button, left of the Multitask dropdown, blinks
 //        white at each row of its work and swells at each note, and its hover card shows
 //        the latest note; it ends with a check, and the voice reports.
-// 14.6s  "Great, thanks!" gets a 👍 reaction on the bubble's corner instead of a reply.
+// 25.3s  "Great, thanks!" gets a 👍 reaction on the bubble's corner instead of a reply.
 
 // ---------------------------------------------------------------- helpers
 const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
