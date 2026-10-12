@@ -20,6 +20,7 @@ import {
 } from './parse'
 import type { RunOn, Section } from './parse'
 import {
+  BUBBLE_ROOM,
   FILTER_THREAD_KEY,
   SECTIONS_MORE,
   chunksOf,
@@ -1114,7 +1115,11 @@ const isOnRightOf = (surface: RenderSurface) => surface === 'desktop' || surface
 // The row of thread tags above a person's message, at the side the surface puts the
 // message; `side` ("+ thread", or an open move picker) on the side away from the
 // edge the tags keep to, so showing it moves none; `ends` (the tags' filter buttons)
-// at the row's other end. The thread view draws a person's section's tag so too.
+// at the row's other end. On the desktop that end stops where the bubble does at its
+// widest (BUBBLE_ROOM in from the left), over its left edge once its words wrap: the
+// bubble is a share of the row it is drawn in and shows the row nothing of its width,
+// so a row that followed it would narrow it. The thread view draws a person's
+// section's tag so too.
 function drawTagRow(
   $: EngineInterface,
   e: Parameters<EngineInterface['ui']['resolve']>[0],
@@ -1137,6 +1142,25 @@ function drawTagRow(
       {ends}
     </Box>
   )
+  if (far !== false && e.surface === 'desktop') {
+    // the room free of the bubble, outside the row's gaps, so the ends start on its edge
+    return (
+      <Box flexDirection="row" {...fit}>
+        <Box minWidth={BUBBLE_ROOM} flexShrink={0} />
+        <Box
+          flexDirection="row"
+          flexGrow={1}
+          columnGap={2}
+          justifyContent="flex-end"
+          {...(fit.alignItems === undefined ? {} : { alignItems: fit.alignItems })}
+        >
+          {far}
+          {side}
+          {tags}
+        </Box>
+      </Box>
+    )
+  }
   return (
     <Box flexDirection="row" columnGap={2} justifyContent={isOnRight ? 'flex-end' : 'flex-start'} {...fit}>
       {isOnRight && far}
@@ -1286,9 +1310,9 @@ async function moveToNewThread($: EngineInterface, typed: string) {
   await moveTo($, keyOf(name), isNew)
 }
 
-// The glyph of a tag's filter button, a hollow funnel-like triangle unlike the
-// move picker's "▾" beside the tag; a Button's label is text, so no picture.
-const TAG_FILTER_GLYPH = '▽'
+// The glyph of a tag's filter button, unlike the move picker's "▾" beside the
+// tag; a Button's label is text, so no picture.
+const TAG_FILTER_GLYPH = 'ᯤ'
 const TAG_FILTER_KEY = 'tag-filter:'
 
 // Opens the thread view showing the thread `key` alone: its filter picks that one.

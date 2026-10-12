@@ -718,8 +718,11 @@ test("the view draws a thread's tags and borders as the chat does", async ($, on
 
     const [mine, part, ...more] = tagLooksIn(await view.drawn(), 'design')
     expect(more).toEqual([])
-    // the person's tag: the same picture in the same row above their message, at its side
-    expect(mine).toEqual(tagLooksIn(await message.drawn(), 'design')[0])
+    // the person's tag: the same picture in the same row above their message, at its side;
+    // the chat's row, on the desktop, also fills what the room before its filter button leaves
+    const chat = tagLooksIn(await message.drawn(), 'design')[0]
+    const { flexGrow: _grow, ...chatRow } = chat?.row ?? {}
+    expect(mine).toEqual({ ...chat, row: chatRow })
     expect(mine?.row?.justifyContent).toBe(surface === 'terminal' ? 'flex-start' : 'flex-end')
     expect(mine?.frame).toBeUndefined()
     // the reply part's: the same picture in the same border of the thread's colour
@@ -944,7 +947,7 @@ test("a thread tag's filter button opens the view on that thread alone; none whi
     const button = keyedIn(drawn, 'tag-filter:perf') as (Drawn & { hover?: { color?: unknown; scope?: unknown } }) | undefined
     const move = keyedIn(drawn, 'tag:perf') as (Drawn & { hover?: { scope?: unknown } }) | undefined
     expect(button?.type).toBe('Button')
-    expect(button?.props?.label).toBe('▽')
+    expect(button?.props?.label).toBe('ᯤ')
     expect(button?.hover?.color).toBe(PALETTE[1])
     expect(typeof button?.hover?.scope).toBe('string')
     expect(move?.hover).toEqual(button?.hover)
@@ -966,6 +969,15 @@ test("a thread tag's filter button opens the view on that thread alone; none whi
     const line = parentIn(drawn, child => child.props?.key === 'tagbox:perf')
     const tagKeys = ['tagbox:design', 'tagbox:perf']
     expect(keysOf(line)).toEqual(surface === 'desktop' ? ['Box', ...tagKeys] : [...tagKeys, 'Box'])
+    // on the desktop the line starts where the bubble does at its widest, the room before it
+    // free, so the filter buttons sit over the bubble's left edge, not at the row's
+    if (surface === 'desktop') {
+      const row = parentIn(drawn, child => child === line)
+      const room = (row?.children as Drawn[])[0]
+      expect((row?.children as Drawn[]).length).toBe(2)
+      expect(room?.props).toEqual({ minWidth: '15%', flexShrink: 0 })
+      expect(line?.props?.flexGrow).toBe(1)
+    }
 
     // a reply's at the far right of its line, at the top of its thread's border
     const replied = await (
