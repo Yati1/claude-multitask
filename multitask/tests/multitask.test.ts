@@ -84,7 +84,8 @@ function engine(
   store: Record<string, unknown> | null = {},
 ): Seen {
   const seen: Seen = { prompts: [], sends: [], ran: [], efforts: [], aborts: [], spawns: 0, names: [], registered: [], raising: 0, bandDraws: 0, opened: [], closed: [] }
-  if (store !== null) mock.store(on, store)
+  // the welcome line dismissed: welcome.test.ts covers it
+  if (store !== null) mock.store(on, { welcome: ['multitask'], ...store })
   on('session.id', () => ({ value: 'session-1' }))
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('session.end', ($, e) => ({ sessionId: e.sessionId }))

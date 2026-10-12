@@ -18,6 +18,7 @@ import {
 import { argumentHint, descriptionOf, runSwitch } from './command'
 import type { Names, Session, State } from './command'
 import { watchSwitch } from './ui-switch'
+import { welcome } from './welcome'
 
 const isOn = atom({ plugin: 'react', key: 'isOn' } as const, false)
 const choice = atom({ plugin: 'react', key: 'choice' } as const, null)
@@ -361,6 +362,7 @@ function withBadge(
 
 export const register: Register = on => {
   watchSwitch(on)
+  welcome(on)
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'react',

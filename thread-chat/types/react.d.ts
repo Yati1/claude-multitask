@@ -14,6 +14,9 @@ declare module 'claude-code' {
       // message: the message by its stored row id and the start of its text as typed,
       // whitespace dropped
       reactions: { id: string; mark: string; emoji: string }[]
+      // the mods the welcome line was last dismissed with (hooks/welcome.tsx); written as
+      // react's session starts, so this mod knows react is installed
+      welcome: { seen: string[] }
     }
   }
 }

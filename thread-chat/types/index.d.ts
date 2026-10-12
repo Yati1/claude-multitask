@@ -233,6 +233,10 @@ declare module 'claude-code' {
       summaryLineShown: boolean
       // the key of the thread the latest turn touched last ('' none yet)
       activeThread: string
+      // the mods the welcome line above the prompt was last dismissed with, as this mod's
+      // store kept them (hooks/welcome.tsx); written as the session starts, so the other
+      // mods know this one is installed
+      welcome: { seen: string[] }
     }
   }
 }

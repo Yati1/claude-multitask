@@ -34,6 +34,10 @@ declare module 'claude-code' {
       // the person's message the turn running now answers; null when the turn came
       // from anything else (a notification, a plugin's prompt)
       answering: Answering | null
+      // the mods the welcome line above the prompt was last dismissed with, as this mod's
+      // store kept them (hooks/welcome.tsx); written as the session starts, so the other
+      // mods know this one is installed
+      welcome: { seen: string[] }
     }
   }
 }
