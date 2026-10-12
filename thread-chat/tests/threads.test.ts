@@ -453,7 +453,7 @@ test('with no threads the band says how to start one; the agent switch in the me
   expect(await band.find({ text: /start a thread/ })).toBeUndefined()
 })
 
-test('until /threads turns threads on, a session is left as it is: its rows, its prompts, its band but the menu, and its tools', async ($, on) => {
+test('until /threads turns threads on, a session is left as it is: its rows, its prompts, its band, and its tools', async ($, on) => {
   // what the mod offers the model
   const registered: string[] = []
   const prompts = engine(on, {}, undefined, registered)
@@ -473,13 +473,14 @@ test('until /threads turns threads on, a session is left as it is: its rows, its
   // its prompts go on as typed, with nothing beside them: a heading is plain text
   await $.prompt.submit(say('# design\na'))
   expect(prompts.at(-1)).toBe('# design\na')
-  // its band holds only the menu, threads off in it, and the model starts no thread
+  // its band is the engine's alone, no menu in it, on every surface; the model starts no thread
+  for (const surface of ['terminal', 'mobile'] as const) {
+    const drawing = await $.ui.mount({ plugin: 'thread-chat', surface, ...BAND })
+    expect(await drawing.drawn()).toEqual({ type: 'engine', ref: 0 })
+    await drawing.unmount()
+  }
   const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...BAND })
-  expect((await band.findAll({ type: 'Svg' })).map(p => p.props.alt)).toEqual(['Threads menu', 'menu', 'On in this chat: off'])
-  expect(await band.find({ text: /start a thread/ })).toBeUndefined()
-  expect(await band.find({ key: MENU })).toBeDefined()
-  expect(await switchOf(band, THREADS_SWITCH)).toBe('off')
-  expect(await switchOf(band, AGENT_SWITCH)).toBeUndefined()
+  expect(await band.drawn()).toEqual({ type: 'engine', ref: 0 })
   expect((await $.tool.call({ tool: 'mcp__thread-chat__create_thread', tool_use_id: 't1', name: 'ideas' })).deny).toContain('off')
 
   // /threads turns them on: the model is told how threads work, and every row offers
@@ -511,10 +512,10 @@ test('/threads again turns threads off, keeping them, and the model is told once
   expect(await tagOf(mine, 'design')).toBeDefined()
   expect(await plain.find({ text: /just chatting/ })).toBeDefined()
 
-  // Off: no threads in the band, no tags, a heading plain text; the model is told once
+  // Off: the band is the engine's alone, no tags, a heading plain text; the model is told once
   expect((await flipThreads($)).text).toContain('Threads are off')
   for (const site of [band, mine, plain]) await site.redraw()
-  expect(await choiceKeys(band)).not.toContain('design')
+  expect(await band.drawn()).toEqual({ type: 'engine', ref: 0 })
   expect(await tagOf(mine, 'design')).toBeUndefined()
   expect(await mine.find({ text: /# design\nmine/ })).toBeDefined()
   expect(await plain.find({ text: /just chatting/ })).toBeDefined()

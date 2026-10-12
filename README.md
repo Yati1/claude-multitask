@@ -29,7 +29,7 @@ Install any or all of them.
 
 ## Use
 
-In the band above the prompt, Multitask has a dropdown, and thread-chat a thread picker followed by its threads menu, a cog (`⚙`), with their switches for the chat. The mobile app shows only the thread picker: use the commands there. React has no control in the band: `/react` is its switch.
+In the band above the prompt, Multitask has a dropdown, and thread-chat, while threads are on, a thread picker followed by its threads menu, a cog (`⚙`), with their switches for the chat. The mobile app shows only the thread picker: use the commands there. React has no control in the band: `/react` is its switch.
 
 ### Multitask
 
@@ -41,7 +41,8 @@ In the band above the prompt, Multitask has a dropdown, and thread-chat a thread
 
 ### Threads
 
-- `/threads`, or the `On in this chat` switch in the threads menu (the cog), turns threads on in a chat (again to turn them off). The menu opens while the pointer is on the cog or it has the focus in the desktop app, and with a press on it in the terminal.
+- `/threads` turns threads on in a chat (again to turn them off). While they are on, the threads menu (the cog) above the prompt has an `On in this chat` switch that turns them off too. The menu opens while the pointer is on the cog or it has the focus in the desktop app, and with a press on it in the terminal.
+- While threads are off, thread-chat shows nothing: no picker or menu above the prompt, no thread tags, no thread view. Your threads are kept for when `/threads` turns them on again.
 - A `# name` heading in a message starts a thread, or replies to it if it exists. Close or abbreviated names find the existing thread. The agent replies under the same headings.
 - `#+name` starts a new thread even when an existing one is close.
 - To put a message in a thread, hover it for `+ thread` (desktop app); to move it to another, press `▾` beside its thread tag.

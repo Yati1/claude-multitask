@@ -42,6 +42,9 @@ const VIEW = 'thread-view'
 
 const TOOL = 'mcp__thread-chat__create_thread'
 
+// What /threads says as it turns threads off, and the transcript as the menu does.
+const OFF_NOTE = 'Threads are off. They are kept for when /threads turns them on again.'
+
 const say = (text: string) => ({ text, origin: { kind: 'composer' as const }, wait: false })
 
 const flipThreads = ($: Engine) =>
@@ -80,6 +83,7 @@ const clickSwitch = (band: { pointer: (p: never) => Promise<unknown> }, key: str
 test('the desktop draws a cog button like its Select, its switches in a card the pointer reveals; nothing below the input', async ($, on) => {
   engine(on)
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
+  await flipThreads($)
   const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...BAND })
 
   // the button: a keyed Box, one line high, with the Select's ring (stronger under the
@@ -108,14 +112,11 @@ test('the desktop draws a cog button like its Select, its switches in a card the
   expect(card?.props).toMatchObject({ position: 'absolute', display: 'none', flexDirection: 'column', rowGap: 0.5 })
   expect(card?.hover).toEqual({ display: 'flex' })
   expect((await band.find({ key: THREADS_SWITCH }))?.props).toMatchObject({ label: 'On in this chat', plain: true })
-  expect(await switchesOf(band)).toEqual(['On in this chat: off'])
+  expect(await switchesOf(band)).toEqual(['On in this chat: on', 'Agent may start threads: off', 'Filter the chat: off', 'Thread summaries: on', 'Show thread summary: off'])
   const hit = await band.find({ key: `switch:${THREADS_SWITCH}` })
   expect(hit?.type).toBe('Client')
   expect(String(hit?.props.module)).toEndWith('switch.tsx')
-  expect(hit?.props.props).toEqual({ isOn: false })
-  expect(await band.find({ key: AGENT_SWITCH })).toBeUndefined()
-  expect(await band.find({ key: FILTER_SWITCH })).toBeUndefined()
-  expect(await band.find({ key: VIEW })).toBeUndefined()
+  expect(hit?.props.props).toEqual({ isOn: true })
 
   const mode = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...MODE })
   expect(await mode.drawn()).toEqual({ type: 'engine', ref: 0 })
@@ -123,13 +124,14 @@ test('the desktop draws a cog button like its Select, its switches in a card the
 
 test("the desktop menu's labels and slide switches flip threads, the agent switch and the filter", async ($, on) => {
   engine(on)
+  const session = mock.session(on)
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
   const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...BAND })
   expect((await $.tool.call({ tool: TOOL, tool_use_id: 't1', name: 'ideas' })).deny).toContain('off')
 
-  // On in this chat's label turns threads on, as /threads does, and the agent's switch
-  // and the filter's (off) join it, then the row that opens the thread view, in the card
-  await band.press({ key: THREADS_SWITCH })
+  // /threads turns threads on, and the menu comes with the band: On in this chat, the
+  // agent's switch and the filter's (off), then the row that opens the thread view, in the card
+  await flipThreads($)
   await band.redraw()
   expect(await switchesOf(band)).toEqual(['On in this chat: on', 'Agent may start threads: off', 'Filter the chat: off', 'Thread summaries: on', 'Show thread summary: off'])
   expect(keyedIn(keyedIn(await band.drawn(), MENU), VIEW)).toMatchObject({ type: 'Button', props: { label: 'Open thread view', plain: true } })
@@ -162,42 +164,60 @@ test("the desktop menu's labels and slide switches flip threads, the agent switc
   await band.redraw()
   expect(await switchesOf(band)).toEqual(['On in this chat: on', 'Agent may start threads: off', 'Filter the chat: off', 'Thread summaries: on', 'Show thread summary: off'])
 
-  // On in this chat's slide switch turns them off, and the view's row goes
+  // On in this chat's slide switch turns them off: the band is the engine's alone, the
+  // menu gone with it, and the transcript says, as a notice the model never reads, that
+  // /threads turns them on again
+  expect(session.appended()).toEqual([])
   await clickSwitch(band, THREADS_SWITCH)
   await band.redraw()
-  expect(await switchesOf(band)).toEqual(['On in this chat: off'])
-  expect(await band.find({ key: VIEW })).toBeUndefined()
+  expect(await band.drawn()).toEqual({ type: 'engine', ref: 0 })
+  expect(session.appended()).toEqual([
+    expect.objectContaining({ message: expect.objectContaining({ type: 'system', content: [{ type: 'text', text: OFF_NOTE }] }) }),
+  ])
   const reply = await $.command.run({ command: 'merge-threads', args: 'a into b', origin: { kind: 'composer' }, presentation: {} as never })
   expect(reply.text).toBe('Threads are off in this chat; /threads turns them on.')
+
+  // /threads, which says so itself, adds no notice: on, then off, as On in this chat's label does
+  expect((await flipThreads($)).text).toContain('Threads are on')
+  expect((await flipThreads($)).text).toBe(OFF_NOTE)
+  expect(session.appended()).toHaveLength(1)
+  await flipThreads($)
+  await band.redraw()
+  await band.press({ key: THREADS_SWITCH })
+  await band.redraw()
+  expect(await band.drawn()).toEqual({ type: 'engine', ref: 0 })
+  expect(session.appended()).toHaveLength(2)
 })
 
 test('the terminal opens and shuts the menu with a press on its cog, its switches beside it', async ($, on) => {
   engine(on)
+  const session = mock.session(on)
   await $.session.start({ cwd: '.', surface: 'terminal', isInteractive: true })
   const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...BAND })
   const labelOf = async (key: string) => (await band.find({ key }))?.props.label
+
+  // off, no menu: the band is the engine's alone
+  expect(await band.drawn()).toEqual({ type: 'engine', ref: 0 })
+  await flipThreads($)
+  await band.redraw()
 
   // shut, the button alone
   expect(await band.find({ key: MENU })).toMatchObject({ type: 'Button', props: { label: '⚙ ▾' } })
   expect(await band.find({ key: THREADS_SWITCH })).toBeUndefined()
 
-  // open, a switch per row beside it, off
+  // open, a switch per row beside it, threads on and the agent's and the filter's off,
+  // then the thread view's row
   await band.press({ key: MENU })
   await band.redraw()
   expect(await labelOf(MENU)).toBe('⚙ ▴')
   expect(await band.find({ text: 'On in this chat' })).toBeDefined()
-  expect(await labelOf(THREADS_SWITCH)).toBe('(● )')
-  expect(await band.find({ key: VIEW })).toBeUndefined()
-
-  // a press flips one, and threads on bring the agent's and the filter's (off), then the
-  // thread view's row
-  await band.press({ key: THREADS_SWITCH })
-  await band.redraw()
   expect(await labelOf(THREADS_SWITCH)).toBe('( ●)')
   expect(await labelOf(AGENT_SWITCH)).toBe('(● )')
   expect(await band.find({ text: 'Filter the chat' })).toBeDefined()
   expect(await labelOf(FILTER_SWITCH)).toBe('(● )')
   expect(await labelOf(VIEW)).toBe('Open thread view')
+
+  // a press flips one
   await band.press({ key: FILTER_SWITCH })
   await band.redraw()
   expect(await labelOf(FILTER_SWITCH)).toBe('( ●)')
@@ -213,6 +233,19 @@ test('the terminal opens and shuts the menu with a press on its cog, its switche
   expect(await band.find({ key: THREADS_SWITCH })).toBeUndefined()
   expect(await band.find({ key: FILTER_SWITCH })).toBeUndefined()
   expect(await band.find({ key: VIEW })).toBeUndefined()
+
+  // On in this chat turns threads off: the band goes, the transcript says /threads turns
+  // them on again, and they come back with the menu shut
+  await band.press({ key: MENU })
+  await band.redraw()
+  await band.press({ key: THREADS_SWITCH })
+  await band.redraw()
+  expect(await band.drawn()).toEqual({ type: 'engine', ref: 0 })
+  expect(session.appended().map(row => row.message)).toEqual([expect.objectContaining({ type: 'system', content: [{ type: 'text', text: OFF_NOTE }] })])
+  await flipThreads($)
+  await band.redraw()
+  expect(await labelOf(MENU)).toBe('⚙ ▾')
+  expect(await band.find({ key: THREADS_SWITCH })).toBeUndefined()
 })
 
 test('the mobile app, which draws no menu, shows the thread picker alone while threads are on', async ($, on) => {
