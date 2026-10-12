@@ -1661,7 +1661,7 @@ test('the move picker opens at the top of its part, beside its tag or in place o
   // the person's message: the picker sits left of its tag, on the right
   const mine = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...userRow('# design\nhi'), requestId: 'u1' })
   await open(mine, 'tag:design')
-  expect(pickerPlacement(await mine.drawn(), /hi/)).toEqual({ ...inFlow, pictures: ['perf', 'none', 'new thread', 'design'] })
+  expect(pickerPlacement(await mine.drawn(), /^hi$/)).toEqual({ ...inFlow, pictures: ['perf', 'none', 'new thread', 'design'] })
 
   // a message of no thread: the picker takes the row "+ thread" held
   const plain = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...userRow('plain words'), requestId: 'u2' })
@@ -1695,11 +1695,13 @@ test('a tag\'s "▾" sits right after its name, alike in messages and replies', 
   ]
   for (const row of rows) {
     const path = pathTo(await row.drawn(), n => n.type === 'Button' && n.props?.label === '▾')
-    const box = path?.at(-2)
+    const box = path?.find(n => n.props?.key === 'tagbox:design')
     // the tag and its "▾" side by side with no gap, the tag's picture ending where its name does
     expect(box?.props?.columnGap).toBe(0)
     const [tag, button] = box?.children as Drawn[]
-    expect(button?.props?.label).toBe('▾')
+    // the "▾" in the Box its tip hangs from
+    expect(button?.props?.key).toBe('tip:tag:design')
+    expect(pathTo(button, n => n.props?.label === '▾')).toBeDefined()
     const source = String(tag?.props?.source)
     const textLength = Number(/textLength="([\d.]+)"/.exec(source)?.[1])
     // set from its start edge, the picture's room left of the text is its inset alone
@@ -1765,11 +1767,11 @@ test('what opens the picker or picks a thread lights under the pointer', async (
   // button); "+ thread" brightens
   const mine = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...userRow('# design\nhi'), requestId: 'u1' })
   const tagPath = pathTo(await mine.drawn(), n => n.props?.key === 'tag:design')
-  const scope = tagPath?.at(-2)?.hover?.scope
+  const tagBox = tagPath?.find(n => n.props?.key === 'tagbox:design')
+  const scope = tagBox?.hover?.scope
   expect(typeof scope).toBe('string')
   expect(tagPath?.at(-1)?.hover).toEqual({ color: design, scope })
-  expect(tagPath?.at(-2)?.props?.key).toBe('tagbox:design')
-  expect(picturesIn(tagPath?.at(-2))).toEqual(['design'])
+  expect(picturesIn(tagBox)).toEqual(['design'])
   const plain = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...userRow('plain words'), requestId: 'u2' })
   expect(pathTo(await plain.drawn(), isAddThread)?.at(-1)?.hover).toEqual({ color: 'text' })
 
@@ -1783,15 +1785,92 @@ test('what opens the picker or picks a thread lights under the pointer', async (
   }
 })
 
+// A tag button's tip, from the drawing it is in: the keyed Box round the button, the
+// card the pointer on it reveals, the card's words, and which side of the button it is
+// set against (a negative offset as wide as the card puts it just past that edge).
+function tipOf(tree: unknown, key: string) {
+  const holder = pathTo(tree, n => n.props?.key === key)?.at(-2)
+  const [button, card] = (holder?.children ?? []) as Drawn[]
+  const width = card?.props?.width
+  const words = ((card?.children?.[0] as Drawn | undefined)?.children ?? []).join('')
+  return {
+    holder: holder?.props?.key,
+    button: button?.props?.key,
+    isRevealed:
+      card?.props?.position === 'absolute' &&
+      card?.props?.display === 'none' &&
+      // the pointer on the button alone: no hover group, which would share it with the tag
+      JSON.stringify(card?.hover) === JSON.stringify({ display: 'flex' }),
+    // on the button's line, never above or below it, where its row would clip it
+    top: card?.props?.top,
+    side: card?.props?.left === -Number(width) ? 'before' : card?.props?.right === -Number(width) ? 'after' : undefined,
+    words,
+    fits: typeof width === 'number' && width > words.length,
+  }
+}
+
+test("a tag's buttons say what they do in a tip on the desktop, on their own line, toward its middle", async ($, on) => {
+  engine(on)
+  await flipThreads($)
+  await $.prompt.submit(say('# design\na\n# perf\nb'))
+  const tip = (key: string, words: string, side: 'before' | 'after') => ({
+    holder: `tip:${key}`,
+    button: key,
+    isRevealed: true,
+    top: 0,
+    side,
+    words,
+    fits: true,
+  })
+  const move = 'Move to another thread'
+  const view = 'Show this thread in the thread view'
+
+  // a person's message, its tags on the right: the "▾" tip to its left, over the tag's
+  // name; the filter buttons, at the line's left, theirs to the right
+  const mine = await (
+    await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...userRow('# design\nhi\n# perf\nfast?'), requestId: 'u1' })
+  ).drawn()
+  expect(tipOf(mine, 'tag:design')).toEqual(tip('tag:design', move, 'before'))
+  expect(tipOf(mine, 'tag-filter:design')).toEqual(tip('tag-filter:design', view, 'after'))
+  expect(tipOf(mine, 'tag-filter:perf')).toEqual(tip('tag-filter:perf', view, 'after'))
+  // each filter button's tip is drawn after the buttons it reaches over: last first,
+  // laid out right to left, so they read in the tags' order
+  const ends = pathTo(mine, n => n.props?.key === 'tip:tag-filter:design')?.at(-2)
+  expect(ends?.props?.flexDirection).toBe('row-reverse')
+  expect(((ends?.children ?? []) as Drawn[]).map(child => child.props?.key)).toEqual(['tip:tag-filter:perf', 'tip:tag-filter:design'])
+
+  // a reply's part, its tag on the left and its filter button on the right: the other way
+  const reply = await (
+    await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...assistantRow('# design\nuse a queue'), requestId: 'r1' })
+  ).drawn()
+  expect(tipOf(reply, 'tag:design')).toEqual(tip('tag:design', move, 'after'))
+  expect(tipOf(reply, 'tag-filter:design')).toEqual(tip('tag-filter:design', view, 'before'))
+
+  // "+ thread" says what it does: no tip
+  const plain = await (await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...userRow('plain words'), requestId: 'u2' })).drawn()
+  expect(pathTo(plain, isAddThread)).toBeDefined()
+  expect(pathTo(plain, n => String(n.props?.key).startsWith('tip:'))).toBeUndefined()
+
+  // with no pointer to show one, the terminal and the mobile app draw the buttons alone
+  for (const surface of ['terminal', 'mobile'] as const) {
+    for (const row of [userRow('# design\nhi'), assistantRow('# design\nuse a queue')]) {
+      const drawn = await (await $.ui.mount({ plugin: 'thread-chat', surface, ...row, requestId: `${surface}-${row.component}` })).drawn()
+      expect(pathTo(drawn, n => n.props?.key === 'tag:design')).toBeDefined()
+      expect(pathTo(drawn, n => String(n.props?.key).startsWith('tip:'))).toBeUndefined()
+    }
+  }
+})
+
 test("a reply part's border pads it alike on every side, and its tag meets its text", async ($, on) => {
   engine(on)
   await flipThreads($)
   await $.prompt.submit(say('# design\na\n# perf\nb'))
   const text = '# design\nuse a queue\n# perf\nit is fine'
-  // The padding props of each thread border, so a lone shorthand shows every side alike.
+  // The padding props of each thread border, so a lone shorthand shows every side alike;
+  // not a tip's card, which only the pointer shows.
   const paddingOf = async (drawing: { findAll: (query: { type?: string }) => Promise<{ props: Record<string, unknown> }[]> }) =>
     (await drawing.findAll({ type: 'Box' }))
-      .filter(box => box.props.borderStyle === 'round')
+      .filter(box => box.props.borderStyle === 'round' && box.props.display !== 'none')
       .map(box => Object.fromEntries(Object.entries(box.props).filter(([k]) => k.startsWith('padding'))))
 
   // the desktop sets all four sides as one; the terminal, whose rows are whole lines, only the sides
