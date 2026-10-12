@@ -57,6 +57,7 @@ The three commands, `/multitask`, `/threads` and `/react`, work alike:
 - `#+name` starts a new thread even when an existing one is close.
 - To put a message in a thread, hover it for `+ thread` (desktop app); to move it to another, press `▾` beside its thread tag. Press `ᯤ`, at the other end of the tag's line, to open the thread view on that thread alone.
 - The thread picker above the prompt, a dropdown named for the picked thread and tinted in its colour, picks the thread messages without a heading go to, or `No thread`. A heading still wins, and moves the picker to its thread.
+- A message is sent with its thread's exact `# name` heading on a line of its own, however its heading was typed, and also when the picker or a reply to a part of a thread chose the thread.
 - `+`, after the thread picker, starts a thread by name and picks it.
 - `/threads manage` shows your threads in the chat, each with buttons to merge, archive or delete it (click them; `done` closes the list).
 - Archived threads leave the pickers but keep their messages; `/threads manage` brings them back, as does a heading naming one. Deleting a thread takes its tag off its messages.

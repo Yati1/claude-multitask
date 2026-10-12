@@ -62,8 +62,11 @@ export function headingsIn(text: string): string[] {
   return [...seen.values()]
 }
 
-// Rewrites each thread heading outside code fences to the name `resolve`
-// answers for it; a heading already spelled that way is left as typed.
+// Whether `# name` reads back as a thread heading of that very name.
+export const isHeadable = (name: string) => headingOf(`# ${name}`) === name
+// Rewrites each thread heading outside code fences to `# ` and the name `resolve`
+// answers for it, its line's `\r` kept. A heading that already reads so is left as
+// typed, and so is one whose name would not read back as that heading.
 export function rewriteHeadings(text: string, resolve: (raw: string) => string): string {
   let isFenced = false
   return text
@@ -73,7 +76,8 @@ export function rewriteHeadings(text: string, resolve: (raw: string) => string):
       const raw = isFenced ? undefined : rawHeadingOf(line)
       if (raw === undefined) return line
       const name = resolve(raw)
-      return name === nameOf(raw) && !raw.startsWith('+') ? line : `# ${name}`
+      if (line.trimEnd() === `# ${name}` || !isHeadable(name)) return line
+      return line.endsWith('\r') ? `# ${name}\r` : `# ${name}`
     })
     .join('\n')
 }
@@ -109,7 +113,7 @@ export function headingStart(text: string, names: string[]): RunOn | undefined {
 
 // Splits each level-1 heading line outside code fences that `split` finds typed
 // with its section's first line on it: the name it answers stays the heading and
-// the rest of the line goes on the line below.
+// the rest of the line goes on the line below, each ending as the line did.
 export function splitRunOns(text: string, split: (typed: string) => RunOn | undefined): string {
   let isFenced = false
   return text
@@ -118,7 +122,8 @@ export function splitRunOns(text: string, split: (typed: string) => RunOn | unde
       if (FENCE.test(line)) isFenced = !isFenced
       const typed = isFenced ? undefined : RUN_ON.exec(line.trimEnd())?.[1]
       const runOn = typed === undefined ? undefined : split(typed)
-      return runOn === undefined ? line : `# ${runOn.name}\n${runOn.rest}`
+      const cr = line.endsWith('\r') ? '\r' : ''
+      return runOn === undefined ? line : `# ${runOn.name}${cr}\n${runOn.rest}${cr}`
     })
     .join('\n')
 }
@@ -213,11 +218,10 @@ export function replyQuotesOf(text: string): string[] {
 
 export type LeadingQuote = { quote: string; rest: string }
 
-// The replies to selected parts a text opens with (their markers, quoted lines and the
-// blank lines between them), and the rest of it from the first other line; none where
-// it opens with no quoted selection. The lines are kept as typed, line ends and all.
-export function leadingQuoteOf(text: string): LeadingQuote | undefined {
-  const lines = text.split('\n')
+// How many lines the replies to selected parts a text opens with take (their markers,
+// quoted lines and the blank lines between them); none where it opens with no quoted
+// selection.
+function quoteLinesOf(lines: string[]): number | undefined {
   let end = 0
   let isQuoting = false
   let hasQuote = false
@@ -235,8 +239,35 @@ export function leadingQuoteOf(text: string): LeadingQuote | undefined {
     }
     end = at + 1
   }
-  if (!hasQuote) return undefined
+  return hasQuote ? end : undefined
+}
+
+// The replies to selected parts a text opens with (their markers, quoted lines and the
+// blank lines between them), and the rest of it from the first other line; none where
+// it opens with no quoted selection. The lines are kept as typed, line ends and all.
+export function leadingQuoteOf(text: string): LeadingQuote | undefined {
+  const lines = text.split('\n')
+  const end = quoteLinesOf(lines)
+  if (end === undefined) return undefined
   return { quote: lines.slice(0, end).join('\n').trim(), rest: lines.slice(end).join('\n').trim() }
+}
+
+// A message of no thread heading with the heading of the thread it went to put where
+// that thread's section starts: after the quoted selections it opens with, as a quote
+// right before a heading is in that heading's thread, else on its first line. Blank
+// lines round the text and after the quotes go; its line ends are kept, `\r\n` or `\n`.
+export function withHeading(text: string, name: string): string {
+  const nl = text.includes('\r\n') ? '\r\n' : '\n'
+  const lines = text
+    .replace(/\r\n/g, '\n')
+    .replace(/^(?:[ \t]*\n)+/, '')
+    .trimEnd()
+    .split('\n')
+  const end = quoteLinesOf(lines) ?? 0
+  let from = end
+  while (from < lines.length && (lines[from] ?? '').trim() === '') from++
+  const opening = end === 0 ? [] : [...lines.slice(0, end), '']
+  return [...opening, `# ${name}`, ...lines.slice(from)].join(nl)
 }
 
 // A person's sections with a quoted selection that opens the message, right before its
