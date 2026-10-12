@@ -25,7 +25,7 @@ claude plugin install thread-chat@claude-multitask
 claude plugin install react@claude-multitask
 ```
 
-Install any or all of them. Once installed, a line above the prompt names each new mod's command, until you dismiss it. The full guide, with every command: [docs/getting-started.md](docs/getting-started.md).
+Install any or all of them. Once installed, a line above the prompt names each new mod's command, until you dismiss it. Getting started: a quick start for each mod, in [docs/getting-started.md](docs/getting-started.md).
 
 ## Use
 
