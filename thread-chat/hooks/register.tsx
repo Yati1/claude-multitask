@@ -96,6 +96,8 @@ import {
   withUsage,
 } from './summaries'
 import type { LineInput } from './summaries'
+import { argumentHint, descriptionOf, runSwitch } from './command'
+import type { Names, Session, State } from './command'
 import { watchSwitch } from './ui-switch'
 
 const isOn = atom({ plugin: 'thread-chat', key: 'isOn' } as const, false)
@@ -280,19 +282,19 @@ async function settle($: EngineInterface) {
   await setThreads($, chosen ?? (await read($, isOnByDefault)))
 }
 
-// `/threads default`: flips the default, which this session follows too unless the person
-// chose here; says what the default now is.
-async function flipDefault($: EngineInterface): Promise<string> {
-  let now = false
-  await update($, isOnByDefault, was => (now = !was))
+// `/threads default on|off`: sets the default, which this session follows too unless the
+// person chose here; says what the default now is.
+async function setDefault($: EngineInterface, now: boolean): Promise<string> {
+  await update($, isOnByDefault, () => now)
   await $.store.set(DEFAULT_KEY, now).catch(() => undefined)
   await settle($)
   await save($)
+  redescribe($)
   const word = now ? 'on' : 'off'
   const said = `New chats now start with threads ${word}, as do chats where you have not turned them on or off.`
   const chosen = await read($, choice)
   if (chosen === null || chosen === now) return said
-  return `${said} This chat keeps them ${chosen ? 'on' : 'off'}; /threads turns them ${chosen ? 'off' : 'on'} here.`
+  return `${said} This chat keeps them ${chosen ? 'on' : 'off'}; /threads ${chosen ? 'off' : 'on'} turns them ${chosen ? 'off' : 'on'} here.`
 }
 
 const CREATE_SPEC = {
@@ -338,6 +340,7 @@ async function flipFilter($: EngineInterface) {
 async function setThreads($: EngineInterface, now: boolean) {
   if ((await read($, isOn)) === now) return
   await update($, isOn, () => now)
+  redescribe($)
   if (now && (await read($, agentMayCreate))) await offerCreateTool($)
   if (!now) {
     await update($, menuOpen, () => false)
@@ -352,16 +355,51 @@ async function setThreads($: EngineInterface, now: boolean) {
 
 // Turns threads on or off, as /threads does, as the person's choice in this session over
 // the default, and keeps the switch for the session's next run.
-async function flipThreads($: EngineInterface): Promise<boolean> {
-  const now = !(await read($, isOn))
+async function chooseThreads($: EngineInterface, now: boolean) {
   await update($, choice, () => now)
   await setThreads($, now)
   await save($)
+}
+
+// Flips threads, as the menu's switch does; whether they are now on.
+async function flipThreads($: EngineInterface): Promise<boolean> {
+  const now = !(await read($, isOn))
+  await chooseThreads($, now)
   return now
 }
 
 // What /threads says as it turns threads off, and the transcript as the menu does.
 const OFF_NOTE = 'Threads are off. They are kept for when /threads turns them on again.'
+const ON_TEXT = 'Threads are on: start or reply to one with a # name heading (or + thread in the desktop app).'
+
+// `/threads` and its arguments, as every mod's switch takes them (command.ts).
+const NAMES: Names = { command: 'threads', noun: 'Threads', be: 'are' }
+
+async function stateOf($: EngineInterface): Promise<State> {
+  return { isOnHere: await read($, isOn), choiceHere: await read($, choice), isOnByDefault: await read($, isOnByDefault), detail: '' }
+}
+
+function sessionOf($: EngineInterface): Session {
+  return {
+    state: () => stateOf($),
+    canAsk: async () => (await $.session.surfaces().catch(() => [])).length > 0,
+    ask: (question, options) => $.ui.ask(question, options),
+    setHere: async now => {
+      await chooseThreads($, now)
+      return now ? ON_TEXT : OFF_NOTE
+    },
+    setDefault: now => setDefault($, now),
+  }
+}
+
+// Has the menu ask for /threads's line again, as what it says has changed.
+function redescribe($: EngineInterface) {
+  try {
+    $.ui.invalidate('command.describe')
+  } catch {
+    // the menu keeps the line it had
+  }
+}
 
 // Threads turned off from the menu, which goes with the band: the transcript says how
 // to turn them on again, as a notice the model never reads; a line drawn like one where
@@ -3157,7 +3195,7 @@ export const register: Register = (on, options) => {
     await $.command.register({
       name: 'threads',
       description: 'Turn conversation threads on or off in this chat, or by default in new chats',
-      argumentHint: '[default]',
+      argumentHint: argumentHint(NAMES),
     })
     await $.command.register({ name: VIEW, description: 'Read the threads you pick, without tool rows, in a pane' })
     // A restarted or resumed session takes up the rows its thread view kept; a reloaded
@@ -3245,20 +3283,17 @@ export const register: Register = (on, options) => {
     // its next run looking for a session it came from.
     if (taken.length > 0 && (await read($, isOn))) await keepViewRows($, id, taken)
     await save($)
+    redescribe($)
 
     return next(e)
   })
 
-  // `/threads` flips threads on or off in this chat; `/threads default` flips the default.
-  on('command.run', { command: 'threads' }, async ($, e) => {
-    if (e.args.trim().toLowerCase() === 'default') return { text: await flipDefault($) }
-    const now = await flipThreads($)
-    return {
-      text: now
-        ? 'Threads are on: start or reply to one with a # name heading (or + thread in the desktop app).'
-        : OFF_NOTE,
-    }
-  })
+  // `/threads` asks whether threads are on in this chat, then in new chats; its arguments
+  // set either, or say how they are (command.ts).
+  on('command.run', { command: 'threads' }, async ($, e) => ({ text: await runSwitch(sessionOf($), NAMES, e.args) }))
+
+  // The menu's line for /threads says whether threads are on here and in new chats.
+  on('command.describe', { command: 'threads' }, async ($, e, next) => next({ ...e, description: descriptionOf(NAMES, await stateOf($)) }))
 
   on('prompt.submit', async ($, e, next) => {
     if (!PERSON.has(e.origin.kind)) return next(e)

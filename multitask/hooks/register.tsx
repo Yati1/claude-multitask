@@ -37,6 +37,8 @@ import {
 } from './prompts'
 import { TELL_FIELD, drawThoughts } from './pane'
 import { BLINK_MS, FADE_MS, drawThoughtsButton } from './band'
+import { argumentHint, askAmong, descriptionOf, runSwitch, statusOf as switchStatus, usageOf, wordsOf } from './command'
+import type { Names, Session, State } from './command'
 import { watchSwitch } from './ui-switch'
 
 const isOn = atom({ plugin: 'multitask', key: 'isOn' } as const, false)
@@ -405,6 +407,7 @@ async function offerVoiceTools($: EngineInterface) {
 async function setMode($: EngineInterface, now: boolean) {
   if (now === (await read($, isOn))) return
   await update($, isOn, () => now)
+  redescribe($)
   if (now) {
     await offerVoiceTools($)
     // What fell due for a thought while off goes to it now that it can be resumed again.
@@ -413,15 +416,14 @@ async function setMode($: EngineInterface, now: boolean) {
   await keepSwitch($)
 }
 
-// `/multitask`: turns the mod on in this chat, in Multitask mode, or off, leaving
-// Multitask mode; the chat's own choice from then on, whatever the default. Whether it is
-// now on.
-async function flipEnabled($: EngineInterface): Promise<boolean> {
-  const now = !(await isEnabled($))
+// `/multitask on|off`: turns the mod on in this chat, in Multitask mode, or off, leaving
+// Multitask mode; the chat's own choice from then on, whatever the default. What to say.
+async function setEnabled($: EngineInterface, now: boolean): Promise<string> {
   await update($, choice, () => now)
   await setMode($, now)
   await keepSwitch($)
-  return now
+  redescribe($)
+  return now ? ON_TEXT : OFF_TEXT
 }
 
 // Switches to the mode picked in the band's dropdown; the mode the chat is in already,
@@ -431,11 +433,24 @@ async function pickMode($: EngineInterface, value: string) {
   if (wantsOn !== undefined && (await isEnabled($))) await setMode($, wantsOn)
 }
 
-// `/multitask mode`: switches between Multitask and Focus, as the band's dropdown does (the
-// mobile app draws none); says which the chat is now in. Off, it says how to turn it on.
-async function flipMode($: EngineInterface): Promise<string> {
+// `/multitask mode [multitask|focus]`: switches between Multitask and Focus, as the band's
+// dropdown does (the mobile app draws none); alone, it asks which. Says which the chat is
+// now in; already in it, or not answered, changes nothing. Off, it says how to turn it on.
+async function runMode($: EngineInterface, words: readonly string[]): Promise<string> {
+  const [, picked, ...rest] = words
+  const wanted = picked === MULTITASK_MODE ? true : picked === FOCUS_MODE ? false : undefined
+  if (rest.length > 0 || (picked !== undefined && wanted === undefined)) return usageOf(NAMES)
   if (!(await isEnabled($))) return `${OFF_TEXT} It comes on in Multitask mode; \`/multitask mode\` then switches to Focus.`
-  const now = !(await read($, isOn))
+  const isMultitask = await read($, isOn)
+  let now = wanted
+  if (now === undefined) {
+    const session = sessionOf($)
+    if (!(await session.canAsk())) return switchStatus(NAMES, await stateOf($))
+    const answer = await askAmong(session.ask, 'Which mode for this chat?', 'Mode', ['Multitask', 'Focus'], isMultitask ? 0 : 1)
+    if (answer === undefined) return `No change. ${switchStatus(NAMES, await stateOf($))}`
+    now = answer === 0
+  }
+  if (now === isMultitask) return `This chat is already in ${now ? 'Multitask' : 'Focus'} mode.`
   await setMode($, now)
   return now ? MULTITASK_TEXT : FOCUS_TEXT
 }
@@ -443,11 +458,9 @@ async function flipMode($: EngineInterface): Promise<string> {
 // What /multitask says.
 const ON_TEXT =
   'Multitask is on in this chat, in Multitask mode: this chat is now the voice and hands all work to thoughts. Pick Focus above the prompt, or use `/multitask mode`, to work with the agent as usual.'
-const OFF_TEXT = 'Multitask is off in this chat; `/multitask` turns it on.'
+const OFF_TEXT = 'Multitask is off in this chat; `/multitask on` turns it on.'
 const MULTITASK_TEXT = 'Multitask mode: this chat is now the voice and hands all work to thoughts.'
 const FOCUS_TEXT = 'Focus mode: this chat does its work itself again.'
-const USAGE =
-  '`/multitask` turns Multitask on or off in this chat, `/multitask mode` switches between Multitask and Focus, and `/multitask default` sets whether new chats start with it on.'
 
 // Whether the mod is on in new chats, and in those never switched with /multitask: the
 // person's choice for every chat, kept under its own key; off until they choose.
@@ -458,19 +471,51 @@ async function takeUpDefault($: EngineInterface) {
   if (typeof chosen === 'boolean') await update($, isEnabledByDefault, () => chosen)
 }
 
-// `/multitask default`: flips the default, which this chat follows too unless the person
-// switched it with /multitask: turned on so, it stays in Focus, and turned off, it leaves
-// Multitask mode. Says what the default now is.
-async function flipDefault($: EngineInterface): Promise<string> {
-  let now = false
-  await update($, isEnabledByDefault, was => (now = !was))
+// `/multitask default on|off`: sets the default, which this chat follows too unless the
+// person switched it with /multitask: turned on so, it stays in Focus, and turned off, it
+// leaves Multitask mode. Says what the default now is.
+async function setDefault($: EngineInterface, now: boolean): Promise<string> {
+  await update($, isEnabledByDefault, () => now)
   await $.store.set(DEFAULT_KEY, now).catch(() => undefined)
   await settleMode($)
+  redescribe($)
   const word = now ? 'on' : 'off'
   const said = `Multitask is now ${word} by default, in new chats and in chats where you have not used \`/multitask\`.`
   const chosen = await read($, choice)
   if (chosen === null || chosen === now) return said
-  return `${said} This chat keeps it ${chosen ? 'on' : 'off'}; \`/multitask\` turns it ${chosen ? 'off' : 'on'} here.`
+  return `${said} This chat keeps it ${chosen ? 'on' : 'off'}; \`/multitask ${chosen ? 'off' : 'on'}\` turns it ${chosen ? 'off' : 'on'} here.`
+}
+
+// `/multitask` and its arguments, as every mod's switch takes them (command.ts), and
+// `mode` beside them.
+const NAMES: Names = { command: 'multitask', noun: 'Multitask', be: 'is', extraUsage: 'mode [multitask|focus]' }
+
+async function stateOf($: EngineInterface): Promise<State> {
+  return {
+    isOnHere: await isEnabled($),
+    choiceHere: await read($, choice),
+    isOnByDefault: await read($, isEnabledByDefault),
+    detail: (await read($, isOn)) ? 'Multitask mode' : 'Focus mode',
+  }
+}
+
+function sessionOf($: EngineInterface): Session {
+  return {
+    state: () => stateOf($),
+    canAsk: async () => (await $.session.surfaces().catch(() => [])).length > 0,
+    ask: (question, options) => $.ui.ask(question, options),
+    setHere: now => setEnabled($, now),
+    setDefault: now => setDefault($, now),
+  }
+}
+
+// Has the menu ask for /multitask's line again, as what it says has changed.
+function redescribe($: EngineInterface) {
+  try {
+    $.ui.invalidate('command.describe')
+  } catch {
+    // the menu keeps the line it had
+  }
 }
 
 // Where a session's switch is kept between runs of the app: whether it is in Multitask
@@ -1196,10 +1241,11 @@ export const register: Register = (on, options) => {
     if ((await read($, isOn)) || (hasThoughts && (await isEnabled($)))) await offerVoiceTools($)
     await $.command.register({
       name: 'multitask',
-      description: 'Turn Multitask on or off in this chat',
-      argumentHint: '[mode | default]',
+      description: 'Turn Multitask on or off in this chat, or by default in new chats',
+      argumentHint: argumentHint(NAMES),
     })
     await $.command.register({ name: 'thoughts', description: 'Show the multitasking thoughts in a pane' })
+    redescribe($)
     return next(e)
   })
 
@@ -1214,17 +1260,18 @@ export const register: Register = (on, options) => {
   // is offered while Multitask is on; the model still cannot start one (tool.check, below).
   on('agent.offer', { agent: AGENT }, async ($, e, next) => ((await read($, isOn)) ? next(e) : { isOffered: false }))
 
-  // `/multitask` turns the mod on or off in this chat; `/multitask mode` switches between
-  // Multitask and Focus; `/multitask default` flips whether new chats start with it on.
+  // `/multitask` asks whether the mod is on in this chat, then in new chats; its arguments
+  // set either, or say how it is (command.ts); `/multitask mode` switches between Multitask
+  // and Focus.
   on('command.run', { command: 'multitask' }, async ($, e) => {
-    const word = (e.args.trim().split(/\s+/)[0] ?? '').toLowerCase()
-    let text = USAGE
-    if (word === '') text = (await flipEnabled($)) ? ON_TEXT : OFF_TEXT
-    else if (word === 'mode') text = await flipMode($)
-    else if (word === 'default') text = await flipDefault($)
+    const words = wordsOf(e.args)
+    const text = words[0] === 'mode' ? await runMode($, words) : await runSwitch(sessionOf($), NAMES, e.args)
     await handOverDue($)
     return { text }
   })
+
+  // The menu's line for /multitask says whether the mod is on here, in which mode, and in new chats.
+  on('command.describe', { command: 'multitask' }, async ($, e, next) => next({ ...e, description: descriptionOf(NAMES, await stateOf($)) }))
 
   on('command.run', { command: 'thoughts' }, async $ => {
     await $.ui.open({ id: PANE, title: 'Thoughts' })

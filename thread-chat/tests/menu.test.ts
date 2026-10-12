@@ -48,7 +48,7 @@ const OFF_NOTE = 'Threads are off. They are kept for when /threads turns them on
 const say = (text: string) => ({ text, origin: { kind: 'composer' as const }, wait: false })
 
 const flipThreads = ($: Engine) =>
-  $.command.run({ command: 'threads', args: '', origin: { kind: 'composer' }, presentation: {} as never })
+  $.command.run({ command: 'threads', args: 'toggle', origin: { kind: 'composer' }, presentation: {} as never })
 
 type Drawn = { type?: string; props?: Record<string, unknown>; hover?: unknown; children?: unknown[] }
 

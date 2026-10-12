@@ -168,7 +168,7 @@ const BAND = {
   props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 100, scroll: { offset: 0, bodyRows: 10 }, view: {} },
 } as const
 
-const flipThreads = ($: Engine) => $.command.run({ command: 'threads', args: '', origin: { kind: 'composer' }, presentation: {} as never })
+const flipThreads = ($: Engine) => $.command.run({ command: 'threads', args: 'toggle', origin: { kind: 'composer' }, presentation: {} as never })
 
 // The summaries part of `/thread-view trace`.
 async function summaryTrace($: Engine): Promise<string> {

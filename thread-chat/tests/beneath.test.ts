@@ -29,7 +29,7 @@ function engine(on: On) {
 
 const say = (text: string) => ({ text, origin: { kind: 'composer' as const }, wait: false })
 const flipThreads = ($: Engine) =>
-  $.command.run({ command: 'threads', args: '', origin: { kind: 'composer' }, presentation: {} as never })
+  $.command.run({ command: 'threads', args: 'toggle', origin: { kind: 'composer' }, presentation: {} as never })
 const userRow = (text: string) =>
   ({ component: 'UserMessage', props: { text, origin: { kind: 'composer' }, isExpanded: false } }) as const
 

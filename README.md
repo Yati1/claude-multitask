@@ -31,21 +31,28 @@ Install any or all of them.
 
 In the band above the prompt, Multitask, while it is on, has a dropdown, and thread-chat, while threads are on, a thread picker followed by its threads menu, a cog (`⚙`), with their switches for the chat. The mobile app shows only the thread picker: use the commands there. React has no control in the band: `/react` is its switch.
 
+The three commands, `/multitask`, `/threads` and `/react`, work alike:
+
+- Alone, the command asks two questions: whether the mod is on in this chat, then whether it is on in new chats (the default), each with its current value marked. Dismissing a question changes nothing more.
+- `on` or `off` (or `enable`, `disable`) sets this chat, `toggle` switches it, and `status` says how it is set, here and in new chats.
+- `default` asks about new chats alone; `default on` or `default off` sets them.
+- In the command menu, each command's line shows how it is set, here and in new chats.
+
 ### Multitask
 
-- Multitask is off in a new chat, unless you change the default (below). `/multitask` turns it on in that chat (again to turn it off). The choice is per chat, and kept when the chat is restarted.
-- While it is on, the chat is in one of two modes. It starts in `Multitask` mode, where the chat becomes the voice and hands all work to thoughts. In `Focus` you work with the agent as usual. Multitask's dropdown shows the mode; pick the other to switch. `/multitask mode` switches too, and is the way to switch in the mobile app, which has no dropdown.
+- Multitask is off in a new chat, unless you change the default (below). `/multitask on` turns it on in that chat, and `/multitask off` turns it off. The choice is per chat, and kept when the chat is restarted.
+- While it is on, the chat is in one of two modes. It starts in `Multitask` mode, where the chat becomes the voice and hands all work to thoughts. In `Focus` you work with the agent as usual. Multitask's dropdown shows the mode; pick the other to switch. `/multitask mode` asks which mode, and `/multitask mode multitask` or `/multitask mode focus` switches to it: the way to switch in the mobile app, which has no dropdown.
 - While it is off, Multitask shows nothing above the prompt (only the `thoughts` button, while a thought it started is running), and the chat stays in Focus. Turning it off in Multitask mode switches to Focus.
-- `/multitask default` switches whether Multitask is on by default: in new chats, and in chats where you have not used `/multitask`. A chat's own `/multitask` choice wins over the default. A new chat it is on in starts in Multitask mode; a chat already open that it turns on starts in Focus. The default applies to every chat and is kept across restarts.
+- `/multitask default on` or `off` sets whether Multitask is on by default: in new chats, and in chats where you have not used `/multitask`. A chat's own `/multitask` choice wins over the default. A new chat it is on in starts in Multitask mode; a chat already open that it turns on starts in Focus. The default applies to every chat and is kept across restarts.
 - Left of the dropdown, the `thoughts` button holds a dot in its colour for each running thought, which blinks as the thought works, swells a little at each of its notes, and fades out as it ends, as a check, or a cross if it failed. In the desktop app, hover a dot for the thought's name, latest note and its age.
 - `/thoughts`, or a click anywhere on the `thoughts` button (a dot included), opens the Thoughts pane: what each thought is doing and how long since its last note, its report, `tell` to send it a message yourself, and `stop`. It lists the 16 most recently ended thoughts (`N more` shows the rest). The thoughts are per chat, and kept when the chat is restarted.
 - The `voiceEffort` setting (Voice effort, in `/config`) sets how hard the voice thinks: `low` (default), `medium`, `high`, or `session` to match the session. Thoughts keep the session's setting.
 
 ### Threads
 
-- Threads are off in a new chat. `/threads` turns them on in that chat (again to turn them off). While they are on, the threads menu (the cog) above the prompt has an `On in this chat` switch that turns them off too. The menu opens while the pointer is on the cog or it has the focus in the desktop app, and with a press on it in the terminal. The choice is per chat, and kept when the chat is restarted.
-- `/threads default` switches whether threads are on by default: in new chats, and in chats where you have not turned them on or off. A chat's own choice wins over the default. The default applies to every chat and is kept across restarts.
-- While threads are off, thread-chat shows nothing: no picker or menu above the prompt, no thread tags, no thread view. Your threads are kept for when `/threads` turns them on again.
+- Threads are off in a new chat. `/threads on` turns them on in that chat, and `/threads off` turns them off. While they are on, the threads menu (the cog) above the prompt has an `On in this chat` switch that turns them off too. The menu opens while the pointer is on the cog or it has the focus in the desktop app, and with a press on it in the terminal. The choice is per chat, and kept when the chat is restarted.
+- `/threads default on` or `off` sets whether threads are on by default: in new chats, and in chats where you have not turned them on or off. A chat's own choice wins over the default. The default applies to every chat and is kept across restarts.
+- While threads are off, thread-chat shows nothing: no picker or menu above the prompt, no thread tags, no thread view. Your threads are kept for when `/threads on` turns them on again.
 - A `# name` heading in a message starts a thread, or replies to it if it exists. Close or abbreviated names find the existing thread. The agent replies under the same headings.
 - `#+name` starts a new thread even when an existing one is close.
 - To put a message in a thread, hover it for `+ thread` (desktop app); to move it to another, press `▾` beside its thread tag. Press `▽` beside it to open the thread view on that thread alone.
@@ -63,7 +70,7 @@ In the band above the prompt, Multitask, while it is on, has a dropdown, and thr
 
 ### Reactions
 
-- Reactions are on in a new chat. `/react` turns them off in that chat (again to turn them back on). The choice is per chat, and kept when the chat is restarted.
-- `/react default` switches whether reactions are on by default: in new chats, and in chats where you have not used `/react`. A chat's own `/react` choice wins over the default. The default applies to every chat and is kept across restarts.
+- Reactions are on in a new chat. `/react off` turns them off in that chat, and `/react on` back on. The choice is per chat, and kept when the chat is restarted.
+- `/react default on` or `off` sets whether reactions are on by default: in new chats, and in chats where you have not used `/react`. A chat's own `/react` choice wins over the default. The default applies to every chat and is kept across restarts.
 - While they are on, a reply of a single emoji shows as a reaction on your message, not as a reply. With thread-chat, reactions show in its thread view too.
 - On the desktop the reaction sits on your message's bottom-right corner.

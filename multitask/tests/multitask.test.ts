@@ -187,10 +187,14 @@ const BAND = {
   },
 } as const
 
-// Runs /multitask, with `args`, as the person types it; its output. Alone, it turns the mod
-// on in the chat, in Multitask mode, or off.
-const multitask = async ($: Engine, args = '') =>
+// Runs /multitask, with `args`, as the person types it; its output. With none given, it
+// toggles: turns the mod on in the chat, in Multitask mode, or off.
+const multitask = async ($: Engine, args = 'toggle') =>
   (await $.command.run({ command: 'multitask', args, origin: { kind: 'composer' }, presentation: {} as never })).text
+
+// Switches the chat to the other mode, as `/multitask mode multitask` or `focus` does.
+const switchMode = async ($: Engine) =>
+  multitask($, (await multitask($, 'status'))?.includes('Multitask mode') === true ? 'mode focus' : 'mode multitask')
 
 const finished = (agentId: string) => ({
   answer: '',
@@ -262,7 +266,7 @@ test('a session that never turns Multitask on is left as it is: no band, no tool
   // turned on, it is in Multitask mode: the voice has its tools and the band shows
   // `thoughts`; in Focus, a reload while it has thoughts offers them again, and `thoughts`
   // stays while they do
-  const flip = () => multitask($, 'mode')
+  const flip = () => switchMode($)
   await multitask($)
   expect(registered).toEqual(['think', 'tell', 'unqueue', 'stop', 'thoughts'])
   await band.redraw()
@@ -430,7 +434,7 @@ test('the voice is refused work, and its thoughts relay, queue and unqueue', asy
   // Turned on, then in Focus, with no thoughts the band has no `thoughts`, only the
   // dropdown: Multitask in it switches to Multitask mode.
   await multitask($)
-  await multitask($, 'mode')
+  await multitask($, 'mode focus')
   const band = await $.ui.mount({ plugin: 'multitask', surface: 'desktop', ...BAND })
   expect(await band.find({ key: 'open-thoughts' })).toBeUndefined()
   expect(await modeOf(band)).toBe('focus')
@@ -519,7 +523,7 @@ test('the voice is told as Multitask comes on and goes off, and thinks less hard
   const seen = engine($, on)
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
   const say = (text: string) => $.prompt.submit({ text, origin: { kind: 'composer' }, wait: false })
-  const flip = () => multitask($, 'mode')
+  const flip = () => switchMode($)
   const step = async (agentId?: string) => {
     const stream = $.turn.step({ turnId: 't', index: 0, model: 'opus', effort: 'xhigh', messageCount: 1, ...(agentId === undefined ? {} : { agentId }) })
     for await (const _ of stream) void _
@@ -590,7 +594,7 @@ test('a session keeps its switch for its next run, with its messages\' marks onc
   mock.clock(on, { now: 1000 })
   engine($, on, undefined, null)
   on('session.messages', () => ({ value: listed(SAID) }))
-  const flip = () => multitask($, 'mode')
+  const flip = () => switchMode($)
 
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
   expect(store['session:session-1']).toEqual({ isOn: false, choice: null, at: 1000, marks: [] })
@@ -708,7 +712,7 @@ for (const one of TAKEN_UP) {
   })
 }
 
-test('`/multitask default` flips whether new chats start with Multitask on, off at first; a chat that chose keeps its choice', async ($, on) => {
+test('`/multitask default on|off` sets whether new chats start with Multitask on, off at first; a chat that chose keeps its choice', async ($, on) => {
   const store = liveStore(on)
   const seen = engine($, on, undefined, null)
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
@@ -721,7 +725,7 @@ test('`/multitask default` flips whether new chats start with Multitask on, off 
 
   // this chat, never switched, follows the default: open, it stays in Focus, the dropdown
   // alone, no `thoughts`, no tools, no notes
-  expect(await multitask($, 'default')).toBe(
+  expect(await multitask($, 'default on')).toBe(
     'Multitask is now on by default, in new chats and in chats where you have not used `/multitask`.',
   )
   expect(store.isEnabledByDefault).toBe(true)
@@ -730,7 +734,7 @@ test('`/multitask default` flips whether new chats start with Multitask on, off 
   expect(seen.registered).toEqual([])
   await $.prompt.submit({ text: 'hello', origin: { kind: 'composer' }, wait: false })
   expect(seen.prompts.at(-1)).toBe('hello')
-  expect(await multitask($, 'default')).toBe(
+  expect(await multitask($, 'default off')).toBe(
     'Multitask is now off by default, in new chats and in chats where you have not used `/multitask`.',
   )
   expect(store.isEnabledByDefault).toBe(false)
@@ -738,16 +742,16 @@ test('`/multitask default` flips whether new chats start with Multitask on, off 
 
   // one switched keeps its choice, and says so
   await multitask($)
-  expect(await multitask($, 'default')).toBe(
+  expect(await multitask($, 'default enable')).toBe(
     'Multitask is now on by default, in new chats and in chats where you have not used `/multitask`.',
   )
-  expect(await multitask($, 'default')).toBe(
-    'Multitask is now off by default, in new chats and in chats where you have not used `/multitask`. This chat keeps it on; `/multitask` turns it off here.',
+  expect(await multitask($, 'default disable')).toBe(
+    'Multitask is now off by default, in new chats and in chats where you have not used `/multitask`. This chat keeps it on; `/multitask off` turns it off here.',
   )
   expect(await mode()).toBe('multitask')
   await multitask($)
-  expect(await multitask($, 'default')).toBe(
-    'Multitask is now on by default, in new chats and in chats where you have not used `/multitask`. This chat keeps it off; `/multitask` turns it on here.',
+  expect(await multitask($, 'default on')).toBe(
+    'Multitask is now on by default, in new chats and in chats where you have not used `/multitask`. This chat keeps it off; `/multitask on` turns it on here.',
   )
   expect(await mode()).toBeUndefined()
 })
@@ -766,7 +770,7 @@ test('a new chat starts in Multitask mode while the default is on, and leaves it
   // it follows the default, not a choice of its own
   expect(store['session:session-1']).toMatchObject({ isOn: true, choice: null })
 
-  expect(await multitask($, 'default')).toBe(
+  expect(await multitask($, 'default off')).toBe(
     'Multitask is now off by default, in new chats and in chats where you have not used `/multitask`.',
   )
   await band.redraw()
@@ -786,7 +790,7 @@ test('turning Multitask off in a chat leaves Multitask mode and the band, but `t
   await $.tool.call({ tool: 'mcp__multitask__think', tool_use_id: 'c1', name: 'auth bug', task: 'Find why login fails' })
   await $.prompt.submit({ text: 'hello', origin: { kind: 'composer' }, wait: false })
 
-  expect(await multitask($)).toBe('Multitask is off in this chat; `/multitask` turns it on.')
+  expect(await multitask($)).toBe('Multitask is off in this chat; `/multitask on` turns it on.')
   await band.redraw()
   expect(await modeOf(band)).toBeUndefined()
   expect(await thoughtsShown(band)).toBe('thoughts ●')
@@ -796,7 +800,7 @@ test('turning Multitask off in a chat leaves Multitask mode and the band, but `t
 
   // off, the mode is not switched: the command says how to turn it on
   expect(await multitask($, 'mode')).toBe(
-    'Multitask is off in this chat; `/multitask` turns it on. It comes on in Multitask mode; `/multitask mode` then switches to Focus.',
+    'Multitask is off in this chat; `/multitask on` turns it on. It comes on in Multitask mode; `/multitask mode` then switches to Focus.',
   )
   await band.redraw()
   expect(await modeOf(band)).toBeUndefined()
@@ -815,7 +819,9 @@ test('turning Multitask off in a chat leaves Multitask mode and the band, but `t
   expect(seen.registered).toEqual([])
 
   // on again, in Multitask mode; anything else is not a switch
-  expect(await multitask($, 'sideways')).toContain('`/multitask mode` switches between Multitask and Focus')
+  expect(await multitask($, 'sideways')).toBe(
+    'Usage: `/multitask [on|off|toggle|status|mode [multitask|focus]|default [on|off]]`; with no argument it asks.',
+  )
   await band.redraw()
   expect(await modeOf(band)).toBeUndefined()
   expect(await multitask($)).toContain('Multitask is on in this chat, in Multitask mode')
@@ -1090,7 +1096,7 @@ test("the engine's hand-back of a thought's report goes in as the wake-up while 
   mock.clock(on)
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
   await multitask($)
-  const flip = () => multitask($, 'mode')
+  const flip = () => switchMode($)
   const handBack = (from: string, report: string) =>
     `Another Claude session sent a message:\n<agent-message from="${from}">\n[Subagent hand-back] ${report}\n</agent-message>`
   const deliver = (text: string) => $.prompt.submit({ text, origin: { kind: 'peer' }, wait: false })
@@ -1151,7 +1157,7 @@ test("the engine's notice that a thought's turn ended goes in as the relay while
   const clock = mock.clock(on)
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
   await multitask($)
-  const flip = () => multitask($, 'mode')
+  const flip = () => switchMode($)
   const notice = (result: string) =>
     `<task-notification>\n<task-id>agent-1</task-id>\n<status>completed</status>\n<result>${result}</result>\n</task-notification>`
   const notify = (text: string) => $.prompt.submit({ text, origin: { kind: 'task-notification' }, wait: false })
@@ -1432,7 +1438,7 @@ test('a message that does not reach its thought says so: as an error from tell, 
 test('a message to a thought whose run has ended resumes it while Multitask is on; while off, it waits for Multitask', async ($, on) => {
   const seen = engine($, on)
   const clock = mock.clock(on)
-  const flip = () => multitask($, 'mode')
+  const flip = () => switchMode($)
   const provider = { plugin: 'multitask', tier: 'user' as const }
   const offered = async () => (await $.agent.offer({ agent: 'multitask:thought', description: '', source: 'plugin', provider })).isOffered
   const tell = (id: string, message: string, how?: string) =>
@@ -1914,7 +1920,7 @@ test("the person tells a thought something from its card: it gets it, resuming i
   // In Focus, no card offers it; nor with Multitask off. The pane's first line says which.
   const heading = async () => (await pane.find({ type: 'Text', text: / · 1 running$/ }))?.text
   expect(await heading()).toBe('Multitask mode · 1 running')
-  await multitask($, 'mode')
+  await multitask($, 'mode focus')
   await pane.redraw()
   expect(await pane.find({ key: 'tell:agent-1' })).toBeUndefined()
   expect(await heading()).toBe('Focus mode · 1 running')
@@ -2018,10 +2024,10 @@ test('no button of the mod is below the input, and the mobile app, which draws n
   await $.prompt.submit({ text: 'hello', origin: { kind: 'composer' }, wait: false })
   expect(seen.prompts.at(-1)).toContain('# Multitasking mind')
   // in Focus, nothing there
-  expect(await multitask($, 'mode')).toBe('Focus mode: this chat does its work itself again.')
+  expect(await multitask($, 'mode focus')).toBe('Focus mode: this chat does its work itself again.')
   await band.redraw()
   expect(await band.drawn()).toEqual({ type: 'engine', ref: 0 })
-  expect(await multitask($, 'mode')).toBe('Multitask mode: this chat is now the voice and hands all work to thoughts.')
+  expect(await multitask($, 'Mode Multitask')).toBe('Multitask mode: this chat is now the voice and hands all work to thoughts.')
   await band.redraw()
   expect(await band.find({ key: 'open-thoughts' })).toBeDefined()
 })

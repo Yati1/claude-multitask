@@ -73,7 +73,7 @@ const start = ($: Engine) => $.session.start({ cwd: '.', surface: 'desktop', isI
 // The person's `/react …`: what it answers.
 const runReact = async ($: Engine, args: string) =>
   ((await $.command.run({ command: 'react', args, origin: { kind: 'composer' }, presentation: {} as never })) as { text?: string }).text
-const flip = ($: Engine) => runReact($, '')
+const flip = ($: Engine) => runReact($, 'toggle')
 const say = ($: Engine, text: string) => $.prompt.submit({ text, origin: { kind: 'composer' }, wait: false })
 
 // A row of the main conversation as the engine stores it: a person's message (or, by
@@ -389,23 +389,23 @@ test('a session never on keeps no marks', async ($, on) => {
   expect(store['session:session-1']).toEqual({ isOn: false, choice: null, at: 1000, isBriefed: false, reactions: [], marks: [] })
 })
 
-test('/react default flips whether reactions are on in new chats, kept for every session, and says what it is now', async ($, on) => {
+test('/react default on|off sets whether reactions are on in new chats, kept for every session, and says what it is now', async ($, on) => {
   const store = memoryStore(on)
   const seen = engine(on, null)
   await start($)
   const where = 'in new chats and in chats where you have not used `/react`.'
 
   // This chat, never switched with /react, follows the default.
-  expect(await runReact($, 'default')).toBe(`Reactions are now off by default, ${where}`)
+  expect(await runReact($, 'default off')).toBe(`Reactions are now off by default, ${where}`)
   expect(store.isOnByDefault).toBe(false)
   await say($, 'hello')
   expect(seen.prompts.at(-1)).toBe('hello')
 
   // Switched with /react, it keeps its own choice whatever the default.
   expect(await flip($)).toContain('Reactions are on in this chat')
-  expect(await runReact($, 'Default')).toBe(`Reactions are now on by default, ${where}`)
+  expect(await runReact($, 'Default Enable')).toBe(`Reactions are now on by default, ${where}`)
   expect(store.isOnByDefault).toBe(true)
-  expect(await runReact($, 'default')).toBe(`Reactions are now off by default, ${where} This chat keeps them on; \`/react\` turns them off here.`)
+  expect(await runReact($, 'default disable')).toBe(`Reactions are now off by default, ${where} This chat keeps them on; \`/react off\` turns them off here.`)
   expect(store.isOnByDefault).toBe(false)
   await say($, 'still on here')
   expect(seen.prompts.at(-1)).toBe(`still on here\n--\n${BRIEF}`)
