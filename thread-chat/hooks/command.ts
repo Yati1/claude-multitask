@@ -5,7 +5,7 @@ import type { AskOptions } from 'claude-code'
 // Each mod's slash command (/threads, /multitask, /react) switches it on or off in the
 // chat, and by default in new chats, with the same arguments:
 //
-//   (none)                     asks both, this chat first, in the engine's question dialog
+//   (none)                     asks whether it is on in this chat, in the engine's question dialog
 //   on | enable                on in this chat, as the person's choice there
 //   off | disable              off in this chat, as the person's choice there
 //   toggle                     the other way in this chat
@@ -118,35 +118,18 @@ async function askOnOff(session: Session, question: string, header: string, isOn
   return picked === undefined ? undefined : picked === 0
 }
 
-const askHere = (session: Session, names: Names, state: State) =>
-  askOnOff(session, `${names.noun} in this chat?`, 'This chat', state.isOnHere)
-const askDefault = (session: Session, names: Names, state: State) =>
-  askOnOff(session, `${names.noun} in new chats?`, 'New chats', state.isOnByDefault)
-
-// What was said, or, where nothing changed, that and how it is.
-async function resultOf(session: Session, names: Names, said: string[]): Promise<string> {
-  return said.length > 0 ? said.join('\n\n') : `No change. ${statusOf(names, await session.state())}`
-}
-
-// The bare command: asks for this chat, then for new chats, changing each as answered.
-// A dismissed question changes nothing and asks nothing more.
-async function askBoth(session: Session, names: Names): Promise<string> {
+// Asks whether it is on in this chat (the bare command) or, with `isDefault`, in new chats
+// (`/<command> default`), and changes it as answered. A dismissed question, or an answer
+// of what is so already, changes nothing and says how it is.
+async function askOne(session: Session, names: Names, isDefault: boolean): Promise<string> {
   if (!(await session.canAsk())) return statusOf(names, await session.state())
-  const said: string[] = []
-  const here = await askHere(session, names, await session.state())
-  if (here === undefined) return resultOf(session, names, said)
-  if (here !== (await session.state()).isOnHere) said.push(await session.setHere(here))
-  const byDefault = await askDefault(session, names, await session.state())
-  if (byDefault !== undefined && byDefault !== (await session.state()).isOnByDefault) said.push(await session.setDefault(byDefault))
-  return resultOf(session, names, said)
-}
-
-// `/<command> default`: asks for new chats alone.
-async function askDefaultAlone(session: Session, names: Names): Promise<string> {
-  if (!(await session.canAsk())) return statusOf(names, await session.state())
-  const byDefault = await askDefault(session, names, await session.state())
-  const said = byDefault !== undefined && byDefault !== (await session.state()).isOnByDefault ? [await session.setDefault(byDefault)] : []
-  return resultOf(session, names, said)
+  const before = await session.state()
+  const isOn = isDefault
+    ? await askOnOff(session, `${names.noun} in new chats?`, 'New chats', before.isOnByDefault)
+    : await askOnOff(session, `${names.noun} in this chat?`, 'This chat', before.isOnHere)
+  const now = await session.state()
+  if (isOn === undefined || isOn === (isDefault ? now.isOnByDefault : now.isOnHere)) return `No change. ${statusOf(names, now)}`
+  return isDefault ? session.setDefault(isOn) : session.setHere(isOn)
 }
 
 // Runs the command with the person's arguments (any the mod takes beside these handled
@@ -154,7 +137,7 @@ async function askDefaultAlone(session: Session, names: Names): Promise<string> 
 export async function runSwitch(session: Session, names: Names, args: string): Promise<string> {
   const words = wordsOf(args)
   const [first = '', second = ''] = words
-  if (words.length === 0) return askBoth(session, names)
+  if (words.length === 0) return askOne(session, names, false)
   const state = await session.state()
   if (words.length === 1) {
     const value = valueOf(first)
@@ -162,7 +145,7 @@ export async function runSwitch(session: Session, names: Names, args: string): P
     if (value !== undefined) return session.setHere(value)
     if (first === 'toggle') return session.setHere(!state.isOnHere)
     if (first === 'status') return statusOf(names, state)
-    if (first === 'default') return askDefaultAlone(session, names)
+    if (first === 'default') return askOne(session, names, true)
   }
   if (words.length === 2 && first === 'default') {
     const value = valueOf(second)

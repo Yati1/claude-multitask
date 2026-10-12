@@ -3288,8 +3288,8 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
-  // `/threads` asks whether threads are on in this chat, then in new chats; its arguments
-  // set either, or say how they are (command.ts).
+  // `/threads` asks whether threads are on in this chat, `/threads default` whether in new
+  // chats; its arguments set either, or say how they are (command.ts).
   on('command.run', { command: 'threads' }, async ($, e) => ({ text: await runSwitch(sessionOf($), NAMES, e.args) }))
 
   // The menu's line for /threads says whether threads are on here and in new chats.

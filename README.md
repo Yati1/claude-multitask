@@ -33,9 +33,9 @@ In the band above the prompt, Multitask, while it is on, has a dropdown, and thr
 
 The three commands, `/multitask`, `/threads` and `/react`, work alike:
 
-- Alone, the command asks two questions: whether the mod is on in this chat, then whether it is on in new chats (the default), each with its current value marked. Dismissing a question changes nothing more.
+- Alone, the command asks whether the mod is on in this chat, with its current value marked. Dismissing the question changes nothing.
 - `on` or `off` (or `enable`, `disable`) sets this chat, `toggle` switches it, and `status` says how it is set, here and in new chats.
-- `default` asks about new chats alone; `default on` or `default off` sets them.
+- `default` asks whether it is on in new chats (the default); `default on` or `default off` sets it.
 - In the command menu, each command's line shows how it is set, here and in new chats.
 
 ### Multitask

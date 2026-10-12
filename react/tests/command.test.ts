@@ -69,49 +69,45 @@ const OFF_TEXT = 'Reactions are off in this chat.'
 const WHERE = 'in new chats and in chats where you have not used `/react`.'
 const USAGE = 'Usage: `/react [on|off|toggle|status|default [on|off]]`; with no argument it asks.'
 
-test('/react alone asks for this chat, then new chats, the current option marked, and changes each as answered', async ($, on) => {
+test('/react alone asks for this chat alone, the current option marked, and changes it as answered', async ($, on) => {
   const answers: Record<string, string> = { [HERE]: 'Off', [NEW]: 'Off' }
   const { seen, store } = engine(on, answers)
   await start($)
 
-  expect(await react($)).toBe(`${OFF_TEXT}\n\nReactions are now off by default, ${WHERE}`)
-  expect(seen.asked).toEqual([`${HERE} [This chat] On (current) / Off`, `${NEW} [New chats] On (current) / Off`])
-  expect(await status($)).toBe('Reactions: off in this chat (your choice) · off in new chats')
-  expect(store.isOnByDefault).toBe(false)
+  // new chats are not asked about, though an answer waits
+  expect(await react($)).toBe(OFF_TEXT)
+  expect(seen.asked).toEqual([`${HERE} [This chat] On (current) / Off`])
+  expect(await status($)).toBe('Reactions: off in this chat (your choice) · on in new chats')
+  expect(store.isOnByDefault).toBeUndefined()
 
-  // the second question is asked as things stand after the first answer
+  // asked again, the option marked is the one now so
   seen.asked.length = 0
   answers[HERE] = 'On'
-  answers[NEW] = 'On'
-  expect(await react($)).toBe(`${ON_TEXT}\n\nReactions are now on by default, ${WHERE}`)
-  expect(seen.asked).toEqual([`${HERE} [This chat] On / Off (current)`, `${NEW} [New chats] On / Off (current)`])
+  expect(await react($)).toBe(ON_TEXT)
+  expect(seen.asked).toEqual([`${HERE} [This chat] On / Off (current)`])
+  expect(await status($)).toBe('Reactions: on in this chat (your choice) · on in new chats')
 })
 
-test('a dismissed question changes nothing and asks nothing more; an answer of what is so, or of neither, changes nothing', async ($, on) => {
+test('a dismissed question changes nothing; an answer of what is so, or of neither, changes nothing', async ($, on) => {
   const answers: Record<string, string> = {}
   const { seen } = engine(on, answers)
   await start($)
   const unchanged = 'No change. Reactions: on in this chat (following the default) · on in new chats'
 
-  // the first dismissed: the second is not asked
   expect(await react($)).toBe(unchanged)
   expect(seen.asked).toEqual([`${HERE} [This chat] On (current) / Off`])
 
-  // the current option picked, the second dismissed
+  // the current option picked
   answers[HERE] = 'On (current)'
   expect(await react($)).toBe(unchanged)
-  expect(seen.asked).toHaveLength(3)
 
   // typed under "Other": a word that is neither changes nothing; one of the options counts as it
   answers[HERE] = 'maybe later'
   expect(await react($)).toBe(unchanged)
+  expect(seen.asked).toHaveLength(3)
   answers[HERE] = 'off'
   expect(await react($)).toBe(OFF_TEXT)
-
-  // the first answered, the second dismissed: the first change stands
-  answers[HERE] = 'On'
-  expect(await react($)).toBe(ON_TEXT)
-  expect(await status($)).toBe('Reactions: on in this chat (your choice) · on in new chats')
+  expect(await status($)).toBe('Reactions: off in this chat (your choice) · on in new chats')
 })
 
 test('where no one can be asked, /react and /react default say how reactions are instead', async ($, on) => {

@@ -1260,9 +1260,9 @@ export const register: Register = (on, options) => {
   // is offered while Multitask is on; the model still cannot start one (tool.check, below).
   on('agent.offer', { agent: AGENT }, async ($, e, next) => ((await read($, isOn)) ? next(e) : { isOffered: false }))
 
-  // `/multitask` asks whether the mod is on in this chat, then in new chats; its arguments
-  // set either, or say how it is (command.ts); `/multitask mode` switches between Multitask
-  // and Focus.
+  // `/multitask` asks whether the mod is on in this chat, `/multitask default` whether in new
+  // chats; its arguments set either, or say how it is (command.ts); `/multitask mode`
+  // switches between Multitask and Focus.
   on('command.run', { command: 'multitask' }, async ($, e) => {
     const words = wordsOf(e.args)
     const text = words[0] === 'mode' ? await runMode($, words) : await runSwitch(sessionOf($), NAMES, e.args)
