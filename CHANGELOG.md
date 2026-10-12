@@ -4,6 +4,10 @@ Notable changes to the thread-chat, multitask and react mods. The format is base
 
 ## Unreleased
 
+### Added
+
+- Added a warning to thread-chat, multitask and react when an older Claude Code hides their controls.
+
 ## 0.4.0 - 2026-10-11
 
 ### Added
