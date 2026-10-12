@@ -75,7 +75,7 @@ const TERMINAL_BUBBLE_FILL = 'userMessageBackground'
 const CLEAR = '#00000000'
 // What a bubble leaves free at its left: the desktop's stop at about 85% of the
 // transcript's width.
-const BUBBLE_ROOM = '15%'
+export const BUBBLE_ROOM = '15%'
 // Rows between sections, half a line each on a page (about 10px): a message's or
 // reply's own sections as close as the chat's parts of a reply, separate ones as
 // far apart as the chat's messages (about 40px). The terminal leaves a line.
