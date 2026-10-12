@@ -3,7 +3,7 @@
   The README demo: a recreation of the Claude desktop app's Code tab (dark theme) with
   the three mods at work. Everything drawn is a pure function of the time: render(t),
   t in ms. The storyboard is the data at the top of the script (MSGS, PICKS, MENU,
-  SUMMARIES, VIEW, PANE, FILTER, the thought's times, the cursor's PATH). All content is
+  SUMMARIES, OPEN, PANE, FILTER, the thought's times, the cursor's PATH). All content is
   made up.
 
   Open it in a browser to look: ?t=6800 shows one moment, ?play runs it in a loop.
@@ -88,6 +88,11 @@ svg{display:block}
 .tabx{display:flex;align-items:center;justify-content:center;width:16px;height:16px;margin:0 -4px 0 -4px;border-radius:4px}
 .tabx.on{background:#555554}
 .card{position:absolute;background:#262625;border:1px solid #3a3a39;border-radius:8px;padding:8px 11px 9px;box-shadow:0 6px 20px rgba(0,0,0,.5);font-size:13px;line-height:18px;white-space:nowrap}
+/* a tag's buttons lit in its colour under the pointer; a button's tip, one line high, on
+   the button's own line toward the line's middle */
+.tb.lit,.tf.lit{color:var(--c)}
+.tf.open{position:relative}
+.tip{position:absolute;right:100%;top:0;height:18px;background:#262625;border:1px solid #3a3a39;border-radius:6px;padding:0 6px;font-size:12px;line-height:16px;color:#f0efec;white-space:nowrap}
 .cursor{position:absolute;width:13px;height:20px;pointer-events:none}
 </style></head>
 <body><div id="app"></div>
@@ -142,12 +147,15 @@ const SUMMARIES = {
     [6000, 'Search ignores case now, with a test; the timer keeps counting in background tabs.'],
     [14400, 'All 128 tests pass; the date parser keeps the local day; search ignores case.']],
 };
-// The band's `☰`: hovered (its label's card shows) from `hover`, clicked at `click`.
-const VIEW = { hover: 6350, click: 6900 };
+// The filter button `ᯤ` of the thread tag `th` in the reply that appears `at`: hovered
+// (the tag's buttons light in its colour and its tip shows) from `hover`, clicked at
+// `click`, which opens the thread view on that thread alone.
+const OPEN = { at: 4850, th: 'bugs', hover: 6150, click: 6900, tip: 'Show this thread in the thread view' };
 // The side pane with the thread view: open from..to. The column moves beside it while it shows.
-const PANE = { open: 6900, close: 9050, fade: 150 };
-// The thread view's filter: hovered, then picked. The tab's close button: hovered.
-const FILTER = { hover: [7550, 7700], pick: 7700, th: 'bugs' };
+const PANE = { open: OPEN.click, close: 9050, fade: 150 };
+// The thread view's filter, set to the thread from the moment it opens. The tab's close
+// button: hovered.
+const FILTER = { pick: OPEN.click, th: OPEN.th };
 const TABX_HOT = [8850, 9050];
 // The thought: start, the rows of its conversation (each blinks its dot), its notes (each
 // swells it), end.
@@ -160,7 +168,7 @@ const CARD = [11350, 12650];
 
 // Cursor path: [t, target, dx, dy] ; target is a selector, '@' and a selector for where
 // that was last seen, or [x,y]. Visible spans.
-const CURSOR_SPANS = [[2150, 3550], [5850, 9300], [10600, 12950]];
+const CURSOR_SPANS = [[2150, 3550], [5750, 9300], [10600, 12950]];
 const PATH = [
   [2150, [560, 340]],
   [2650, '#picker-sel', -8, 2],
@@ -168,15 +176,13 @@ const PATH = [
   [2950, '#mi-bugs', -30, 1],
   [3250, '#mi-bugs', -30, 1],
   [3550, [330, 470]],
-  [5850, [560, 340]],
-  [6350, '#viewbtn', 1, 2],
-  // held where it pressed: the band moves from under the pointer as the pane opens
-  [6400, '@#viewbtn', 1, 2],
-  [6950, '@#viewbtn', 1, 2],
-  [7550, '#f-bugs', 4, 3],
-  [7800, '#f-bugs', 4, 3],
-  // off the filter's tags, which show their summaries under the pointer
-  [8100, [690, 270]],
+  [5750, [560, 340]],
+  [6150, '#openbtn', 1, 2],
+  // held where it pressed: the chat moves from under the pointer as the pane opens
+  [6200, '@#openbtn', 1, 2],
+  [6950, '@#openbtn', 1, 2],
+  // off the view's tags, which show their summaries under the pointer
+  [7400, [690, 270]],
   [8500, [690, 270]],
   [8850, '#tabx', 1, 2],
   [9050, '#tabx', 1, 2],
@@ -187,7 +193,7 @@ const PATH = [
   [12950, [640, 380]],
 ];
 
-// Moments that between them show every colour drawn (menu, `☰`'s card, pane, filter,
+// Moments that between them show every colour drawn (menu, the `ᯤ`'s tip, pane, filter,
 // the thought's dot, card and check, chip, all threads, the summaries), from which
 // encode.js builds the GIF's one palette.
 const SAMPLES = [0, 1950, 2900, 5700, 6600, 7200, 8000, 11000, 11600, 13100, 15700];
@@ -198,9 +204,9 @@ const SAMPLES = [0, 1950, 2900, 5700, 6600, 7200, 8000, 11000, 11600, 13100, 157
 //        is written afresh.
 //  2.2s  the picker's menu switches to Bugs (its tint turns red); the next message has
 //        no heading and goes to Bugs; the reply covers two threads: BUGS and DOCS.
-//  5.9s  the band's `☰` (its card: "Open thread view") opens the thread view beside the
-//        chat; its filter is switched to BUGS, so only Bugs sections stay; then its tab
-//        is closed.
+//  5.8s  the `ᯤ` on the reply's BUGS tag (the tag's buttons lit red, its tip: "Show this
+//        thread in the thread view") opens the thread view beside the chat, filtered to
+//        BUGS, so only Bugs sections show; then its tab is closed.
 //  9.4s  a task for a thought, in the chat alone: the voice answers at once; an amber dot
 //        appears in the band's `thoughts` button, left of the Multitask dropdown, blinks
 //        white at each row of its work and swells at each note, and its hover card shows
@@ -230,7 +236,7 @@ const chev = (stroke = '#c3c2b7') => `<svg width="20" height="14" viewBox="-6.86
 const tagSpan = th => `<span class="tag" style="--c:${TH[th].color}">${TH[th].name}</span>`;
 const tag = th => `<div class="tagrow">${tagSpan(th)}</div>`;
 const FILTER_GLYPH = 'ᯤ';
-const movable = th => `<span class="tagbox">${tagSpan(th)}<span class="tb">▾</span></span>`;
+const movable = (th, lit = false) => `<span class="tagbox">${tagSpan(th)}<span class="tb${lit ? ' lit' : ''}">▾</span></span>`;
 const words = (text, k) => { const w = text.split(' '); const n = Math.ceil(clamp(k, 0, 1) * w.length); return w.slice(0, n).join(' '); };
 const chipSvg = '<svg width="30" height="20" viewBox="0 0 30 20"><rect x="0.25" y="0.25" width="29.5" height="19.5" rx="9.75" fill="#151515"/><rect x="0.75" y="0.75" width="28.5" height="18.5" rx="9.25" fill="#ffffff14" stroke="#ffffff38"/><text x="15" y="10" text-anchor="middle" dominant-baseline="central" font-size="12" font-family="Segoe UI Emoji, sans-serif">👍</text></svg>';
 
@@ -302,7 +308,14 @@ function chatHtml(t) {
     } else {
       const secs = m.secs.filter(s => t >= s.start).map(s => {
         const k = s.end <= s.start ? 1 : (t - s.start) / (s.end - s.start);
-        return `<div class="sec" style="--c:${TH[s.th].color}"><div class="shead">${movable(s.th)}<span class="tf">${FILTER_GLYPH}</span></div><div class="txt">${esc(words(s.text, k))}</div></div>`;
+        // the filter button the pointer opens the view from; under it, the tag's buttons
+        // light and its tip shows, toward the line's middle
+        const open = m.at === OPEN.at && s.th === OPEN.th;
+        const hot = open && t >= OPEN.hover && t < OPEN.click;
+        const filter = open
+          ? `<span class="tf open${hot ? ' lit' : ''}" id="openbtn">${FILTER_GLYPH}${hot ? `<span class="tip">${esc(OPEN.tip)}</span>` : ''}</span>`
+          : `<span class="tf">${FILTER_GLYPH}</span>`;
+        return `<div class="sec" style="--c:${TH[s.th].color}"><div class="shead">${movable(s.th, hot)}${filter}</div><div class="txt">${esc(words(s.text, k))}</div></div>`;
       });
       out.push(`<div style="margin-top:${gap}px">${secs.join('')}</div>`);
     }
@@ -347,13 +360,11 @@ function render(t) {
   const menuOpen = t >= MENU.open && t < MENU.close;
   const hot = at(MENU.hot, t);
   const picks = new Set(t >= FILTER.pick ? [FILTER.th] : []);
-  const fHover = t >= FILTER.hover[0] && t < FILTER.hover[1];
   const pr = promptState(t);
   const paneOpen = t >= PANE.open && t < PANE.close;
   const col = paneOpen ? COL_BESIDE_PANE : COL;
   app.style.setProperty('--cl', col.left + 'px');
   app.style.setProperty('--cw', col.width + 'px');
-  const viewHot = t >= VIEW.hover && t < VIEW.click;
   const tabxHot = t >= TABX_HOT[0] && t < TABX_HOT[1];
   const summary = at(SUMMARIES[picked], t);
 
@@ -389,7 +400,7 @@ function render(t) {
       <div class="tint" style="background:${pc}26"><div class="pdot" style="background:${pc}"></div>
         <div class="sel" id="picker-sel">${TH[picked].name}${chev()}</div></div>
       <div class="field ibtn" id="newbtn">${ico.newThread}</div>
-      <div class="field ibtn${viewHot ? ' hot' : ''}" id="viewbtn">${ico.view}</div>
+      <div class="field ibtn" id="viewbtn">${ico.view}</div>
       <div class="gap"></div>
       <div class="field${cardShown ? ' hot' : ''}" id="thoughts"><span class="fw">thoughts</span>${dot ? `<span class="fdot" id="dot0">${dot}</span>` : ''}</div>
       <div class="sel">Multitask${chev()}</div>
@@ -414,12 +425,11 @@ function render(t) {
     <div class="pdiv"></div>
     <div class="filters">${ORDER.map(k => {
       const on = picks.has(k);
-      const bc = on ? TH[k].color : fHover && k === FILTER.th ? TH[k].color + '73' : 'transparent';
+      const bc = on ? TH[k].color : 'transparent';
       return `<div class="fsw" id="f-${k}" style="border-color:${bc}">${tag(k)}</div>`;
     }).join('')}</div>
   </div>
   ${`<div class="menu" id="menu" style="${menuOpen ? '' : 'visibility:hidden'}">${ORDER.map(k => `<div class="mi${menuOpen && hot === k ? ' on' : ''}" id="mi-${k}">${TH[k].name}${k === 'design' ? '<svg width="12" height="12" viewBox="0 0 12 12"><path d="M2.5 6.2 5 8.6 9.6 3.6" fill="none" stroke="#f0efec" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>' : ''}</div>`).join('')}<div class="mi dim">No thread</div></div>`}
-  ${viewHot ? '<div class="card" id="vcard">Open thread view</div>' : ''}
   ${cardShown ? `<div class="card" id="card"><div style="color:${THOUGHT.color};font-weight:700">${THOUGHT.name}</div><div>${note ? esc(note) : '<span style="color:#898781">No notes yet</span>'}</div><div style="color:#898781">just now</div></div>` : ''}
   <div class="cursor" id="cursor" style="display:none">${cursorSvg}</div>`;
 
@@ -433,8 +443,6 @@ function render(t) {
   const menu = app.querySelector('#menu');
   const sel = app.querySelector('#picker-sel').getBoundingClientRect();
   menu.style.left = sel.left + 'px'; menu.style.top = (band.top - 4 - menu.offsetHeight) + 'px';
-  const vcard = app.querySelector('#vcard');
-  if (vcard) above(vcard, '#viewbtn');
   const card = app.querySelector('#card');
   if (card) above(card, '#dot0');
 
