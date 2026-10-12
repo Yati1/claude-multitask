@@ -1376,7 +1376,9 @@ const TIP_FILL = 'userMessageBackgroundHover'
 // no width at the button's near edge, so it needs no width of its own, which a count of
 // its characters overstated, the desktop's sans words being narrower than its columns.
 // Its words never wrap (`truncate`), so drawn without a width it is just their width.
-// Elsewhere, no pointer shows a tip: the button alone.
+// While a move picker is open on the button's line (`isPicking`), no card: the picker's
+// pills fill that line, so a card would cover them, or show them through it where they
+// come after it, being drawn over it. Elsewhere, no pointer shows a tip: the button alone.
 function withTip(
   $: EngineInterface,
   e: Parameters<EngineInterface['ui']['resolve']>[0],
@@ -1384,9 +1386,17 @@ function withTip(
   button: RenderElement,
   tip: string,
   side: 'before' | 'after',
+  isPicking = false,
 ): RenderElement {
   if (e.surface !== 'desktop') return button
   const { Box, Text } = $.ui.resolve(e)
+  if (isPicking) {
+    return (
+      <Box key={`tip:${key}`} flexShrink={0}>
+        {button}
+      </Box>
+    )
+  }
   const card = (
     <Box width={0} flexShrink={0}>
       <Box
@@ -1420,13 +1430,15 @@ function withTip(
 // A part's thread tag with its move picker's "▾" beside it; with no thread, a
 // "+ thread" button. Buttons, never Clients: every Client of a plugin shares one
 // frame on the desktop, and one per tag of a long transcript overran its render
-// deadline, which tore the frame down for every Client.
+// deadline, which tore the frame down for every Client. `isPicking`: a move picker is
+// open on the tag's line, which takes the "▾" tip away.
 function drawMovableTag(
   $: EngineInterface,
   e: Parameters<EngineInterface['ui']['resolve']>[0] & { requestId: string },
   thread: Thread | undefined,
   align: 'start' | 'end',
   inset = 0,
+  isPicking = false,
 ): RenderElement {
   const row = e.requestId
   const place = thread === undefined ? '' : keyOf(thread.name)
@@ -1455,20 +1467,21 @@ function drawMovableTag(
       {thread !== undefined && drawTag($, e, thread, align, inset)}
       {thread === undefined
         ? button
-        : withTip($, e, `tag:${place}`, button, MOVE_TIP, align === 'end' ? 'before' : 'after')}
+        : withTip($, e, `tag:${place}`, button, MOVE_TIP, align === 'end' ? 'before' : 'after', isPicking)}
     </Box>
   )
 }
 
 // A tag's filter button, which opens the thread view on that thread alone, drawn as
 // its "▾" is and lit with it, at the far end of the tag's line, its tip at its `side`,
-// toward the line's middle. An archived thread, which the view's filter does not
-// offer, has none.
+// toward the line's middle, unless a move picker is open on the line (`isPicking`). An
+// archived thread, which the view's filter does not offer, has none.
 function drawTagFilter(
   $: EngineInterface,
   e: Parameters<EngineInterface['ui']['resolve']>[0] & { requestId: string },
   thread: Thread,
   side: 'before' | 'after',
+  isPicking = false,
 ): RenderElement | undefined {
   if (thread.isArchived === true) return undefined
   const place = keyOf(thread.name)
@@ -1482,7 +1495,7 @@ function drawTagFilter(
       onPress={() => viewThreadAlone($, place)}
     />
   )
-  return withTip($, e, TAG_FILTER_KEY + place, button, FILTER_TIP, side)
+  return withTip($, e, TAG_FILTER_KEY + place, button, FILTER_TIP, side, isPicking)
 }
 
 // What the multitask plugin's voice says when it says nothing; that plugin draws it as nothing.
@@ -3884,6 +3897,8 @@ export const register: Register = (on, options) => {
     const picker = pickerPlace === undefined ? undefined : drawPicker($, e, list, pickerPlace, align, isNaming)
     const side = picker ?? add
     const rowFit = picker !== undefined ? { alignItems: 'center' as const } : add !== undefined ? ADD_ROW : {}
+    // the tags share one line with the picker, so none of their buttons shows a tip while it is open
+    const isPicking = picker !== undefined
 
     return (
       <Box key="message" flexDirection="column">
@@ -3891,10 +3906,10 @@ export const register: Register = (on, options) => {
           drawTagRow(
             $,
             e,
-            tags.map(t => drawMovableTag($, e, t, align)),
+            tags.map(t => drawMovableTag($, e, t, align, 0, isPicking)),
             side,
             rowFit,
-            tags.flatMap(t => drawTagFilter($, e, t, isOnRightOf(e.surface) ? 'after' : 'before') ?? []),
+            tags.flatMap(t => drawTagFilter($, e, t, isOnRightOf(e.surface) ? 'after' : 'before', isPicking) ?? []),
           )}
         {message}
       </Box>
@@ -3990,7 +4005,9 @@ export const register: Register = (on, options) => {
       }
       // On the desktop the tag moves in to meet the engine's prose; Markdown parts have no inset.
       const tagInset = e.surface === 'desktop' && isDrawnByEngine ? REPLY_TAG_INSET : 0
-      const tag = isFirstOfPlace ? drawMovableTag($, e, thread, 'start', tagInset) : drawTag($, e, thread, 'start', tagInset)
+      const tag = isFirstOfPlace
+        ? drawMovableTag($, e, thread, 'start', tagInset, isPicking)
+        : drawTag($, e, thread, 'start', tagInset)
       // an open picker sits beside the tag it opened from
       const start = isPicking ? (
         <Box flexDirection="row" flexWrap="wrap" columnGap={2} alignItems="center">
@@ -4001,7 +4018,7 @@ export const register: Register = (on, options) => {
         tag
       )
       // the tag's filter button at the line's far end, the tag and picker taking the room before it
-      const filter = isFirstOfPlace ? drawTagFilter($, e, thread, 'before') : undefined
+      const filter = isFirstOfPlace ? drawTagFilter($, e, thread, 'before', isPicking) : undefined
       const head =
         filter === undefined ? (
           start
