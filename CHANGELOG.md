@@ -4,28 +4,26 @@ Notable changes to the thread-chat, multitask and react mods. The format is base
 
 ## Unreleased
 
+## 0.5.0 - 2026-10-13
+
 ### Added
 
 - Added a welcome line to thread-chat, multitask and react with each new mod's command and a docs link.
 - Added a warning to thread-chat, multitask and react when an older Claude Code hides their controls.
-- Added `/threads default` to thread-chat to choose whether new chats start with threads on.
-- Added `/multitask default` to multitask to choose whether new chats start with it on, off at first.
-- Added `/multitask mode` to multitask to pick Multitask or Focus, also in the mobile app.
-- Added a `ᯤ` button at the far end of each thread tag's line in thread-chat to open the thread view on it.
-- Added hover tips to the `▾` and `ᯤ` beside thread-chat's tags in the desktop app, saying what each does.
 - Added `on`, `off`, `toggle`, `status` and `default on|off` to `/threads`, `/multitask` and `/react`.
-- Added a dialog to `/threads`, `/multitask` and `/react`: alone for this chat, with `default` for new chats.
 - Added the current setting to the command menu's lines for `/threads`, `/multitask` and `/react`.
 - Added `+` and `☰` after thread-chat's thread picker to start a thread and open the thread view.
+- Added a `ᯤ` button at the far end of each thread tag's line in thread-chat to open the thread view on it.
+- Added hover tips to the `▾` and `ᯤ` beside thread-chat's tags in the desktop app, saying what each does.
 - Added `/threads manage` to thread-chat to merge, archive or delete threads from a list in the chat.
 - Added `/threads agent`, `filter` and `summaries` to thread-chat to set or ask, listed by `status`.
 
 ### Changed
 
+- Changed `/threads`, `/multitask` and `/react` alone to ask in a dialog for this chat, with `default` for new chats.
+- Changed multitask to be on or off per chat, off at first, apart from its mode: `/multitask mode` picks it.
 - Changed thread-chat to show nothing above the prompt, and close its thread view, while threads are off.
 - Changed thread-chat to send each message under a heading of its thread's exact name, however it was chosen.
-- Changed `/multitask` to turn multitask on or off in a chat, starting in Multitask mode.
-- Changed `/threads`, `/multitask` and `/react`, alone or with `default`, to ask instead of switching.
 - Changed multitask to show nothing while off, its thoughts included, and close its Thoughts pane.
 
 ### Fixed
