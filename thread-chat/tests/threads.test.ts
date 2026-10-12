@@ -1759,10 +1759,13 @@ test('what opens the picker or picks a thread lights under the pointer', async (
   const design = PALETTE[0]
 
   // a tag's "▾" lights in its thread's colour with the pointer anywhere on the tag, its
-  // name included (the keyed Box round both); "+ thread" brightens
+  // name included (the keyed Box round both, in one hover group with the tag's filter
+  // button); "+ thread" brightens
   const mine = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...userRow('# design\nhi'), requestId: 'u1' })
   const tagPath = pathTo(await mine.drawn(), n => n.props?.key === 'tag:design')
-  expect(tagPath?.at(-1)?.hover).toEqual({ color: design })
+  const scope = tagPath?.at(-2)?.hover?.scope
+  expect(typeof scope).toBe('string')
+  expect(tagPath?.at(-1)?.hover).toEqual({ color: design, scope })
   expect(tagPath?.at(-2)?.props?.key).toBe('tagbox:design')
   expect(picturesIn(tagPath?.at(-2))).toEqual(['design'])
   const plain = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...userRow('plain words'), requestId: 'u2' })
