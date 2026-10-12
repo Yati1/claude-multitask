@@ -378,8 +378,8 @@ export const register: Register = on => {
     return next(e)
   })
 
-  // `/react` asks whether reactions are on in this chat, then in new chats; its arguments
-  // set either, or say how they are (command.ts).
+  // `/react` asks whether reactions are on in this chat, `/react default` whether in new
+  // chats; its arguments set either, or say how they are (command.ts).
   on('command.run', { command: 'react' }, async ($, e) => ({ text: await runSwitch(sessionOf($), NAMES, e.args) }))
 
   // The menu's line for /react says whether reactions are on here and in new chats.

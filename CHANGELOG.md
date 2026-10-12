@@ -13,7 +13,7 @@ Notable changes to the thread-chat, multitask and react mods. The format is base
 - Added `/multitask mode` to multitask to pick Multitask or Focus, also in the mobile app.
 - Added a `▽` button beside each thread tag in thread-chat to open the thread view on that thread alone.
 - Added `on`, `off`, `toggle`, `status` and `default on|off` to `/threads`, `/multitask` and `/react`.
-- Added a two-question dialog to `/threads`, `/multitask` and `/react`: this chat, then new chats.
+- Added a dialog to `/threads`, `/multitask` and `/react`: alone for this chat, with `default` for new chats.
 - Added the current setting to the command menu's lines for `/threads`, `/multitask` and `/react`.
 
 ### Changed

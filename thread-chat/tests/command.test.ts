@@ -74,29 +74,29 @@ const OFF_TEXT = 'Threads are off. They are kept for when /threads turns them on
 const WHERE = 'as do chats where you have not turned them on or off.'
 const USAGE = 'Usage: `/threads [on|off|toggle|status|default [on|off]]`; with no argument it asks.'
 
-test('/threads alone asks for this chat, then new chats, the current option marked, and changes each as answered', async ($, on) => {
+test('/threads alone asks for this chat alone, the current option marked, and changes it as answered', async ($, on) => {
   const answers: Record<string, string> = { [HERE]: 'On', [NEW]: 'On' }
   const { seen, store } = engine(on, answers)
   await start($)
 
-  expect(await threads($)).toBe(`${ON_TEXT}\n\nNew chats now start with threads on, ${WHERE}`)
-  expect(seen.asked).toEqual([`${HERE} [This chat] On / Off (current)`, `${NEW} [New chats] On / Off (current)`])
-  expect(await status($)).toBe('Threads: on in this chat (your choice) · on in new chats')
-  expect(store.isOnByDefault).toBe(true)
+  // new chats are not asked about, though an answer waits
+  expect(await threads($)).toBe(ON_TEXT)
+  expect(seen.asked).toEqual([`${HERE} [This chat] On / Off (current)`])
+  expect(await status($)).toBe('Threads: on in this chat (your choice) · off in new chats')
+  expect(store.isOnByDefault).toBeUndefined()
   // on, the model is told how threads work
   await say($, 'hello')
   expect(seen.prompts.at(-1)).toContain('# Conversation threads')
 
-  // turned off here, it says so as /threads off does; this chat's choice is kept over the default
+  // turned off here, it says so as /threads off does
   seen.asked.length = 0
   answers[HERE] = 'Off'
-  answers[NEW] = 'On (current)'
   expect(await threads($)).toBe(OFF_TEXT)
-  expect(seen.asked).toEqual([`${HERE} [This chat] On (current) / Off`, `${NEW} [New chats] On (current) / Off`])
-  expect(await status($)).toBe('Threads: off in this chat (your choice) · on in new chats')
+  expect(seen.asked).toEqual([`${HERE} [This chat] On (current) / Off`])
+  expect(await status($)).toBe('Threads: off in this chat (your choice) · off in new chats')
 })
 
-test('a dismissed question changes nothing and asks nothing more; an answer of what is so, or of neither, changes nothing', async ($, on) => {
+test('a dismissed question changes nothing; an answer of what is so, or of neither, changes nothing', async ($, on) => {
   const answers: Record<string, string> = {}
   const { seen } = engine(on, answers)
   await start($)
@@ -107,15 +107,11 @@ test('a dismissed question changes nothing and asks nothing more; an answer of w
 
   answers[HERE] = 'Off (current)'
   expect(await threads($)).toBe(unchanged)
-  expect(seen.asked).toHaveLength(3)
 
   answers[HERE] = 'not sure'
   expect(await threads($)).toBe(unchanged)
-
-  // the first answered, the second dismissed: the first change stands
-  answers[HERE] = 'On'
-  expect(await threads($)).toBe(ON_TEXT)
-  expect(await status($)).toBe('Threads: on in this chat (your choice) · off in new chats')
+  expect(seen.asked).toHaveLength(3)
+  expect(await status($)).toBe('Threads: off in this chat (following the default) · off in new chats')
 })
 
 test('where no one can be asked, /threads and /threads default say how threads are instead', async ($, on) => {

@@ -80,27 +80,27 @@ const WHERE = 'in new chats and in chats where you have not used `/multitask`.'
 const USAGE = 'Usage: `/multitask [on|off|toggle|status|mode [multitask|focus]|default [on|off]]`; with no argument it asks.'
 const VOICE_TOOLS = ['think', 'tell', 'unqueue', 'stop', 'thoughts']
 
-test('/multitask alone asks for this chat, then new chats, the current option marked, and changes each as answered', async ($, on) => {
+test('/multitask alone asks for this chat alone, the current option marked, and changes it as answered', async ($, on) => {
   const answers: Record<string, string> = { [HERE]: 'On', [NEW]: 'On' }
   const { seen, store } = engine(on, answers)
   await start($)
 
-  // turned on, it starts in Multitask mode, the voice's tools offered
-  expect(await multitask($)).toBe(`${ON_TEXT}\n\nMultitask is now on by default, ${WHERE}`)
-  expect(seen.asked).toEqual([`${HERE} [This chat] On / Off (current)`, `${NEW} [New chats] On / Off (current)`])
-  expect(await status($)).toBe('Multitask: on in this chat (your choice), Multitask mode · on in new chats')
+  // turned on, it starts in Multitask mode, the voice's tools offered; new chats are not
+  // asked about, though an answer waits
+  expect(await multitask($)).toBe(ON_TEXT)
+  expect(seen.asked).toEqual([`${HERE} [This chat] On / Off (current)`])
+  expect(await status($)).toBe('Multitask: on in this chat (your choice), Multitask mode · off in new chats')
   expect(seen.registered).toEqual(VOICE_TOOLS)
-  expect(store.isEnabledByDefault).toBe(true)
+  expect(store.isEnabledByDefault).toBeUndefined()
 
   seen.asked.length = 0
   answers[HERE] = 'Off'
-  answers[NEW] = 'Off'
-  expect(await multitask($)).toBe(`${OFF_TEXT}\n\nMultitask is now off by default, ${WHERE}`)
-  expect(seen.asked).toEqual([`${HERE} [This chat] On (current) / Off`, `${NEW} [New chats] On (current) / Off`])
+  expect(await multitask($)).toBe(OFF_TEXT)
+  expect(seen.asked).toEqual([`${HERE} [This chat] On (current) / Off`])
   expect(await status($)).toBe('Multitask: off in this chat (your choice) · off in new chats')
 })
 
-test('a dismissed question changes nothing and asks nothing more; an answer of what is so, or of neither, changes nothing', async ($, on) => {
+test('a dismissed question changes nothing; an answer of what is so, or of neither, changes nothing', async ($, on) => {
   const answers: Record<string, string> = {}
   const { seen } = engine(on, answers)
   await start($)
@@ -111,15 +111,11 @@ test('a dismissed question changes nothing and asks nothing more; an answer of w
 
   answers[HERE] = 'Off (current)'
   expect(await multitask($)).toBe(unchanged)
-  expect(seen.asked).toHaveLength(3)
 
   answers[HERE] = 'later'
   expect(await multitask($)).toBe(unchanged)
-
-  // the first answered, the second dismissed: the first change stands
-  answers[HERE] = 'On'
-  expect(await multitask($)).toBe(ON_TEXT)
-  expect(await status($)).toBe('Multitask: on in this chat (your choice), Multitask mode · off in new chats')
+  expect(seen.asked).toHaveLength(3)
+  expect(await status($)).toBe('Multitask: off in this chat (following the default) · off in new chats')
 })
 
 test('where no one can be asked, /multitask, /multitask default and /multitask mode say how it is instead', async ($, on) => {
