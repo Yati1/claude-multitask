@@ -74,7 +74,6 @@ const start = ($: Engine) => $.session.start({ cwd: '.', surface: 'desktop', isI
 const runReact = async ($: Engine, args: string) =>
   ((await $.command.run({ command: 'react', args, origin: { kind: 'composer' }, presentation: {} as never })) as { text?: string }).text
 const flip = ($: Engine) => runReact($, '')
-const placeReactions = runReact
 const say = ($: Engine, text: string) => $.prompt.submit({ text, origin: { kind: 'composer' }, wait: false })
 
 // A row of the main conversation as the engine stores it: a person's message (or, by
@@ -330,44 +329,12 @@ test('a reply that became a reaction draws as nothing while on, and a message dr
   expect(await badgeOf($, 'desktop', 'p1', 'hidden by a plugin')).toBe('hidden')
 })
 
-test('/react place moves the desktop\'s reaction between the bubble\'s corner and under it, for every session', async ($, on) => {
-  const store = memoryStore(on)
-  const seen = engine(on, null)
-  await start($)
-  await storePrompt($, 'p1', 'thanks, that fixed the build')
-  await step($, seen, [text('👍'), stop])
-  const said = 'thanks, that fixed the build'
-
-  // On the corner until the person chooses; `/react place` says where.
-  expect(await placeReactions($, 'place')).toContain("on your message's bottom-right corner")
-  expect(await placeOf($, 'desktop', 'p1', said)).toBe('column: message, solid reaction floating at bottom 1, right 1')
-
-  // Under it, in the room the desktop keeps for the time and copy buttons, kept for later sessions.
-  expect(await placeReactions($, 'place under')).toBe('On the desktop, reactions now sit under your message, where its time and copy buttons show.')
-  expect(await placeOf($, 'desktop', 'p1', said)).toBe('column: message, solid reaction floating at bottom 0, right 1')
-  expect(store.place).toBe('under')
-  // The terminal's reaction stays on the line under the message.
-  expect(await placeOf($, 'terminal', 'p1', said)).toBe('column: message, reaction')
-
-  // A place it does not know changes nothing; back on the corner.
-  expect(await placeReactions($, 'place sideways')).toBe('"sideways" is not a place for reactions. Use `/react place corner` or `/react place under`.')
-  expect(store.place).toBe('under')
-  expect(await placeReactions($, 'Place Corner')).toBe("On the desktop, reactions now sit on your message's bottom-right corner.")
-  expect(await placeOf($, 'desktop', 'p1', said)).toBe('column: message, solid reaction floating at bottom 1, right 1')
-  expect(store.place).toBe('corner')
-
-  // Choosing a place leaves reactions on; a bare `/react` still turns them off.
-  expect(await badgeOf($, 'desktop', 'p1', said)).toBe('Reaction: 👍')
-  await flip($)
-  expect(await badgeOf($, 'desktop', 'p1', said)).toBe('none')
-})
-
-test('a new session draws reactions where the person last chose', async ($, on) => {
+test('a place kept by an older version (under the message) is ignored: the reaction sits on the corner', async ($, on) => {
   const seen = engine(on, { place: 'under' })
   await start($)
   await storePrompt($, 'p1', 'can you rerun the deploy')
   await step($, seen, [text('✅'), stop])
-  expect(await placeOf($, 'desktop', 'p1', 'can you rerun the deploy')).toBe('column: message, solid reaction floating at bottom 0, right 1')
+  expect(await placeOf($, 'desktop', 'p1', 'can you rerun the deploy')).toBe('column: message, solid reaction floating at bottom 1, right 1')
 })
 
 test('with a row a mod beneath draws above the message (thread tags), the reaction floats on the corner, adding no row', async ($, on) => {

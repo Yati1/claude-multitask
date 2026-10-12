@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, HookStream, Register, RenderElement, TurnStepChunk, TurnStepResult } from 'claude-code'
 
-import type { Place, Reaction } from '../types'
+import type { Reaction } from '../types'
 import {
   BRIEF,
   NO_RESPONSE,
@@ -23,7 +23,6 @@ const isOnByDefault = atom({ plugin: 'react', key: 'isOnByDefault' } as const, t
 const isBriefed = atom({ plugin: 'react', key: 'isBriefed' } as const, false)
 const reactions = atom({ plugin: 'react', key: 'reactions' } as const, [])
 const answering = atom({ plugin: 'react', key: 'answering' } as const, null)
-const place = atom({ plugin: 'react', key: 'place' } as const, 'corner')
 
 // The ways a person's own prompt arrives: typed in the terminal, the desktop
 // app (an SDK host) or Remote Control.
@@ -152,31 +151,6 @@ async function takeUp($: EngineInterface) {
   if (isOwn && record.isBriefed === true) await update($, isBriefed, () => true)
 }
 
-// Where the desktop draws reactions is the person's choice for every session, kept
-// under its own key; the corner until they choose. Best effort, as `keep` is.
-const PLACE_KEY = 'place'
-const PLACES: Record<Place, string> = {
-  corner: "on your message's bottom-right corner",
-  under: 'under your message, where its time and copy buttons show',
-}
-const isPlace = (value: unknown): value is Place => value === 'corner' || value === 'under'
-
-async function takeUpPlace($: EngineInterface) {
-  const chosen = await $.store.get(PLACE_KEY).catch(() => undefined)
-  if (isPlace(chosen)) await update($, place, () => chosen)
-}
-
-// `/react place`: says where the desktop draws reactions; `/react place corner|under`
-// moves them there, in every session from now on.
-async function choosePlace($: EngineInterface, asked: string): Promise<string> {
-  const how = 'Use `/react place corner` or `/react place under`.'
-  if (asked === '') return `On the desktop, reactions sit ${PLACES[await read($, place)]}. ${how}`
-  if (!isPlace(asked)) return `"${asked}" is not a place for reactions. ${how}`
-  await update($, place, () => asked)
-  await $.store.set(PLACE_KEY, asked).catch(() => undefined)
-  return `On the desktop, reactions now sit ${PLACES[asked]}.`
-}
-
 // What the model is told beside the person's message: how reactions work once they come
 // on (and again after a compaction), and once that they have gone off.
 async function noteFor($: EngineInterface): Promise<string | undefined> {
@@ -295,18 +269,18 @@ function badgePicture(emoji: string, isSolid = false): string {
 // How far up from the bottom of the message's row the desktop's reaction floats, in
 // lines: the row ends with the room the desktop keeps under the bubble for the message's
 // time and copy buttons (shown on hover), so one line up sits on the bubble's corner.
-const RISE: Record<Place, number> = { corner: 1, under: 0 }
+const RISE = 1
 
 // How far in from the right edge of the message's row the desktop's reaction floats, in
 // columns: off the bubble's right edge, so the pill sits on its corner, not flush with it.
 const INSET = 1
 
 // A message with its reaction. On the desktop, a small solid pill floating over the
-// message's row near its right edge, on the bubble's bottom-right corner or under it
-// (`where`): the desktop draws the bubble and the time and copy buttons under it as one
-// piece, so a pill drawn after it in the flow would sit below those buttons, away from
-// the bubble. It floats beside the message, never round it: the engine refuses a drawing
-// that puts position or size on a box holding its message. On the terminal, the emoji in
+// message's row near its right edge, on the bubble's bottom-right corner: the desktop
+// draws the bubble and the time and copy buttons under it as one piece, so a pill drawn
+// after it in the flow would sit below those buttons, away from the bubble. It floats
+// beside the message, never round it: the engine refuses a drawing that puts position
+// or size on a box holding its message. On the terminal, the emoji in
 // faint brackets on the line under the message. Elsewhere, a pill on the line above the
 // bubble, at the edge the person's messages keep to. Never beside the bubble in the flow:
 // the desktop sizes its bubble to a share of the row it is drawn in, and a row shared
@@ -316,14 +290,13 @@ function withBadge(
   e: Parameters<EngineInterface['ui']['resolve']>[0],
   message: RenderElement,
   emoji: string,
-  where: Place,
 ): RenderElement {
   if (e.surface === 'desktop') {
     const { Box, Svg } = $.ui.resolve(e)
     return (
       <Box flexDirection="column">
         {message}
-        <Box position="absolute" right={INSET} bottom={RISE[where]}>
+        <Box position="absolute" right={INSET} bottom={RISE}>
           <Svg source={badgePicture(emoji, true)} alt={`Reaction: ${emoji}`} width={BADGE_WIDTH} height={BADGE_HEIGHT} />
         </Box>
       </Box>
@@ -360,7 +333,7 @@ export const register: Register = on => {
     await $.command.register({
       name: 'react',
       description: 'Turn emoji reactions on or off in this chat',
-      argumentHint: '[default | place corner|under]',
+      argumentHint: '[default]',
     })
     // A restarted or resumed session takes up the choice and reactions it kept; a
     // rewound or forked one, those of the session it came from. Never switched, it
@@ -368,16 +341,13 @@ export const register: Register = on => {
     await takeUpDefault($)
     await takeUp($)
     await settle($)
-    await takeUpPlace($)
     await keep($)
     return next(e)
   })
 
-  // `/react` flips reactions on or off in this chat; `/react default` flips the default;
-  // `/react place …` says or moves where the desktop draws them.
+  // `/react` flips reactions on or off in this chat; `/react default` flips the default.
   on('command.run', { command: 'react' }, async ($, e) => {
-    const [word = '', ...rest] = e.args.trim().split(/\s+/)
-    if (word.toLowerCase() === 'place') return { text: await choosePlace($, rest.join(' ').toLowerCase()) }
+    const [word = ''] = e.args.trim().split(/\s+/)
     if (word.toLowerCase() === 'default') return { text: await flipDefault($) }
     const now = await flip($)
     return {
@@ -454,8 +424,8 @@ export const register: Register = on => {
   })
 
   // A message with a reaction is the engine's drawing (or another mod's), the reaction on
-  // it (on the desktop, its bubble's corner or under it, as the person chose; under it on
-  // the terminal). A row drawn as nothing stays nothing.
+  // it (on the desktop, its bubble's bottom-right corner; under it on the terminal). A row
+  // drawn as nothing stays nothing.
   on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
     if (!(await read($, isOn))) return next(e)
     const isPerson = PERSON.has(e.props.origin.kind)
@@ -463,6 +433,6 @@ export const register: Register = on => {
     if (reaction === undefined) return next(e)
     const message = await next(e)
     if (isBlank(message)) return message
-    return withBadge($, e, message, reaction.emoji, await read($, place))
+    return withBadge($, e, message, reaction.emoji)
   })
 }
