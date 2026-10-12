@@ -56,7 +56,13 @@ export type Heard = { status: ThoughtStatus; report: string; note: string }
 declare module 'claude-code' {
   interface PluginState {
     multitask: {
+      // whether the chat is in Multitask mode (the voice), not Focus; only while the mod is on
       isOn: boolean
+      // whether the person turned the mod on in this chat with /multitask; null: never, so
+      // it is on as the default says
+      choice: boolean | null
+      // whether the mod is on in new chats, and in those never switched with /multitask
+      isEnabledByDefault: boolean
       thoughts: Thought[]
       inbox: Update[]
       isMainBusy: boolean

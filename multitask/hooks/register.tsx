@@ -40,6 +40,8 @@ import { BLINK_MS, FADE_MS, drawThoughtsButton } from './band'
 import { watchSwitch } from './ui-switch'
 
 const isOn = atom({ plugin: 'multitask', key: 'isOn' } as const, false)
+const choice = atom({ plugin: 'multitask', key: 'choice' } as const, null)
+const isEnabledByDefault = atom({ plugin: 'multitask', key: 'isEnabledByDefault' } as const, false)
 const thoughts = atom({ plugin: 'multitask', key: 'thoughts' } as const, [])
 const inbox = atom({ plugin: 'multitask', key: 'inbox' } as const, [])
 const isMainBusy = atom({ plugin: 'multitask', key: 'isMainBusy' } as const, false)
@@ -54,8 +56,9 @@ const colorTurn = atom({ plugin: 'multitask', key: 'colorTurn' } as const, 0)
 const showsAllEnded = atom({ plugin: 'multitask', key: 'showsAllEnded' } as const, false)
 
 const PANE = 'multitask-thoughts'
-// Multitask's dropdown in the band. Its face is the mode the chat is in, Multitask or
-// Focus (Multitask off); picking the other mode switches to it.
+// Multitask's dropdown in the band, drawn while the mod is on in the chat. Its face is the
+// mode the chat is in, Multitask or Focus (Multitask mode off); picking the other mode
+// switches to it.
 const DROPDOWN = 'multitask'
 // The keys of the hit areas over the parts of the desktop's `thoughts` button: this, then the part.
 const THOUGHTS_HIT = 'thoughts-hit:'
@@ -125,7 +128,7 @@ const SESSIONS_KEPT_CHARS = 2 * 1024 * 1024
 const HANDBACK = '[Subagent hand-back]'
 
 const OFF = {
-  deny: 'Multitask is off. The user turns it on with the switch above the prompt or /multitask.',
+  deny: 'Multitask mode is off. The user switches to it with the dropdown above the prompt or /multitask mode, or, where Multitask is off in the chat, turns it on with /multitask.',
 }
 const NOT_VOICE = { deny: 'Only the voice starts, steers or lists thoughts; this call came from another agent.' }
 
@@ -367,8 +370,26 @@ async function toggleTell($: EngineInterface, id: string) {
   await update($, tellingTo, was => (was === id ? '' : id))
 }
 
-// The voice's tools are the model's from Multitask first coming on: a session that
-// never switches it on has no tool of this mod's. Registered again, each is replaced.
+// Multitask is on in a chat as the person last chose there with /multitask, else as the
+// default (`/multitask default`), off until they choose. Off, the mod leaves the chat be:
+// nothing above the prompt but the `thoughts` button while a thought it started is left,
+// Focus mode, no tool of the voice's offered. On, the chat is in Multitask mode (isOn),
+// where it is the voice, or in Focus, as off but with the band's dropdown; the dropdown or
+// `/multitask mode` switches between them. Turned on with /multitask, or on by default in
+// a new chat, it starts in Multitask mode; an open chat the default turns on stays in
+// Focus. Multitask mode is only for a chat the mod is on in: off, it is left (settleMode).
+async function isEnabled($: EngineInterface): Promise<boolean> {
+  return (await read($, choice)) ?? (await read($, isEnabledByDefault))
+}
+
+// Leaves Multitask mode where the mod is off in the chat: a default gone off, or state a
+// reload of this code kept from before.
+async function settleMode($: EngineInterface) {
+  if ((await read($, isOn)) && !(await isEnabled($))) await setMode($, false)
+}
+
+// The voice's tools are the model's from Multitask mode first coming on: a session that
+// never switches to it has no tool of this mod's. Registered again, each is replaced.
 async function offerVoiceTools($: EngineInterface) {
   for (const spec of TOOL_SPECS) {
     try {
@@ -379,42 +400,100 @@ async function offerVoiceTools($: EngineInterface) {
   }
 }
 
-async function toggle($: EngineInterface): Promise<boolean> {
-  let now = false
-  await update($, isOn, was => (now = !was))
+// Switches Multitask mode on, or off to Focus, and keeps the switch; the mode the chat is
+// in already leaves it be.
+async function setMode($: EngineInterface, now: boolean) {
+  if (now === (await read($, isOn))) return
+  await update($, isOn, () => now)
   if (now) {
     await offerVoiceTools($)
     // What fell due for a thought while off goes to it now that it can be resumed again.
     for (const t of await read($, thoughts)) if (isDue(t)) scheduleDueWake($, t.id, 0)
   }
   await keepSwitch($)
+}
+
+// `/multitask`: turns the mod on in this chat, in Multitask mode, or off, leaving
+// Multitask mode; the chat's own choice from then on, whatever the default. Whether it is
+// now on.
+async function flipEnabled($: EngineInterface): Promise<boolean> {
+  const now = !(await isEnabled($))
+  await update($, choice, () => now)
+  await setMode($, now)
+  await keepSwitch($)
   return now
 }
 
 // Switches to the mode picked in the band's dropdown; the mode the chat is in already,
-// or anything else, leaves it be.
+// anything else, or a pick while the mod is off (a press drawn before), leaves it be.
 async function pickMode($: EngineInterface, value: string) {
   const wantsOn = value === MULTITASK_MODE ? true : value === FOCUS_MODE ? false : undefined
-  if (wantsOn !== undefined && wantsOn !== (await read($, isOn))) await toggle($)
+  if (wantsOn !== undefined && (await isEnabled($))) await setMode($, wantsOn)
 }
 
-// Where a session's switch is kept between runs of the app: whether it is on, when it
-// was kept, and, once it has been on, the marks of its newest messages.
+// `/multitask mode`: switches between Multitask and Focus, as the band's dropdown does (the
+// mobile app draws none); says which the chat is now in. Off, it says how to turn it on.
+async function flipMode($: EngineInterface): Promise<string> {
+  if (!(await isEnabled($))) return `${OFF_TEXT} It comes on in Multitask mode; \`/multitask mode\` then switches to Focus.`
+  const now = !(await read($, isOn))
+  await setMode($, now)
+  return now ? MULTITASK_TEXT : FOCUS_TEXT
+}
+
+// What /multitask says.
+const ON_TEXT =
+  'Multitask is on in this chat, in Multitask mode: this chat is now the voice and hands all work to thoughts. Pick Focus above the prompt, or use `/multitask mode`, to work with the agent as usual.'
+const OFF_TEXT = 'Multitask is off in this chat; `/multitask` turns it on.'
+const MULTITASK_TEXT = 'Multitask mode: this chat is now the voice and hands all work to thoughts.'
+const FOCUS_TEXT = 'Focus mode: this chat does its work itself again.'
+const USAGE =
+  '`/multitask` turns Multitask on or off in this chat, `/multitask mode` switches between Multitask and Focus, and `/multitask default` sets whether new chats start with it on.'
+
+// Whether the mod is on in new chats, and in those never switched with /multitask: the
+// person's choice for every chat, kept under its own key; off until they choose.
+const DEFAULT_KEY = 'isEnabledByDefault'
+
+async function takeUpDefault($: EngineInterface) {
+  const chosen = await $.store.get(DEFAULT_KEY).catch(() => undefined)
+  if (typeof chosen === 'boolean') await update($, isEnabledByDefault, () => chosen)
+}
+
+// `/multitask default`: flips the default, which this chat follows too unless the person
+// switched it with /multitask: turned on so, it stays in Focus, and turned off, it leaves
+// Multitask mode. Says what the default now is.
+async function flipDefault($: EngineInterface): Promise<string> {
+  let now = false
+  await update($, isEnabledByDefault, was => (now = !was))
+  await $.store.set(DEFAULT_KEY, now).catch(() => undefined)
+  await settleMode($)
+  const word = now ? 'on' : 'off'
+  const said = `Multitask is now ${word} by default, in new chats and in chats where you have not used \`/multitask\`.`
+  const chosen = await read($, choice)
+  if (chosen === null || chosen === now) return said
+  return `${said} This chat keeps it ${chosen ? 'on' : 'off'}; \`/multitask\` turns it ${chosen ? 'off' : 'on'} here.`
+}
+
+// Where a session's switch is kept between runs of the app: whether it is in Multitask
+// mode, the person's choice of the mod there (null: never switched, so it follows the
+// default), when it was kept, and, once it has been in Multitask mode or chosen, the marks
+// of its newest messages.
 const switchKey = (sessionId: string) => `session:${sessionId}`
-type KeptSwitch = { isOn: boolean; at: number; marks: string[] }
+type KeptSwitch = { isOn: boolean; choice: boolean | null; at: number; marks: string[] }
 const MARKS_KEPT = 200
 
-// Keeps the switch for the session's next run. A session never on keeps no marks: one
-// rewound or forked from it starts off as it would anyway. Best effort: a store or
-// transcript that cannot be read or written keeps what it kept.
+// Keeps the switch for the session's next run. A session never switched nor in Multitask
+// mode keeps no marks: one rewound or forked from it follows the default as it would
+// anyway. Best effort: a store or transcript that cannot be read or written keeps what it
+// kept.
 async function keepSwitch($: EngineInterface) {
   try {
     const key = switchKey(await $.session.id())
     const was = (await $.store.get(key)) as Partial<KeptSwitch> | undefined
     const now = await read($, isOn)
-    const isMarked = now || (was?.marks?.length ?? 0) > 0
+    const chosen = await read($, choice)
+    const isMarked = now || chosen !== null || (was?.marks?.length ?? 0) > 0
     const marks = isMarked ? marksOf(await $.session.messages()).slice(-MARKS_KEPT) : []
-    await $.store.set(key, { isOn: now, at: await $.clock.now(), marks } satisfies KeptSwitch)
+    await $.store.set(key, { isOn: now, choice: chosen, at: await $.clock.now(), marks } satisfies KeptSwitch)
   } catch {
     // kept as it was
   }
@@ -442,9 +521,13 @@ async function keptSession($: EngineInterface): Promise<string | undefined> {
   return scored.filter(s => s.score * 2 > best).sort((a, b) => b.at - a.at)[0]?.id
 }
 
-// Whether the switch the session `from` kept is on.
-async function keptSwitch($: EngineInterface, from: string): Promise<boolean> {
-  return ((await $.store.get(switchKey(from))) as Partial<KeptSwitch> | undefined)?.isOn === true
+// The switch the session `from` kept: the person's choice of the mod there, and whether it
+// was in Multitask mode, which a chat they turned it off in is not. One kept before
+// choices were (Multitask mode was then the only switch) chose only if it was in it.
+async function keptSwitch($: EngineInterface, from: string): Promise<{ isOn: boolean; choice: boolean | null }> {
+  const kept = ((await $.store.get(switchKey(from))) ?? {}) as Partial<KeptSwitch>
+  const chosen = kept.choice === true || kept.choice === false || kept.choice === null ? kept.choice : kept.isOn === true ? true : null
+  return { isOn: kept.isOn === true && chosen !== false, choice: chosen }
 }
 
 // Where a session's thoughts are kept between runs of the app (KeptThoughts).
@@ -689,7 +772,7 @@ async function tellFromPane($: EngineInterface, id: string, text: string) {
   const t = (await read($, thoughts)).find(one => one.id === id)
   if (message === '' || t === undefined || t.status === 'stopped') return
   if (!(await read($, isOn))) {
-    $.ui.toast('Multitask is off: turn it on to tell a thought something.')
+    $.ui.toast('Switch to Multitask mode to tell a thought something.')
     return
   }
   const { sent } = await post($, t, fromPerson(message), t.status === 'running')
@@ -1088,20 +1171,34 @@ export const register: Register = (on, options) => {
     })
     // A restarted or resumed session takes up the switch and the thoughts it kept; a
     // rewound or forked one, those of the session it came from. Found before the switch
-    // is kept below, which would make the session its own. One that holds the switch on
-    // or has thoughts (a reload of this code, which state outlives) keeps them.
+    // is kept below, which would make the session its own. One that holds a choice, the
+    // switch on or thoughts (a reload of this code, which state outlives) keeps them.
+    // Never switched, it follows the default: a new chat it is on in starts in Multitask
+    // mode. Where the mod is off, Multitask mode goes.
+    await takeUpDefault($)
     const from = await keptSession($).catch(() => undefined)
     if (from !== undefined) {
-      if (await keptSwitch($, from).catch(() => false)) await update($, isOn, () => true)
+      const kept = await keptSwitch($, from).catch(() => ({ isOn: false, choice: null }))
+      const chosen = kept.choice
+      if (chosen !== null) await update($, choice, was => was ?? chosen)
+      if (kept.isOn) await update($, isOn, () => true)
       await takeUpThoughts($, from).catch(() => undefined)
+    } else if ((await read($, choice)) === null && (await read($, isEnabledByDefault))) {
+      await update($, isOn, () => true)
     }
+    if ((await read($, isOn)) && !(await isEnabled($))) await update($, isOn, () => false)
     await keepSwitch($)
     await dropOldThoughts($)
     // So the switch and the thoughts outlive a reload of this code (state) and a restart of
-    // the session (the store): the tools they had are offered again. Never switched on, the
-    // session gets none.
-    if ((await read($, isOn)) || (await read($, thoughts)).length > 0) await offerVoiceTools($)
-    await $.command.register({ name: 'multitask', description: 'Turn Multitask on or off' })
+    // the session (the store): the tools they had are offered again. Never in Multitask
+    // mode, or with the mod off, the session gets none.
+    const hasThoughts = (await read($, thoughts)).length > 0
+    if ((await read($, isOn)) || (hasThoughts && (await isEnabled($)))) await offerVoiceTools($)
+    await $.command.register({
+      name: 'multitask',
+      description: 'Turn Multitask on or off in this chat',
+      argumentHint: '[mode | default]',
+    })
     await $.command.register({ name: 'thoughts', description: 'Show the multitasking thoughts in a pane' })
     return next(e)
   })
@@ -1117,14 +1214,16 @@ export const register: Register = (on, options) => {
   // is offered while Multitask is on; the model still cannot start one (tool.check, below).
   on('agent.offer', { agent: AGENT }, async ($, e, next) => ((await read($, isOn)) ? next(e) : { isOffered: false }))
 
-  on('command.run', { command: 'multitask' }, async $ => {
-    const now = await toggle($)
+  // `/multitask` turns the mod on or off in this chat; `/multitask mode` switches between
+  // Multitask and Focus; `/multitask default` flips whether new chats start with it on.
+  on('command.run', { command: 'multitask' }, async ($, e) => {
+    const word = (e.args.trim().split(/\s+/)[0] ?? '').toLowerCase()
+    let text = USAGE
+    if (word === '') text = (await flipEnabled($)) ? ON_TEXT : OFF_TEXT
+    else if (word === 'mode') text = await flipMode($)
+    else if (word === 'default') text = await flipDefault($)
     await handOverDue($)
-    return {
-      text: now
-        ? 'Multitask is on: this session is now the voice and hands all work to thoughts.'
-        : 'Multitask is off.',
-    }
+    return { text }
   })
 
   on('command.run', { command: 'thoughts' }, async $ => {
@@ -1298,8 +1397,12 @@ export const register: Register = (on, options) => {
       return news === undefined ? next(woken) : next({ ...woken, context: [...(e.context ?? []), news] })
     }
     if (!PERSON.has(e.origin.kind)) return next(e)
-    // While on, the marks a session rewound or forked from this one is known by are kept fresh.
-    if (await read($, isOn)) await keepSwitch($)
+    // Only a chat in Multitask mode is told it is the voice, and only one the mod is on in
+    // can be in it: one off leaves it first.
+    await settleMode($)
+    // Once switched, or in Multitask mode, the marks a session rewound or forked from this
+    // one is known by are kept fresh.
+    if ((await read($, choice)) !== null || (await read($, isOn))) await keepSwitch($)
     const notes = [await voiceNote($), (await read($, isOn)) ? await takeNews($) : undefined].filter(
       (note): note is string => note !== undefined,
     )
@@ -1459,19 +1562,23 @@ export const register: Register = (on, options) => {
     return <Text dimColor>◦ thought update{names.length > 0 ? `: ${names.join(', ')}` : ''}</Text>
   })
 
-  // The band above the prompt: while Multitask is on or has thoughts left, `thoughts`
-  // with a dot for each running thought (band.tsx); then Multitask's dropdown. They sit
-  // after what other mods draw there, keeping their width while the others give way. The
-  // mobile app draws no dropdown: /multitask is there. The dots' timed changes, and a
-  // dot's blink, draw the band afresh by a write of `bandTick`, which it alone reads.
+  // The band above the prompt: in Multitask mode, or with thoughts left, `thoughts` with
+  // a dot for each running thought (band.tsx); then, while the mod is on in the chat,
+  // Multitask's dropdown. Off with no thoughts left, the band is the other mods' alone.
+  // They sit after what other mods draw there, keeping their width while the others give
+  // way. The mobile app draws no dropdown: /multitask mode is there. The dots' timed
+  // changes, and a dot's blink, draw the band afresh by a write of `bandTick`, which it
+  // alone reads.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const below = await next(e)
     if (e.props.hasSurvey) return below
 
     const on_ = await read($, isOn)
+    const enabled = await isEnabled($)
     const all = await read($, thoughts)
     await read($, bandTick)
-    // Off with no thoughts left, the band has no `thoughts`; an idle or failed one keeps it up.
+    // In Focus, or off, with no thoughts left, the band has no `thoughts`; an idle or
+    // failed one keeps it up.
     const showsThoughts = on_ || all.some(t => t.status !== 'stopped')
     const ui = $.ui.resolve(e)
     // On the desktop, the hit areas over the parts of `thoughts` (band.tsx draws them there).
@@ -1489,7 +1596,7 @@ export const register: Register = (on, options) => {
     bandTimer = redrawIn === undefined ? undefined : $.clock.after(redrawIn, () => void update($, bandTick, n => n + 1))
     const { Box } = ui
     let dropdown: RenderElement | undefined
-    if (e.surface !== 'mobile') {
+    if (enabled && e.surface !== 'mobile') {
       const { Select } = $.ui.resolve(e)
       dropdown = (
         <Select
@@ -1544,6 +1651,7 @@ export const register: Register = (on, options) => {
         surface: e.surface,
         ui: $.ui.resolve(e),
         now,
+        isEnabled: await isEnabled($),
         isOn: await read($, isOn),
         bodyColumns: e.props.bodyColumns,
         opened: await read($, expanded),

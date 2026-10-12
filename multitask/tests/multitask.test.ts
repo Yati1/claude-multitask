@@ -187,6 +187,11 @@ const BAND = {
   },
 } as const
 
+// Runs /multitask, with `args`, as the person types it; its output. Alone, it turns the mod
+// on in the chat, in Multitask mode, or off.
+const multitask = async ($: Engine, args = '') =>
+  (await $.command.run({ command: 'multitask', args, origin: { kind: 'composer' }, presentation: {} as never })).text
+
 const finished = (agentId: string) => ({
   answer: '',
   durationMs: 10,
@@ -239,11 +244,11 @@ test('a quiet reply draws as nothing on every surface while Multitask is on, and
     }
   }
   await each('engine')
-  await $.command.run({ command: 'multitask', args: '', origin: { kind: 'composer' }, presentation: {} as never })
+  await multitask($)
   await each('nothing')
 })
 
-test('a session that never switches Multitask on is left as it is: no `thoughts`, no tools, no notes, no folded notices', async ($, on) => {
+test('a session that never turns Multitask on is left as it is: no band, no tools, no notes, no folded notices', async ($, on) => {
   const seen = engine($, on)
   // what the mod offers the model
   const { registered } = seen
@@ -252,13 +257,13 @@ test('a session that never switches Multitask on is left as it is: no `thoughts`
   await $.prompt.submit({ text: 'hello', origin: { kind: 'composer' }, wait: false })
   expect(seen.prompts).toEqual(['hello'])
   const band = await $.ui.mount({ plugin: 'multitask', surface: 'desktop', ...BAND })
-  expect(await band.find({ key: 'open-thoughts' })).toBeUndefined()
-  expect(await modeOf(band)).toBe('focus')
+  expect(await band.drawn()).toEqual({ type: 'engine', ref: 0 })
 
-  // switched on, the voice has its tools and the band shows `thoughts`; a reload while it
-  // has thoughts offers them again, and `thoughts` stays while they do
-  const flip = () => $.command.run({ command: 'multitask', args: '', origin: { kind: 'composer' }, presentation: {} as never })
-  await flip()
+  // turned on, it is in Multitask mode: the voice has its tools and the band shows
+  // `thoughts`; in Focus, a reload while it has thoughts offers them again, and `thoughts`
+  // stays while they do
+  const flip = () => multitask($, 'mode')
+  await multitask($)
   expect(registered).toEqual(['think', 'tell', 'unqueue', 'stop', 'thoughts'])
   await band.redraw()
   expect(await modeOf(band)).toBe('multitask')
@@ -308,7 +313,7 @@ test('the voice\'s quiet reply goes on as "No response requested.", held back on
   // With Multitask off, it goes on as it came.
   expect(await step(quiet)).toEqual({ out: quiet, answer: '(quiet)\n' })
 
-  await $.command.run({ command: 'multitask', args: '', origin: { kind: 'composer' }, presentation: {} as never })
+  await multitask($)
   // Split across pieces, it goes on as one, in its first piece's place.
   expect(await step(quiet)).toEqual({ out: [thinking, text(NO_RESPONSE), stop], answer: NO_RESPONSE })
   // A reply that goes on past it is passed on whole, as it came.
@@ -359,7 +364,7 @@ test('a turn ending reaches the voice once: bare when it has nothing more to say
   const seen = engine($, on, [{ id: 'agent-1', description: 'auth-bug', type: 'multitask:thought', status: 'completed' }])
   const clock = mock.clock(on)
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
-  await $.command.run({ command: 'multitask', args: '', origin: { kind: 'composer' }, presentation: {} as never })
+  await multitask($)
   await $.tool.call({ tool: 'mcp__multitask__think', tool_use_id: 'c1', name: 'auth bug', task: 'Find why login fails' })
   const band = await $.ui.mount({ plugin: 'multitask', surface: 'desktop', ...BAND })
   const label = async () => {
@@ -422,7 +427,10 @@ test('the voice is refused work, and its thoughts relay, queue and unqueue', asy
   const off = await $.tool.call({ tool: 'mcp__multitask__think', tool_use_id: 'c0', name: 'a', task: 'x' })
   expect(off.deny).toBeDefined()
 
-  // Off with no thoughts the band has no `thoughts`, only the dropdown: Multitask in it turns it on.
+  // Turned on, then in Focus, with no thoughts the band has no `thoughts`, only the
+  // dropdown: Multitask in it switches to Multitask mode.
+  await multitask($)
+  await multitask($, 'mode')
   const band = await $.ui.mount({ plugin: 'multitask', surface: 'desktop', ...BAND })
   expect(await band.find({ key: 'open-thoughts' })).toBeUndefined()
   expect(await modeOf(band)).toBe('focus')
@@ -511,7 +519,7 @@ test('the voice is told as Multitask comes on and goes off, and thinks less hard
   const seen = engine($, on)
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
   const say = (text: string) => $.prompt.submit({ text, origin: { kind: 'composer' }, wait: false })
-  const flip = () => $.command.run({ command: 'multitask', args: '', origin: { kind: 'composer' }, presentation: {} as never })
+  const flip = () => multitask($, 'mode')
   const step = async (agentId?: string) => {
     const stream = $.turn.step({ turnId: 't', index: 0, model: 'opus', effort: 'xhigh', messageCount: 1, ...(agentId === undefined ? {} : { agentId }) })
     for await (const _ of stream) void _
@@ -522,7 +530,8 @@ test('the voice is told as Multitask comes on and goes off, and thinks less hard
   expect(seen.prompts.at(-1)).toBe('hello')
   expect(await step()).toBe('xhigh')
 
-  await flip()
+  // turned on, it is in Multitask mode: the voice is told its part
+  await multitask($)
   await say('do a thing')
   expect(seen.prompts.at(-1)).toContain('# Multitasking mind')
   await say('and another')
@@ -538,20 +547,39 @@ test('the voice is told as Multitask comes on and goes off, and thinks less hard
   await say('go on')
   expect(seen.prompts.at(-1)).toBe(`go on\n--\n${VOICE_REMINDER}`)
 
+  // in Focus, it is told once that it is not the voice, and thinks as hard as the session
   await flip()
   await say('back to normal')
   expect(seen.prompts.at(-1)).toContain('Multitask is now off')
   expect(await step()).toBe('xhigh')
   await say('plain')
   expect(seen.prompts.at(-1)).toBe('plain')
+
+  // so it is once Multitask is turned off from Multitask mode
+  await flip()
+  await say('again')
+  expect(seen.prompts.at(-1)).toContain('# Multitasking mind')
+  await multitask($)
+  await say('off now')
+  expect(seen.prompts.at(-1)).toContain('Multitask is now off')
+  await say('still plain')
+  expect(seen.prompts.at(-1)).toBe('still plain')
 })
 
 // A conversation's messages as the engine lists them, and the switch a session kept.
 const SAID = ['why does the band wrap onto two rows?', 'Both mods share one row, so it wraps.', 'can it stay on one row instead?']
 const listed = (texts: string[]) => texts.map(text => ({ role: 'user' as const, text, toolUses: [] }))
+// The switch as a version of the mod from before /multitask turned it on in a chat kept
+// it, Multitask mode then its only switch; and as it is kept now, with the person's choice.
 const kept = (isOn: boolean, at: number, texts: string[]) => ({ isOn, at, marks: marksOf(listed(texts)) })
+const keptChoice = (isOn: boolean, choice: boolean | null, at: number, texts: string[]) => ({
+  isOn,
+  choice,
+  at,
+  marks: marksOf(listed(texts)),
+})
 
-test('a session keeps its switch for its next run, with its messages\' marks once it has been on', async ($, on) => {
+test('a session keeps its switch for its next run, with its messages\' marks once it has been switched', async ($, on) => {
   const store: Record<string, unknown> = {}
   on('store.get', ($, e) => ({ value: store[e.key] }))
   on('store.set', ($, e) => {
@@ -562,14 +590,18 @@ test('a session keeps its switch for its next run, with its messages\' marks onc
   mock.clock(on, { now: 1000 })
   engine($, on, undefined, null)
   on('session.messages', () => ({ value: listed(SAID) }))
-  const flip = () => $.command.run({ command: 'multitask', args: '', origin: { kind: 'composer' }, presentation: {} as never })
+  const flip = () => multitask($, 'mode')
 
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
-  expect(store['session:session-1']).toEqual({ isOn: false, at: 1000, marks: [] })
+  expect(store['session:session-1']).toEqual({ isOn: false, choice: null, at: 1000, marks: [] })
+  await multitask($)
+  expect(store['session:session-1']).toEqual(keptChoice(true, true, 1000, SAID))
   await flip()
-  expect(store['session:session-1']).toEqual(kept(true, 1000, SAID))
+  expect(store['session:session-1']).toEqual(keptChoice(false, true, 1000, SAID))
   await flip()
-  expect(store['session:session-1']).toEqual(kept(false, 1000, SAID))
+  expect(store['session:session-1']).toEqual(keptChoice(true, true, 1000, SAID))
+  await multitask($)
+  expect(store['session:session-1']).toEqual(keptChoice(false, false, 1000, SAID))
 })
 
 // Whether, once started, the session's switch is on: the voice is told its part.
@@ -601,6 +633,191 @@ test('of sessions that know as much of a rewound one, it takes up the switch of 
   const seen = engine($, on, undefined, { 'session:old': kept(true, 1, SAID), 'session:later': kept(false, 2, SAID) })
   on('session.messages', () => ({ value: listed(SAID) }))
   expect(await isOnAtStart($, seen)).toBe(false)
+})
+
+// The mode the band's dropdown shows once the session has started, or undefined where it
+// has none (Multitask off), and whether the voice is told its part.
+const switchAtStart = async ($: Engine, seen: Seen) => {
+  const isOn = await isOnAtStart($, seen)
+  const band = await $.ui.mount({ plugin: 'multitask', surface: 'desktop', ...BAND })
+  const mode = await modeOf(band)
+  await band.unmount()
+  return { mode, isOn }
+}
+
+// What a session takes up as it starts, from what the store kept: the mode the band's
+// dropdown shows (none: Multitask off) and whether the voice is told its part.
+const TAKEN_UP: { name: string; store: Record<string, unknown>; mode: string | undefined; isOn: boolean }[] = [
+  { name: 'a new chat', store: {}, mode: undefined, isOn: false },
+  { name: 'a new chat, the default on', store: { isEnabledByDefault: true }, mode: 'multitask', isOn: true },
+  { name: 'turned on, in Focus', store: { 'session:session-1': keptChoice(false, true, 1, []) }, mode: 'focus', isOn: false },
+  { name: 'in Multitask mode', store: { 'session:session-1': keptChoice(true, true, 1, []) }, mode: 'multitask', isOn: true },
+  {
+    name: 'in Multitask mode by the default, the default on',
+    store: { isEnabledByDefault: true, 'session:session-1': keptChoice(true, null, 1, []) },
+    mode: 'multitask',
+    isOn: true,
+  },
+  {
+    name: 'in Multitask mode by the default, the default since off',
+    store: { 'session:session-1': keptChoice(true, null, 1, []) },
+    mode: undefined,
+    isOn: false,
+  },
+  {
+    name: 'forked from one in Multitask mode by the default, the default on',
+    store: { isEnabledByDefault: true, 'session:old': keptChoice(true, null, 1, SAID) },
+    mode: 'multitask',
+    isOn: true,
+  },
+  {
+    name: 'turned off, the default on',
+    store: { isEnabledByDefault: true, 'session:session-1': keptChoice(false, false, 1, []) },
+    mode: undefined,
+    isOn: false,
+  },
+  {
+    // in Focus, or off when the default was: an open chat the default turns on stays in Focus
+    name: 'never switched, not in Multitask mode, the default on',
+    store: { isEnabledByDefault: true, 'session:session-1': keptChoice(false, null, 1, []) },
+    mode: 'focus',
+    isOn: false,
+  },
+  {
+    name: 'kept before choices were, off, the default on',
+    store: { isEnabledByDefault: true, 'session:session-1': kept(false, 1, []) },
+    mode: 'focus',
+    isOn: false,
+  },
+  { name: 'kept before choices were, off', store: { 'session:session-1': kept(false, 1, []) }, mode: undefined, isOn: false },
+  { name: 'forked from one turned on, in Focus', store: { 'session:old': keptChoice(false, true, 1, SAID) }, mode: 'focus', isOn: false },
+  {
+    name: 'forked from one turned off, the default on',
+    store: { isEnabledByDefault: true, 'session:old': keptChoice(false, false, 1, SAID) },
+    mode: undefined,
+    isOn: false,
+  },
+]
+
+for (const one of TAKEN_UP) {
+  test(`a session takes up the switch it, or the one it came from, kept: ${one.name}`, async ($, on) => {
+    const seen = engine($, on, undefined, one.store)
+    on('session.messages', () => ({ value: listed(SAID) }))
+    expect(await switchAtStart($, seen)).toEqual({ mode: one.mode, isOn: one.isOn })
+    expect(seen.registered).toEqual(one.isOn ? ['think', 'tell', 'unqueue', 'stop', 'thoughts'] : [])
+  })
+}
+
+test('`/multitask default` flips whether new chats start with Multitask on, off at first; a chat that chose keeps its choice', async ($, on) => {
+  const store = liveStore(on)
+  const seen = engine($, on, undefined, null)
+  await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
+  const band = await $.ui.mount({ plugin: 'multitask', surface: 'desktop', ...BAND })
+  const mode = async () => {
+    await band.redraw()
+    return modeOf(band)
+  }
+  expect(await mode()).toBeUndefined()
+
+  // this chat, never switched, follows the default: open, it stays in Focus, the dropdown
+  // alone, no `thoughts`, no tools, no notes
+  expect(await multitask($, 'default')).toBe(
+    'Multitask is now on by default, in new chats and in chats where you have not used `/multitask`.',
+  )
+  expect(store.isEnabledByDefault).toBe(true)
+  expect(await mode()).toBe('focus')
+  expect(await band.find({ key: 'open-thoughts' })).toBeUndefined()
+  expect(seen.registered).toEqual([])
+  await $.prompt.submit({ text: 'hello', origin: { kind: 'composer' }, wait: false })
+  expect(seen.prompts.at(-1)).toBe('hello')
+  expect(await multitask($, 'default')).toBe(
+    'Multitask is now off by default, in new chats and in chats where you have not used `/multitask`.',
+  )
+  expect(store.isEnabledByDefault).toBe(false)
+  expect(await mode()).toBeUndefined()
+
+  // one switched keeps its choice, and says so
+  await multitask($)
+  expect(await multitask($, 'default')).toBe(
+    'Multitask is now on by default, in new chats and in chats where you have not used `/multitask`.',
+  )
+  expect(await multitask($, 'default')).toBe(
+    'Multitask is now off by default, in new chats and in chats where you have not used `/multitask`. This chat keeps it on; `/multitask` turns it off here.',
+  )
+  expect(await mode()).toBe('multitask')
+  await multitask($)
+  expect(await multitask($, 'default')).toBe(
+    'Multitask is now on by default, in new chats and in chats where you have not used `/multitask`. This chat keeps it off; `/multitask` turns it on here.',
+  )
+  expect(await mode()).toBeUndefined()
+})
+
+test('a new chat starts in Multitask mode while the default is on, and leaves it as the default goes off', async ($, on) => {
+  const store = liveStore(on, { isEnabledByDefault: true })
+  const seen = engine($, on, undefined, null)
+  mock.clock(on)
+  on('session.messages', () => ({ value: [] }))
+  await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
+  const band = await $.ui.mount({ plugin: 'multitask', surface: 'desktop', ...BAND })
+  expect(await modeOf(band)).toBe('multitask')
+  expect(seen.registered).toEqual(['think', 'tell', 'unqueue', 'stop', 'thoughts'])
+  await $.prompt.submit({ text: 'hello', origin: { kind: 'composer' }, wait: false })
+  expect(seen.prompts.at(-1)).toContain('# Multitasking mind')
+  // it follows the default, not a choice of its own
+  expect(store['session:session-1']).toMatchObject({ isOn: true, choice: null })
+
+  expect(await multitask($, 'default')).toBe(
+    'Multitask is now off by default, in new chats and in chats where you have not used `/multitask`.',
+  )
+  await band.redraw()
+  expect(await modeOf(band)).toBeUndefined()
+  expect(store['session:session-1']).toMatchObject({ isOn: false, choice: null })
+  await $.prompt.submit({ text: 'back to normal', origin: { kind: 'composer' }, wait: false })
+  expect(seen.prompts.at(-1)).toContain('Multitask is now off')
+  expect((await $.tool.call({ tool: 'mcp__multitask__think', tool_use_id: 'c1', name: 'a', task: 'x' })).deny).toBeDefined()
+})
+
+test('turning Multitask off in a chat leaves Multitask mode and the band, but `thoughts` while a thought is left', async ($, on) => {
+  const seen = engine($, on)
+  mock.clock(on)
+  await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
+  const band = await $.ui.mount({ plugin: 'multitask', surface: 'desktop', ...BAND })
+  await multitask($)
+  await $.tool.call({ tool: 'mcp__multitask__think', tool_use_id: 'c1', name: 'auth bug', task: 'Find why login fails' })
+  await $.prompt.submit({ text: 'hello', origin: { kind: 'composer' }, wait: false })
+
+  expect(await multitask($)).toBe('Multitask is off in this chat; `/multitask` turns it on.')
+  await band.redraw()
+  expect(await modeOf(band)).toBeUndefined()
+  expect(await thoughtsShown(band)).toBe('thoughts ●')
+  await $.prompt.submit({ text: 'back to normal', origin: { kind: 'composer' }, wait: false })
+  expect(seen.prompts.at(-1)).toContain('Multitask is now off')
+  expect((await $.tool.call({ tool: 'mcp__multitask__think', tool_use_id: 'c2', name: 'b', task: 'x' })).deny).toBeDefined()
+
+  // off, the mode is not switched: the command says how to turn it on
+  expect(await multitask($, 'mode')).toBe(
+    'Multitask is off in this chat; `/multitask` turns it on. It comes on in Multitask mode; `/multitask mode` then switches to Focus.',
+  )
+  await band.redraw()
+  expect(await modeOf(band)).toBeUndefined()
+  await $.prompt.submit({ text: 'still plain', origin: { kind: 'composer' }, wait: false })
+  expect(seen.prompts.at(-1)).toBe('still plain')
+
+  // the thought stopped, the band is the other mods' alone; a reload offers no tools
+  await $.tool.call({ tool: 'mcp__multitask__stop', tool_use_id: 'c3', name: 'auth-bug' })
+  await band.redraw()
+  expect(await band.drawn()).toEqual({ type: 'engine', ref: 0 })
+  seen.registered.length = 0
+  await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
+  expect(seen.registered).toEqual([])
+
+  // on again, in Multitask mode; anything else is not a switch
+  expect(await multitask($, 'sideways')).toContain('`/multitask mode` switches between Multitask and Focus')
+  await band.redraw()
+  expect(await modeOf(band)).toBeUndefined()
+  expect(await multitask($)).toContain('Multitask is on in this chat, in Multitask mode')
+  await band.redraw()
+  expect(await modeOf(band)).toBe('multitask')
 })
 
 // The store as the test reads it, from `entries`: what the mod kept, by key.
@@ -650,7 +867,7 @@ test('a session keeps its thoughts for its next run a moment after they change, 
   const clock = mock.clock(on, { now: 1000 })
   engine($, on, undefined, null)
   await $.session.start({ cwd: '.', surface: 'terminal', isInteractive: true })
-  await $.command.run({ command: 'multitask', args: '', origin: { kind: 'composer' }, presentation: {} as never })
+  await multitask($)
   await $.tool.call({ tool: 'mcp__multitask__think', tool_use_id: 'c1', name: 'auth bug', task: 'Find why login fails' })
   const says = (uuid: string, text: string) =>
     $.session.append({
@@ -713,7 +930,7 @@ test('a restarted session takes up the thoughts it kept: one whose agent is gone
 
   // Its agent running still, `busy` runs on; `cut`, whose agent went with the last run, is
   // done, as of when the store last kept it.
-  expect((await pane.find({ type: 'Text', text: /^Multitask is on/ }))?.text).toBe('Multitask is on · 1 running · 2 done · 1 stopped')
+  expect((await pane.find({ type: 'Text', text: /^Multitask mode/ }))?.text).toBe('Multitask mode · 1 running · 2 done · 1 stopped')
   expect((await pane.findAll({ type: 'Button' })).map(b => b.key)).toEqual([
     'expand:busy',
     'tell:busy',
@@ -799,7 +1016,7 @@ test("what is new from the thoughts goes beside the person's messages and after 
       uuid,
       agentId,
     })
-  await $.command.run({ command: 'multitask', args: '', origin: { kind: 'composer' }, presentation: {} as never })
+  await multitask($)
   await say('look into login and the docs')
   await $.tool.call({ tool: 'mcp__multitask__think', tool_use_id: 'c1', name: 'auth bug', task: 'Find why login fails' })
   await $.tool.call({ tool: 'mcp__multitask__think', tool_use_id: 'c2', name: 'docs', task: 'Check the docs' })
@@ -833,7 +1050,7 @@ test('updates go in as a hidden row, and the voice is woken by a wake-up that dr
   seen.hidden = []
   const clock = mock.clock(on)
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
-  await $.command.run({ command: 'multitask', args: '', origin: { kind: 'composer' }, presentation: {} as never })
+  await multitask($)
   await $.tool.call({ tool: 'mcp__multitask__think', tool_use_id: 'c1', name: 'auth bug', task: 'Find why login fails' })
 
   // Idle: the relay is a hidden row, then the wake-up.
@@ -869,11 +1086,11 @@ test("the engine's hand-back of a thought's report goes in as the wake-up while 
   seen.hidden = []
   mock.clock(on)
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
-  const flip = () => $.command.run({ command: 'multitask', args: '', origin: { kind: 'composer' }, presentation: {} as never })
+  await multitask($)
+  const flip = () => multitask($, 'mode')
   const handBack = (from: string, report: string) =>
     `Another Claude session sent a message:\n<agent-message from="${from}">\n[Subagent hand-back] ${report}\n</agent-message>`
   const deliver = (text: string) => $.prompt.submit({ text, origin: { kind: 'peer' }, wait: false })
-  await flip()
   await $.tool.call({ tool: 'mcp__multitask__think', tool_use_id: 'c1', name: 'auth bug', task: 'Find why login fails' })
 
   // Right after the turn ends: the relay as a hidden row, the hand-back as the wake-up.
@@ -930,11 +1147,11 @@ test("the engine's notice that a thought's turn ended goes in as the relay while
   const seen = engine($, on)
   const clock = mock.clock(on)
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
-  const flip = () => $.command.run({ command: 'multitask', args: '', origin: { kind: 'composer' }, presentation: {} as never })
+  await multitask($)
+  const flip = () => multitask($, 'mode')
   const notice = (result: string) =>
     `<task-notification>\n<task-id>agent-1</task-id>\n<status>completed</status>\n<result>${result}</result>\n</task-notification>`
   const notify = (text: string) => $.prompt.submit({ text, origin: { kind: 'task-notification' }, wait: false })
-  await flip()
   await $.tool.call({ tool: 'mcp__multitask__think', tool_use_id: 'c1', name: 'auth bug', task: 'Find why login fails' })
 
   // Come as the turn ends, while its end may still be settling, it waits for that, then
@@ -965,7 +1182,7 @@ test('an interrupt cuts the running turn and hands the message over; a second on
   const seen = engine($, on)
   const clock = mock.clock(on)
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
-  await $.command.run({ command: 'multitask', args: '', origin: { kind: 'composer' }, presentation: {} as never })
+  await multitask($)
   await $.tool.call({ tool: 'mcp__multitask__think', tool_use_id: 'c1', name: 'auth bug', task: 'Find why login fails' })
   // The thought's model request names the turn it runs.
   const step = async (turnId: string) => {
@@ -1010,7 +1227,7 @@ test('an interrupt the engine cannot cut never stops the thought: the message wa
   const seen = engine($, on, agents)
   const clock = mock.clock(on)
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
-  await $.command.run({ command: 'multitask', args: '', origin: { kind: 'composer' }, presentation: {} as never })
+  await multitask($)
   await $.tool.call({ tool: 'mcp__multitask__think', tool_use_id: 'c1', name: 'auth bug', task: 'Find why login fails' })
   for await (const _ of $.turn.step({ turnId: 'turn-1', index: 0, model: 'opus', effort: 'high', messageCount: 1, agentId: 'agent-1' })) void _
   const interrupt = async (id: string, message: string) =>
@@ -1046,7 +1263,7 @@ test('in auto mode, a message an interrupt could not cut in reaches the thought 
   const clock = mock.clock(on)
   seen.isAutoMode = true
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
-  await $.command.run({ command: 'multitask', args: '', origin: { kind: 'composer' }, presentation: {} as never })
+  await multitask($)
   await raised(seen, () => $.tool.call({ tool: 'mcp__multitask__think', tool_use_id: 'c1', name: 'auth bug', task: 'Find why login fails' }))
   for await (const _ of $.turn.step({ turnId: 'turn-1', index: 0, model: 'opus', effort: 'high', messageCount: 1, agentId: 'agent-1' })) void _
   const listed = async (id: string) => String((await $.tool.call({ tool: 'mcp__multitask__thoughts', tool_use_id: id })).result)
@@ -1082,7 +1299,7 @@ test('a message due to a thought that no notice handed over wakes the voice, who
   const clock = mock.clock(on)
   seen.isAutoMode = true
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
-  await $.command.run({ command: 'multitask', args: '', origin: { kind: 'composer' }, presentation: {} as never })
+  await multitask($)
   await raised(seen, () => $.tool.call({ tool: 'mcp__multitask__think', tool_use_id: 'c1', name: 'auth bug', task: 'Find why login fails' }))
   const listed = async (id: string) => String((await $.tool.call({ tool: 'mcp__multitask__thoughts', tool_use_id: id })).result)
   const voiceTurn = async (turnId: string) => {
@@ -1135,7 +1352,7 @@ test("a thought's queue goes over once the engine has ended its run, not while t
   const seen = engine($, on, agents)
   const clock = mock.clock(on)
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
-  await $.command.run({ command: 'multitask', args: '', origin: { kind: 'composer' }, presentation: {} as never })
+  await multitask($)
   await $.tool.call({ tool: 'mcp__multitask__think', tool_use_id: 'c1', name: 'auth bug', task: 'Find why login fails' })
   const queue = (id: string, message: string) =>
     $.tool.call({ tool: 'mcp__multitask__tell', tool_use_id: id, name: 'auth-bug', message, how: 'queue' })
@@ -1169,7 +1386,7 @@ test('a message that does not reach its thought says so: as an error from tell, 
   const seen = engine($, on)
   const clock = mock.clock(on)
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
-  await $.command.run({ command: 'multitask', args: '', origin: { kind: 'composer' }, presentation: {} as never })
+  await multitask($)
   await $.tool.call({ tool: 'mcp__multitask__think', tool_use_id: 'c1', name: 'auth bug', task: 'Find why login fails' })
   const tell = async (id: string, message: string, how?: string) =>
     String((await $.tool.call({ tool: 'mcp__multitask__tell', tool_use_id: id, name: 'auth-bug', message, ...(how === undefined ? {} : { how }) })).result)
@@ -1212,7 +1429,7 @@ test('a message that does not reach its thought says so: as an error from tell, 
 test('a message to a thought whose run has ended resumes it while Multitask is on; while off, it waits for Multitask', async ($, on) => {
   const seen = engine($, on)
   const clock = mock.clock(on)
-  const flip = () => $.command.run({ command: 'multitask', args: '', origin: { kind: 'composer' }, presentation: {} as never })
+  const flip = () => multitask($, 'mode')
   const provider = { plugin: 'multitask', tier: 'user' as const }
   const offered = async () => (await $.agent.offer({ agent: 'multitask:thought', description: '', source: 'plugin', provider })).isOffered
   const tell = (id: string, message: string, how?: string) =>
@@ -1220,7 +1437,7 @@ test('a message to a thought whose run has ended resumes it while Multitask is o
   const listed = async (id: string) => String((await $.tool.call({ tool: 'mcp__multitask__thoughts', tool_use_id: id })).result)
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
   expect(await offered()).toBe(false)
-  await flip()
+  await multitask($)
   expect(await offered()).toBe(true)
   await $.tool.call({ tool: 'mcp__multitask__think', tool_use_id: 'c1', name: 'auth bug', task: 'Find why login fails' })
 
@@ -1266,7 +1483,7 @@ test('the model cannot start a thought itself, in any loop; other agents are ask
 test("the model's own message to a thought is still asked; only the mod's own sends to its thoughts skip the ask", async ($, on) => {
   engine($, on)
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
-  await $.command.run({ command: 'multitask', args: '', origin: { kind: 'composer' }, presentation: {} as never })
+  await multitask($)
   await $.tool.call({ tool: 'mcp__multitask__think', tool_use_id: 't1', name: 'auth bug', task: 'Find why login fails' })
   // The engine's `$` checks as the model's own call does; by the thought's id or name, it is asked as before.
   for (const to of ['agent-1', 'auth-bug']) {
@@ -1282,7 +1499,7 @@ test('the voice names each thought by its task: kebab-case, made unique, from th
     names.map((name, i) => ({ id: `agent-${i + 1}`, description: name, type: 'multitask:thought', status: 'running' })),
   )
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
-  await $.command.run({ command: 'multitask', args: '', origin: { kind: 'composer' }, presentation: {} as never })
+  await multitask($)
   const think = async (id: string, name: string, task: string) =>
     String((await $.tool.call({ tool: 'mcp__multitask__think', tool_use_id: id, name, task })).result)
 
@@ -1306,7 +1523,7 @@ test("a call from another agent's loop (an engine fork, a subagent) never starts
 
   // A fork's think is refused, Multitask off or on, and starts nothing.
   expect((await $.tool.call({ ...think, tool_use_id: 'f1', agentId: 'fork-1' })).deny).toContain('another agent')
-  await $.command.run({ command: 'multitask', args: '', origin: { kind: 'composer' }, presentation: {} as never })
+  await multitask($)
   expect((await $.tool.call({ ...think, tool_use_id: 'f2', agentId: 'fork-1' })).deny).toContain('another agent')
   expect(seen.spawns).toBe(0)
   expect(await list('v1')).toBe('No thoughts yet.')
@@ -1343,7 +1560,7 @@ test("the Thoughts pane draws running thoughts first with their task's first lin
     Object.entries(statuses).map(([name, status]) => ({ id: name, description: name, type: 'multitask:thought', status })),
   )
   await $.session.start({ cwd: '.', surface: 'terminal', isInteractive: true })
-  await $.command.run({ command: 'multitask', args: '', origin: { kind: 'composer' }, presentation: {} as never })
+  await multitask($)
   for (const name of Object.keys(statuses)) {
     const task = `the brief for ${name}\n\nthe details for ${name}`
     await $.tool.call({ tool: 'mcp__multitask__think', tool_use_id: `think-${name}`, name, task })
@@ -1367,7 +1584,7 @@ test("the Thoughts pane draws running thoughts first with their task's first lin
   })
 
   // A line counts them by status.
-  expect((await pane.find({ type: 'Text', text: /^Multitask is on/ }))?.text).toBe('Multitask is on · 1 running · 1 failed · 1 done · 1 stopped')
+  expect((await pane.find({ type: 'Text', text: /^Multitask mode/ }))?.text).toBe('Multitask mode · 1 running · 1 failed · 1 done · 1 stopped')
   // The running card shows only its task's first line.
   expect(await pane.find({ text: /brief for busy/ })).toBeDefined()
   expect(await pane.find({ text: /details for busy/ })).toBeUndefined()
@@ -1409,7 +1626,7 @@ test("a thought's card shows its report's first line until opened, and none whil
   engine($, on)
   const clock = mock.clock(on)
   await $.session.start({ cwd: '.', surface: 'terminal', isInteractive: true })
-  await $.command.run({ command: 'multitask', args: '', origin: { kind: 'composer' }, presentation: {} as never })
+  await multitask($)
   await $.tool.call({ tool: 'mcp__multitask__think', tool_use_id: 'c1', name: 'auth bug', task: 'Find why login fails' })
   const says = (uuid: string, text: string) =>
     $.session.append({
@@ -1524,7 +1741,7 @@ test("a card says how long its thought has run and since its latest note, in the
   engine($, on)
   const clock = mock.clock(on, { now: 1_000_000 })
   await $.session.start({ cwd: '.', surface: 'terminal', isInteractive: true })
-  await $.command.run({ command: 'multitask', args: '', origin: { kind: 'composer' }, presentation: {} as never })
+  await multitask($)
   await $.tool.call({ tool: 'mcp__multitask__think', tool_use_id: 'c1', name: 'auth bug', task: 'Find why login fails' })
   const says = (uuid: string, text: string) =>
     $.session.append({
@@ -1577,7 +1794,7 @@ test('new thoughts take the first four colours in turn, past any held, then the 
   const seen = engine($, on, agents)
   const clock = mock.clock(on)
   await $.session.start({ cwd: '.', surface: 'terminal', isInteractive: true })
-  await $.command.run({ command: 'multitask', args: '', origin: { kind: 'composer' }, presentation: {} as never })
+  await multitask($)
   const think = (name: string) => $.tool.call({ tool: 'mcp__multitask__think', tool_use_id: `think-${name}`, name, task: `the brief for ${name}` })
   const tell = (name: string) => $.tool.call({ tool: 'mcp__multitask__tell', tool_use_id: `tell-${name}`, name, message: 'and logout' })
   const end = async (name: string) => {
@@ -1656,7 +1873,7 @@ test("the person tells a thought something from its card: it gets it, resuming i
   const seen = engine($, on)
   const clock = mock.clock(on)
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
-  await $.command.run({ command: 'multitask', args: '', origin: { kind: 'composer' }, presentation: {} as never })
+  await multitask($)
   await $.tool.call({ tool: 'mcp__multitask__think', tool_use_id: 'c1', name: 'auth bug', task: 'Find why login fails' })
   const pane = await $.ui.mount({
     plugin: 'multitask',
@@ -1691,10 +1908,17 @@ test("the person tells a thought something from its card: it gets it, resuming i
   expect(seen.sends.at(-1)?.text).toBe('The user, from the Thoughts pane: and logout?')
   expect((await pane.find({ type: 'Text', text: /^(running|done)/ }))?.text).toMatch(/^running/)
 
-  // With Multitask off, no card offers it.
-  await $.command.run({ command: 'multitask', args: '', origin: { kind: 'composer' }, presentation: {} as never })
+  // In Focus, no card offers it; nor with Multitask off. The pane's first line says which.
+  const heading = async () => (await pane.find({ type: 'Text', text: / · 1 running$/ }))?.text
+  expect(await heading()).toBe('Multitask mode · 1 running')
+  await multitask($, 'mode')
   await pane.redraw()
   expect(await pane.find({ key: 'tell:agent-1' })).toBeUndefined()
+  expect(await heading()).toBe('Focus mode · 1 running')
+  await multitask($)
+  await pane.redraw()
+  expect(await pane.find({ key: 'tell:agent-1' })).toBeUndefined()
+  expect(await heading()).toBe('Multitask is off · 1 running')
 })
 
 test('the band shares one row with another mod: its controls keep their width, nothing wraps or shows on hover', async ($, on) => {
@@ -1705,7 +1929,7 @@ test('the band shares one row with another mod: its controls keep their width, n
   })
   engine($, on)
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
-  await $.command.run({ command: 'multitask', args: '', origin: { kind: 'composer' }, presentation: {} as never })
+  await multitask($)
 
   for (const surface of ['desktop', 'terminal'] as const) {
     const band = await $.ui.mount({ plugin: 'multitask', surface, ...BAND })
@@ -1733,6 +1957,7 @@ test('the band shares one row with another mod: its controls keep their width, n
 test('the dropdown shows the mode the chat is in, and picking the other mode switches to it', async ($, on) => {
   const seen = engine($, on)
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
+  await multitask($)
   const say = async (text: string) => {
     await $.prompt.submit({ text, origin: { kind: 'composer' }, wait: false })
     return seen.prompts.at(-1) ?? ''
@@ -1746,33 +1971,33 @@ test('the dropdown shows the mode the chat is in, and picking the other mode swi
       { value: 'multitask', label: 'Multitask' },
       { value: 'focus', label: 'Focus' },
     ])
-    expect(dropdown?.props.value).toBe('focus')
+    expect(dropdown?.props.value).toBe('multitask')
     expect(dropdown?.props.label).toBeUndefined()
     await band.unmount()
   }
 
   const band = await $.ui.mount({ plugin: 'multitask', surface: 'desktop', ...BAND })
   // the mode the chat is in already, or anything else, leaves it be
-  await band.select({ key: DROPDOWN, value: 'focus' })
+  await band.select({ key: DROPDOWN, value: 'multitask' })
   await band.select({ key: DROPDOWN, value: 'something else' })
-  expect(await say('hello')).toBe('hello')
-  // Multitask turns it on, as /multitask does
-  await band.select({ key: DROPDOWN, value: 'multitask' })
   expect(await say('do a thing')).toContain('# Multitasking mind')
-  await band.redraw()
-  expect(await modeOf(band)).toBe('multitask')
-  await band.select({ key: DROPDOWN, value: 'multitask' })
-  await band.redraw()
-  expect(await modeOf(band)).toBe('multitask')
-  // Focus turns it off
+  // Focus switches to Focus, as /multitask mode does
   await band.select({ key: DROPDOWN, value: 'focus' })
   await band.redraw()
   expect(await modeOf(band)).toBe('focus')
   expect(await say('and now')).not.toContain('# Multitasking mind')
+  await band.select({ key: DROPDOWN, value: 'focus' })
+  await band.redraw()
+  expect(await modeOf(band)).toBe('focus')
+  // Multitask switches back
+  await band.select({ key: DROPDOWN, value: 'multitask' })
+  await band.redraw()
+  expect(await modeOf(band)).toBe('multitask')
+  expect(await say('again')).toContain('# Multitasking mind')
 })
 
-test('no button of the mod is below the input, and the mobile app, which draws no dropdown, shows `thoughts` alone', async ($, on) => {
-  engine($, on)
+test('no button of the mod is below the input, and the mobile app, which draws no dropdown, switches mode with `/multitask mode`', async ($, on) => {
+  const seen = engine($, on)
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
   const mode = await $.ui.mount({ plugin: 'multitask', surface: 'desktop', component: 'SessionMode', props: { modes: [] } })
   expect(await mode.drawn()).toEqual({ type: 'engine', ref: 0 })
@@ -1780,9 +2005,21 @@ test('no button of the mod is below the input, and the mobile app, which draws n
 
   const band = await $.ui.mount({ plugin: 'multitask', surface: 'mobile', ...BAND })
   expect(await band.drawn()).toEqual({ type: 'engine', ref: 0 })
-  await $.command.run({ command: 'multitask', args: '', origin: { kind: 'composer' }, presentation: {} as never })
+  // on, in Multitask mode, `thoughts` alone
+  expect(await multitask($)).toBe(
+    'Multitask is on in this chat, in Multitask mode: this chat is now the voice and hands all work to thoughts. Pick Focus above the prompt, or use `/multitask mode`, to work with the agent as usual.',
+  )
   await band.redraw()
   expect(await band.find({ key: DROPDOWN })).toBeUndefined()
+  expect(await band.find({ key: 'open-thoughts' })).toBeDefined()
+  await $.prompt.submit({ text: 'hello', origin: { kind: 'composer' }, wait: false })
+  expect(seen.prompts.at(-1)).toContain('# Multitasking mind')
+  // in Focus, nothing there
+  expect(await multitask($, 'mode')).toBe('Focus mode: this chat does its work itself again.')
+  await band.redraw()
+  expect(await band.drawn()).toEqual({ type: 'engine', ref: 0 })
+  expect(await multitask($, 'mode')).toBe('Multitask mode: this chat is now the voice and hands all work to thoughts.')
+  await band.redraw()
   expect(await band.find({ key: 'open-thoughts' })).toBeDefined()
 })
 
@@ -1837,7 +2074,7 @@ test('the `thoughts` button, left of the dropdown, has a dot for each running th
   engine($, on)
   const clock = mock.clock(on, { now: 1_000_000 })
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
-  await $.command.run({ command: 'multitask', args: '', origin: { kind: 'composer' }, presentation: {} as never })
+  await multitask($)
   await $.tool.call({ tool: 'mcp__multitask__think', tool_use_id: 'c1', name: 'auth bug', task: 'Find why login fails' })
   const says = sayer($, 'agent-1')
   const band = await $.ui.mount({ plugin: 'multitask', surface: 'desktop', ...BAND })
@@ -1928,7 +2165,7 @@ test("on the terminal a dot is a glyph on the `thoughts` button in its thought's
   const seen = engine($, on)
   const clock = mock.clock(on, { now: 1_000_000 })
   await $.session.start({ cwd: '.', surface: 'terminal', isInteractive: true })
-  await $.command.run({ command: 'multitask', args: '', origin: { kind: 'composer' }, presentation: {} as never })
+  await multitask($)
   await $.tool.call({ tool: 'mcp__multitask__think', tool_use_id: 'c1', name: 'auth bug', task: 'Find why login fails' })
   const says = sayer($, 'agent-1')
   const band = await $.ui.mount({ plugin: 'multitask', surface: 'terminal', ...BAND })
@@ -1967,7 +2204,7 @@ test('a click anywhere on the desktop\'s `thoughts` button opens the Thoughts pa
   const seen = engine($, on, agents)
   mock.clock(on, { now: 1_000_000 })
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
-  await $.command.run({ command: 'multitask', args: '', origin: { kind: 'composer' }, presentation: {} as never })
+  await multitask($)
   const band = await $.ui.mount({ plugin: 'multitask', surface: 'desktop', ...BAND })
   // With no thought running, the word alone, under its hit area.
   expect(await thoughtsShown(band)).toBe('thoughts')
@@ -2003,7 +2240,7 @@ test("a dot blinks once a second at most however busy its thought, and only a bl
   const seen = engine($, on)
   const clock = mock.clock(on, { now: 1_000_000 })
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
-  await $.command.run({ command: 'multitask', args: '', origin: { kind: 'composer' }, presentation: {} as never })
+  await multitask($)
   await $.tool.call({ tool: 'mcp__multitask__think', tool_use_id: 'c1', name: 'auth bug', task: 'Find why login fails' })
   const works = worker($, 'agent-1')
   const band = await $.ui.mount({ plugin: 'multitask', surface: 'desktop', ...BAND })
@@ -2056,7 +2293,7 @@ test('the band shows eight dots at most, in the order their thoughts started, an
   engine($, on, agents)
   const clock = mock.clock(on, { now: 1_000_000 })
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
-  await $.command.run({ command: 'multitask', args: '', origin: { kind: 'composer' }, presentation: {} as never })
+  await multitask($)
   for (const name of names) await $.tool.call({ tool: 'mcp__multitask__think', tool_use_id: `think-${name}`, name, task: `the brief for ${name}` })
   const band = await $.ui.mount({ plugin: 'multitask', surface: 'desktop', ...BAND })
   const more = async () => elementsOf(await band.drawn()).find(n => n.type === 'Text' && /^\+\d+$/.test(textIn(n)))

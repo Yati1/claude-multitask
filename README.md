@@ -29,12 +29,14 @@ Install any or all of them.
 
 ## Use
 
-In the band above the prompt, Multitask has a dropdown, and thread-chat, while threads are on, a thread picker followed by its threads menu, a cog (`⚙`), with their switches for the chat. The mobile app shows only the thread picker: use the commands there. React has no control in the band: `/react` is its switch.
+In the band above the prompt, Multitask, while it is on, has a dropdown, and thread-chat, while threads are on, a thread picker followed by its threads menu, a cog (`⚙`), with their switches for the chat. The mobile app shows only the thread picker: use the commands there. React has no control in the band: `/react` is its switch.
 
 ### Multitask
 
-- `/multitask` turns Multitask on in a chat (run it again to turn it off). The chat becomes the voice and hands all work to thoughts.
-- Multitask's dropdown reads `Multitask` while it is on and `Focus` while it is off; pick the other to switch.
+- Multitask is off in a new chat, unless you change the default (below). `/multitask` turns it on in that chat (again to turn it off). The choice is per chat, and kept when the chat is restarted.
+- While it is on, the chat is in one of two modes. It starts in `Multitask` mode, where the chat becomes the voice and hands all work to thoughts. In `Focus` you work with the agent as usual. Multitask's dropdown shows the mode; pick the other to switch. `/multitask mode` switches too, and is the way to switch in the mobile app, which has no dropdown.
+- While it is off, Multitask shows nothing above the prompt (only the `thoughts` button, while thoughts it started are left), and the chat stays in Focus. Turning it off in Multitask mode switches to Focus.
+- `/multitask default` switches whether Multitask is on by default: in new chats, and in chats where you have not used `/multitask`. A chat's own `/multitask` choice wins over the default. A new chat it is on in starts in Multitask mode; a chat already open that it turns on starts in Focus. The default applies to every chat and is kept across restarts.
 - Left of the dropdown, the `thoughts` button holds a dot in its colour for each running thought, which blinks as the thought works, swells a little at each of its notes, and fades out as it ends, as a check, or a cross if it failed. In the desktop app, hover a dot for the thought's name, latest note and its age.
 - `/thoughts`, or a click anywhere on the `thoughts` button (a dot included), opens the Thoughts pane: what each thought is doing and how long since its last note, its report, `tell` to send it a message yourself, and `stop`. It lists the 16 most recently ended thoughts (`N more` shows the rest). The thoughts are per chat, and kept when the chat is restarted.
 - The `voiceEffort` setting (Voice effort, in `/config`) sets how hard the voice thinks: `low` (default), `medium`, `high`, or `session` to match the session. Thoughts keep the session's setting.
