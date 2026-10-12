@@ -374,8 +374,9 @@ async function toggleTell($: EngineInterface, id: string) {
 
 // Multitask is on in a chat as the person last chose there with /multitask, else as the
 // default (`/multitask default`), off until they choose. Off, the mod leaves the chat be:
-// nothing above the prompt but the `thoughts` button while a thought it started is left,
-// Focus mode, no tool of the voice's offered. On, the chat is in Multitask mode (isOn),
+// nothing of it shown, not above the prompt nor in a pane, Focus mode, no tool of the
+// voice's offered; a thought it started runs on unseen, the voice hearing of it as news
+// once the mod is on again. On, the chat is in Multitask mode (isOn),
 // where it is the voice, or in Focus, as off but with the band's dropdown; the dropdown or
 // `/multitask mode` switches between them. Turned on with /multitask, or on by default in
 // a new chat, it starts in Multitask mode; an open chat the default turns on stays in
@@ -423,7 +424,14 @@ async function setEnabled($: EngineInterface, now: boolean): Promise<string> {
   await setMode($, now)
   await keepSwitch($)
   redescribe($)
+  await closeIfOff($)
   return now ? ON_TEXT : OFF_TEXT
+}
+
+// Off in the chat, the mod shows nothing: its Thoughts pane closes (a hook's refusal
+// leaves it open).
+async function closeIfOff($: EngineInterface) {
+  if (!(await isEnabled($))) await $.ui.close({ id: PANE }).catch(() => undefined)
 }
 
 // Switches to the mode picked in the band's dropdown; the mode the chat is in already,
@@ -478,6 +486,7 @@ async function setDefault($: EngineInterface, now: boolean): Promise<string> {
   await update($, isEnabledByDefault, () => now)
   await $.store.set(DEFAULT_KEY, now).catch(() => undefined)
   await settleMode($)
+  await closeIfOff($)
   redescribe($)
   const word = now ? 'on' : 'off'
   const said = `Multitask is now ${word} by default, in new chats and in chats where you have not used \`/multitask\`.`
@@ -1273,7 +1282,9 @@ export const register: Register = (on, options) => {
   // The menu's line for /multitask says whether the mod is on here, in which mode, and in new chats.
   on('command.describe', { command: 'multitask' }, async ($, e, next) => next({ ...e, description: descriptionOf(NAMES, await stateOf($)) }))
 
+  // Off in the chat, no pane opens: the command says how to turn it on.
   on('command.run', { command: 'thoughts' }, async $ => {
+    if (!(await isEnabled($))) return { text: OFF_TEXT }
     await $.ui.open({ id: PANE, title: 'Thoughts' })
     return { text: 'Thoughts pane opened.' }
   })
@@ -1436,7 +1447,11 @@ export const register: Register = (on, options) => {
       // voice is told.
       await handOverDue($)
       const t = (await read($, thoughts)).find(one => isAbout(e.text, one.id, one.name))
-      if (t === undefined || !(await read($, isOn))) return next(e)
+      if (t === undefined) return next(e)
+      // Off in the chat, a thought ends unseen: its notice enters nothing, answered without
+      // next, and the voice hears of it as news once the mod is on again.
+      if (!(await isEnabled($))) return { text: e.text }
+      if (!(await read($, isOn))) return next(e)
       const relayed = await takeRelay($)
       if (relayed !== undefined) return next({ ...e, text: (await appendHidden($, relayed)) ? WAKE : relayed })
       const news = await takeNews($)
@@ -1609,9 +1624,9 @@ export const register: Register = (on, options) => {
     return <Text dimColor>◦ thought update{names.length > 0 ? `: ${names.join(', ')}` : ''}</Text>
   })
 
-  // The band above the prompt: in Multitask mode, or with thoughts left, `thoughts` with
-  // a dot for each running thought (band.tsx); then, while the mod is on in the chat,
-  // Multitask's dropdown. Off with no thoughts left, the band is the other mods' alone.
+  // The band above the prompt, while the mod is on in the chat: in Multitask mode, or with
+  // thoughts left, `thoughts` with a dot for each running thought (band.tsx); then
+  // Multitask's dropdown. Off, the band is the other mods' alone, whatever thoughts run.
   // They sit after what other mods draw there, keeping their width while the others give
   // way. The mobile app draws no dropdown: /multitask mode is there. The dots' timed
   // changes, and a dot's blink, draw the band afresh by a write of `bandTick`, which it
@@ -1625,8 +1640,8 @@ export const register: Register = (on, options) => {
     const all = await read($, thoughts)
     await read($, bandTick)
     // In Focus with no thoughts left, the band has no `thoughts`; an idle or failed one
-    // keeps it up. Off, only a running one does.
-    const showsThoughts = on_ || all.some(t => (enabled ? t.status !== 'stopped' : t.status === 'running'))
+    // keeps it up. Off, nothing does.
+    const showsThoughts = enabled && (on_ || all.some(t => t.status !== 'stopped'))
     const ui = $.ui.resolve(e)
     // On the desktop, the hit areas over the parts of `thoughts` (band.tsx draws them there).
     const hitOf =
@@ -1677,10 +1692,10 @@ export const register: Register = (on, options) => {
   })
 
   // A click on any part of the desktop's `thoughts` button, a dot included, posts here from
-  // its hit area (press.tsx) and opens the Thoughts pane.
+  // its hit area (press.tsx) and opens the Thoughts pane; off (a press drawn before), not.
   on('ui.message', async ($, e, next) => {
     if (!e.element.startsWith(THOUGHTS_HIT) || (e.data as { press?: unknown } | null)?.press !== true) return next(e)
-    await $.ui.open({ id: PANE, title: 'Thoughts' })
+    if (await isEnabled($)) await $.ui.open({ id: PANE, title: 'Thoughts' })
     return next(e)
   })
 

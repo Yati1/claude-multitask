@@ -44,6 +44,8 @@ type Seen = {
   bandDraws: number
   // the panes the mod opened, by id
   opened: string[]
+  // the panes the mod closed, by id
+  closed: string[]
 }
 
 // What auto mode answers a SendMessage of the mod's that the mod's own allowance (its
@@ -81,7 +83,7 @@ function engine(
   agents: AgentInfo[] = [{ id: 'agent-1', description: 'auth-bug', type: 'multitask:thought', status: 'running' }],
   store: Record<string, unknown> | null = {},
 ): Seen {
-  const seen: Seen = { prompts: [], sends: [], ran: [], efforts: [], aborts: [], spawns: 0, names: [], registered: [], raising: 0, bandDraws: 0, opened: [] }
+  const seen: Seen = { prompts: [], sends: [], ran: [], efforts: [], aborts: [], spawns: 0, names: [], registered: [], raising: 0, bandDraws: 0, opened: [], closed: [] }
   if (store !== null) mock.store(on, store)
   on('session.id', () => ({ value: 'session-1' }))
   on('session.start', ($, e) => ({ cwd: e.cwd }))
@@ -95,6 +97,10 @@ function engine(
   on('ui.open', ($, e) => {
     seen.opened.push(e.id)
     return { value: { isPlaced: true } }
+  })
+  on('ui.close', ($, e) => {
+    seen.closed.push(e.id)
+    return { value: undefined }
   })
   on('ui.message', () => ({}))
   on('ui.render', ($, e) => {
@@ -781,19 +787,26 @@ test('a new chat starts in Multitask mode while the default is on, and leaves it
   expect((await $.tool.call({ tool: 'mcp__multitask__think', tool_use_id: 'c1', name: 'a', task: 'x' })).deny).toBeDefined()
 })
 
-test('turning Multitask off in a chat leaves Multitask mode and the band, but `thoughts` while a thought is running', async ($, on) => {
+test('turning Multitask off in a chat shows nothing of it, though a thought runs on unseen', async ($, on) => {
   const seen = engine($, on)
   mock.clock(on)
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
   const band = await $.ui.mount({ plugin: 'multitask', surface: 'desktop', ...BAND })
+  const thoughtsCommand = async () =>
+    (await $.command.run({ command: 'thoughts', args: '', origin: { kind: 'composer' }, presentation: {} as never })).text
   await multitask($)
   await $.tool.call({ tool: 'mcp__multitask__think', tool_use_id: 'c1', name: 'auth bug', task: 'Find why login fails' })
   await $.prompt.submit({ text: 'hello', origin: { kind: 'composer' }, wait: false })
+  expect(await thoughtsCommand()).toBe('Thoughts pane opened.')
+  expect(seen.opened).toEqual(['multitask-thoughts'])
 
+  // off, the band is the other mods' alone and the Thoughts pane closes, with a thought running
   expect(await multitask($)).toBe('Multitask is off in this chat; `/multitask on` turns it on.')
+  expect(seen.closed).toEqual(['multitask-thoughts'])
   await band.redraw()
-  expect(await modeOf(band)).toBeUndefined()
-  expect(await thoughtsShown(band)).toBe('thoughts ●')
+  expect(await band.drawn()).toEqual({ type: 'engine', ref: 0 })
+  expect(await thoughtsCommand()).toBe('Multitask is off in this chat; `/multitask on` turns it on.')
+  expect(seen.opened).toEqual(['multitask-thoughts'])
   await $.prompt.submit({ text: 'back to normal', origin: { kind: 'composer' }, wait: false })
   expect(seen.prompts.at(-1)).toContain('Multitask is now off')
   expect((await $.tool.call({ tool: 'mcp__multitask__think', tool_use_id: 'c2', name: 'b', task: 'x' })).deny).toBeDefined()
@@ -807,8 +820,12 @@ test('turning Multitask off in a chat leaves Multitask mode and the band, but `t
   await $.prompt.submit({ text: 'still plain', origin: { kind: 'composer' }, wait: false })
   expect(seen.prompts.at(-1)).toBe('still plain')
 
-  // its turn ended, the band is the other mods' alone; a reload offers no tools
+  // its turn ends unseen: the engine's notice of it enters nothing, and the band stays the
+  // other mods'; a reload offers no tools
   await $.turn.complete({ ...finished('agent-1'), answer: 'Found it.' })
+  const prompts = seen.prompts.length
+  await $.prompt.submit({ text: noticeOf('agent-1', 'Found it.'), origin: { kind: 'task-notification' }, wait: false })
+  expect(seen.prompts).toHaveLength(prompts)
   await band.redraw()
   expect(await band.drawn()).toEqual({ type: 'engine', ref: 0 })
   await $.tool.call({ tool: 'mcp__multitask__stop', tool_use_id: 'c3', name: 'auth-bug' })
