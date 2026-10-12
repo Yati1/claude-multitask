@@ -120,6 +120,8 @@ export type ThoughtsDrawing = {
   surface: RenderSurface
   ui: ElementTable
   now: number | undefined
+  // whether the mod is on in the chat, and whether it is in Multitask mode (not Focus)
+  isEnabled: boolean
   isOn: boolean
   bodyColumns: number
   opened: readonly string[]
@@ -139,8 +141,8 @@ export type ThoughtsDrawing = {
 }
 
 // The field a card's thought is told something in, where the surface draws one (the
-// mobile app draws none yet, though its table may hand one over) while Multitask is on:
-// off, a thought whose turn ended cannot be resumed.
+// mobile app draws none yet, though its table may hand one over) in Multitask mode: in
+// Focus, a thought whose turn ended cannot be resumed.
 function tellFieldOf(draw: ThoughtsDrawing) {
   if (!draw.isOn || draw.surface === 'mobile' || !('Input' in draw.ui)) return undefined
   return draw.ui.Input
@@ -165,7 +167,7 @@ export function drawThoughts(draw: ThoughtsDrawing, list: readonly Thought[]): R
     <Box flexDirection="column">
       <Box marginBottom={1}>
         <Text dimColor>
-          Multitask is {draw.isOn ? 'on' : 'off'} · {summary}
+          {!draw.isEnabled ? 'Multitask is off' : draw.isOn ? 'Multitask mode' : 'Focus mode'} · {summary}
         </Text>
       </Box>
       {shown.map(t =>
