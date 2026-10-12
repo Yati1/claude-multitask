@@ -29,7 +29,7 @@ Install any or all of them. Once installed, a line above the prompt names each n
 
 ## Use
 
-In the band above the prompt, Multitask, while it is on, has a dropdown, and thread-chat, while threads are on, a thread picker followed by its threads menu, a cog (`⚙`), with their switches for the chat. The mobile app shows only the thread picker: use the commands there. React has no control in the band: `/react` is its switch.
+In the band above the prompt, Multitask, while it is on, has a dropdown, and thread-chat, while threads are on, a thread picker followed by `+`, which starts a thread, and `☰`, which opens the thread view. The mobile app shows only the thread picker: use the commands there. React has no control in the band: `/react` is its switch.
 
 The three commands, `/multitask`, `/threads` and `/react`, work alike:
 
@@ -50,22 +50,23 @@ The three commands, `/multitask`, `/threads` and `/react`, work alike:
 
 ### Threads
 
-- Threads are off in a new chat. `/threads on` turns them on in that chat, and `/threads off` turns them off. While they are on, the threads menu (the cog) above the prompt has an `On in this chat` switch that turns them off too. The menu opens while the pointer is on the cog or it has the focus in the desktop app, and with a press on it in the terminal. The choice is per chat, and kept when the chat is restarted.
+- Threads are off in a new chat. `/threads on` turns them on in that chat, and `/threads off` turns them off. The choice is per chat, and kept when the chat is restarted.
 - `/threads default on` or `off` sets whether threads are on by default: in new chats, and in chats where you have not turned them on or off. A chat's own choice wins over the default. The default applies to every chat and is kept across restarts.
-- While threads are off, thread-chat shows nothing: no picker or menu above the prompt, no thread tags, no thread view. Your threads are kept for when `/threads on` turns them on again.
+- While threads are off, thread-chat shows nothing: no picker or buttons above the prompt, no thread tags, no thread view. Your threads are kept for when `/threads on` turns them on again.
 - A `# name` heading in a message starts a thread, or replies to it if it exists. Close or abbreviated names find the existing thread. The agent replies under the same headings.
 - `#+name` starts a new thread even when an existing one is close.
 - To put a message in a thread, hover it for `+ thread` (desktop app); to move it to another, press `▾` beside its thread tag. Press `ᯤ`, at the other end of the tag's line, to open the thread view on that thread alone.
 - The thread picker above the prompt, a dropdown named for the picked thread and tinted in its colour, picks the thread messages without a heading go to, or `No thread`. A heading still wins, and moves the picker to its thread.
-- `New thread` in the threads menu starts a thread by name and picks it; `Manage threads` there merges, archives or deletes threads.
-- Archived threads leave the pickers but keep their messages; `Manage threads` brings them back, as does a heading naming one. Deleting a thread takes its tag off its messages.
-- `Filter the chat`, in the threads menu while threads are on, is off at first, so the chat shows every message. On, with a thread picked, the chat shows only that thread's messages, and those since your last message that are in no thread. It is per chat, and kept when the chat is restarted.
-- `/thread-view`, or `Open thread view` in the threads menu, opens the thread view: a pane with a switch for each thread below its newest message. With none on it shows every message; with some on, only those threads' messages, and those since your last message that are in no thread, as `Filter the chat` does. The thread picker above the prompt and `Filter the chat` do not change it.
+- `+`, after the thread picker, starts a thread by name and picks it.
+- `/threads manage` shows your threads in the chat, each with buttons to merge, archive or delete it (click them; `done` closes the list).
+- Archived threads leave the pickers but keep their messages; `/threads manage` brings them back, as does a heading naming one. Deleting a thread takes its tag off its messages.
+- `/threads filter on` filters the chat, which is off at first, so the chat shows every message. On, with a thread picked, the chat shows only that thread's messages, and those since your last message that are in no thread. `/threads filter off` turns it off; `/threads filter` alone asks. It is per chat, and kept when the chat is restarted.
+- `/thread-view`, or `☰` above the prompt, opens the thread view: a pane with a switch for each thread below its newest message. With none on it shows every message; with some on, only those threads' messages, and those since your last message that are in no thread, as the chat's filter does. The thread picker above the prompt and the chat's filter do not change it.
 - `/merge-threads <thread> into <thread>` also merges two threads.
-- `Agent may start threads`, in the threads menu while threads are on, lets the agent start threads itself. It is per chat, and kept when the chat is restarted.
-- Thread summaries: when you write in a thread after a long gap (75k tokens of other conversation by default), or after the chat was compacted, the agent gets a short summary of the thread with your message. A small model (Haiku) writes the summaries ahead, in the background. The agent can also read a thread's summary and latest messages itself, with its `read_thread` tool.
-- `Thread summaries`, in the threads menu while threads are on, is on at first; off, it stops summaries in that chat. It is per chat, and kept when the chat is restarted.
-- `Show thread summary`, in the threads menu while summaries are on, shows a one-line summary of the picked thread above the prompt (of the latest thread, with none picked). In the desktop app, hover a thread's switch in the thread view for its one-line summary.
+- `/threads agent on` lets the agent start threads itself, and `/threads agent off` stops it; `/threads agent` alone asks. It is off at first, per chat, and kept when the chat is restarted.
+- Thread summaries: when you write in a thread after a long gap (75k tokens of other conversation by default), or after the chat was compacted, the agent gets a short summary of the thread with your message. A small model (Haiku) writes the summaries ahead, in the background, whenever threads are on. The agent can also read a thread's summary and latest messages itself, with its `read_thread` tool.
+- `/threads summaries on` shows a one-line summary of the picked thread above the prompt (of the latest thread, with none picked), and `/threads summaries off` hides it; `/threads summaries` alone asks. It is off at first, per chat, and kept when the chat is restarted. In the desktop app, hover a thread's switch in the thread view for its one-line summary.
+- `/threads status` lists these settings, `agent`, `filter` and `summaries`, after whether threads are on. They work while threads are on.
 - The `catchUpAfter` setting (Catch up after, in `/config`) sets that gap in tokens, `75000` by default; `summaryModel` sets the model that writes the summaries, `claude-haiku-5-5` by default.
 
 ### Reactions

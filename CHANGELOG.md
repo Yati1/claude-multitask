@@ -8,7 +8,6 @@ Notable changes to the thread-chat, multitask and react mods. The format is base
 
 - Added a welcome line to thread-chat, multitask and react with each new mod's command and a docs link.
 - Added a warning to thread-chat, multitask and react when an older Claude Code hides their controls.
-- Added a note to the chat, on turning threads off from thread-chat's menu, that `/threads` turns them on.
 - Added `/threads default` to thread-chat to choose whether new chats start with threads on.
 - Added `/multitask default` to multitask to choose whether new chats start with it on, off at first.
 - Added `/multitask mode` to multitask to pick Multitask or Focus, also in the mobile app.
@@ -17,6 +16,9 @@ Notable changes to the thread-chat, multitask and react mods. The format is base
 - Added `on`, `off`, `toggle`, `status` and `default on|off` to `/threads`, `/multitask` and `/react`.
 - Added a dialog to `/threads`, `/multitask` and `/react`: alone for this chat, with `default` for new chats.
 - Added the current setting to the command menu's lines for `/threads`, `/multitask` and `/react`.
+- Added `+` and `☰` after thread-chat's thread picker to start a thread and open the thread view.
+- Added `/threads manage` to thread-chat to merge, archive or delete threads from a list in the chat.
+- Added `/threads agent`, `filter` and `summaries` to thread-chat to set or ask, listed by `status`.
 
 ### Changed
 
@@ -28,6 +30,8 @@ Notable changes to the thread-chat, multitask and react mods. The format is base
 ### Removed
 
 - Removed `/react place` from react: the desktop reaction always sits on your message's corner.
+- Removed thread-chat's threads menu (the cog), and `Manage threads` from its mobile thread picker.
+- Removed the `Thread summaries` switch from thread-chat: summaries always run while threads are on.
 
 ## 0.4.0 - 2026-10-11
 

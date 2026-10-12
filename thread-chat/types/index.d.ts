@@ -139,7 +139,7 @@ declare module 'claude-code' {
   interface PluginState {
     'thread-chat': {
       // whether threads are on in the session: as the person last chose there with
-      // /threads (or the menu), else as the default; off, the mod leaves the session be
+      // /threads, else as the default; off, the mod leaves the session be
       isOn: boolean
       // the person's own choice in the session, kept over the default; null until they
       // make one
@@ -150,6 +150,7 @@ declare module 'claude-code' {
       threads: Thread[]
       // a merged-away thread's key -> the key of the thread it now belongs to
       aliases: Record<string, string>
+      // whether the agent may start threads (create_thread): `/threads agent`, off at first
       agentMayCreate: boolean
       // whether the chat is filtered to the thread picked above the prompt; off (as at
       // first), the chat shows every row
@@ -197,13 +198,13 @@ declare module 'claude-code' {
       // what the thread view's own filter picked: the keys of the threads it shows, and
       // '' for the sections of no thread; none, it shows every section
       viewThreads: string[]
-      // whether the band's menu shows its switches, on a surface where a press opens it
-      menuOpen: boolean
-      // what the band's menu shows of the threads: '' its first rows (the switches, opening
-      // the thread view, starting a thread, managing them), 'name' the field for a new
-      // thread's name, 'manage' each thread's merge, archive and delete, `merge:<key>` the
-      // threads that one can merge into, `delete:<key>` the question whether to delete it
-      menuMode: string
+      // whether the band shows the field for a new thread's name in place of its `+`
+      bandNaming: boolean
+      // what each output row of `/threads manage` that draws the threads' panel shows, by
+      // its requestId: '' (or none) each thread's merge, archive and delete, `merge:<key>`
+      // the threads that one can merge into, `delete:<key>` the question whether to delete
+      // it, `done` the row's text again
+      manageModes: Record<string, string>
       // whether the thread picker's list is open in the mobile app, which draws no Select:
       // its button opens and closes it
       pickerOpen: boolean
@@ -219,16 +220,13 @@ declare module 'claude-code' {
       // each summary call, the latest CALLS_KEPT, for `/thread-view trace summaries`;
       // kept in a file beside the view's rows, read by no render
       summaryCalls: SummaryCallLog
-      // whether the chat's threads are summarised and the agent caught up on them: the
-      // menu's switch, on at first, kept with the session's record
-      summariesOn: boolean
       // whether the agent was offered read_thread this run: only as a run starts, so the
       // tools the model is sent stay the same all session
       readToolOffered: boolean
       // whether this run's session.start has run: one running again is a reload
       hasStarted: boolean
       // whether the band shows a line under its controls with the picked thread's one-line
-      // summary (or the active thread's, none picked): the menu's switch, off at first,
+      // summary (or the active thread's, none picked): `/threads summaries`, off at first,
       // kept with the session's record
       summaryLineShown: boolean
       // the key of the thread the latest turn touched last ('' none yet)

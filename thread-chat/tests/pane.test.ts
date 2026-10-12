@@ -164,6 +164,15 @@ const say = (text: string) => ({ text, origin: { kind: 'composer' as const }, wa
 const flipThreads = ($: Engine) =>
   $.command.run({ command: 'threads', args: 'toggle', origin: { kind: 'composer' }, presentation: {} as never })
 
+// `/threads manage`, and its output row drawn: the threads' panel.
+let manageRuns = 0
+async function managePanel($: Engine) {
+  const { text = '' } = await $.command.run({ command: 'threads', args: 'manage', origin: { kind: 'composer' }, presentation: {} as never })
+  manageRuns += 1
+  const props = { command: 'threads', args: 'manage', text, isErrored: false }
+  return $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', component: 'CommandOutput', props, requestId: `manage-${manageRuns}` })
+}
+
 const BAND = {
   component: 'AbovePrompt',
   props: {
@@ -880,14 +889,14 @@ test("a person's message takes react's newest reaction by its row id or stem, el
   expect(reactionOn([], 'p1', long, stemOf)).toBeUndefined()
 })
 
-test("/thread-view and the Threads menu's row open the view, once threads are on; off closes it", async ($, on) => {
+test("/thread-view and the band's `☰` open the view, once threads are on; off closes it", async ($, on) => {
   const { opened, closed } = engine(on)
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
   const view = () => $.command.run({ command: 'thread-view', args: '', origin: { kind: 'composer' }, presentation: {} as never })
   expect((await view()).text).toBe('Threads are off in this chat; /threads turns them on.')
 
   for (const surface of ['terminal', 'desktop'] as const) {
-    // off, no menu, so no row for the view
+    // off, no band, so no button for the view
     const band = await $.ui.mount({ plugin: 'thread-chat', surface, ...BAND })
     expect(await band.drawn()).toEqual({ type: 'engine', ref: 0 })
     await band.unmount()
@@ -896,30 +905,22 @@ test("/thread-view and the Threads menu's row open the view, once threads are on
   await flipThreads($)
   expect((await view()).text).toBe('Thread view opened.')
   expect(opened).toEqual(['thread-view'])
-  // the terminal's menu, opened by a press on it, stays open from here on
-  const terminal = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...BAND })
-  await terminal.press({ key: 'threads' })
-  await terminal.unmount()
 
-  for (const surface of ['terminal', 'desktop'] as const) {
-    // on, the menu's row opens it, before any thread starts
-    const band = await $.ui.mount({ plugin: 'thread-chat', surface, ...BAND })
-    expect((await band.find({ key: 'thread-view' }))?.props.label).toBe('Open thread view')
-    await band.press({ key: 'thread-view' })
-    await band.unmount()
-  }
+  // on, the band's `☰` opens it, before any thread starts: on the terminal a Button, on the
+  // desktop a click on its hit area
+  const terminal = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...BAND })
+  expect((await terminal.find({ key: 'thread-view' }))?.props.label).toBe('☰')
+  await terminal.press({ key: 'thread-view' })
+  await terminal.unmount()
+  const desktop = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...BAND })
+  await desktop.pointer({ type: 'down', x: 1, y: 0, button: 'left', in: 'band:thread-view' } as never)
+  await desktop.unmount()
   expect(opened).toEqual(['thread-view', 'thread-view', 'thread-view'])
 
-  // threads off, by /threads or the menu's switch, close the view
+  // threads off close the view
   expect(closed).toEqual([])
   await flipThreads($)
   expect(closed).toEqual(['thread-view'])
-  await flipThreads($)
-  const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...BAND })
-  await band.press({ key: 'threads' })
-  await band.redraw()
-  await band.press({ key: 'threads-on' })
-  expect(closed).toEqual(['thread-view', 'thread-view'])
 })
 
 // The chat's rows: a person's message, and a reply.
@@ -1008,12 +1009,8 @@ test("a thread tag's filter button opens the view on that thread alone; none whi
   }
 
   // an archived thread, which the view's filter does not offer, keeps its "▾" but has no filter button
-  const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...BAND })
-  await band.press({ key: 'threads' })
-  await band.redraw()
-  await band.press({ key: 'threads:manage' })
-  await band.redraw()
-  await band.press({ key: 'threads:archive:docs' })
+  const panel = await managePanel($)
+  await panel.press({ key: 'threads:archive:docs' })
   const archived = await $.ui.mount({ plugin: 'thread-chat', surface: 'desktop', ...replyRow('# docs\nc\n# perf\nd', 'r-archived') })
   expect(await archived.find({ key: 'tag:docs' })).toBeDefined()
   expect(await archived.find({ key: 'tag-filter:docs' })).toBeUndefined()
@@ -1075,17 +1072,13 @@ test("the view's filter follows a merge, lets go of an archived or deleted threa
   // perf merged into ops: ops picked in its place
   await $.command.run({ command: 'merge-threads', args: 'perf into ops', origin: { kind: 'composer' }, presentation: {} as never })
   expect(await filterOf(pane)).toEqual(['design *', 'docs *', 'ops *'])
-  // docs archived and design deleted, from the menu: they leave the filter, ops still picked
-  const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...BAND })
-  await band.press({ key: 'threads' })
-  await band.redraw()
-  await band.press({ key: 'threads:manage' })
-  await band.redraw()
-  await band.press({ key: 'threads:archive:docs' })
-  await band.redraw()
-  await band.press({ key: 'threads:delete:design' })
-  await band.redraw()
-  await band.press({ key: 'threads:delete-yes' })
+  // docs archived and design deleted, from /threads manage: they leave the filter, ops still picked
+  const panel = await managePanel($)
+  await panel.press({ key: 'threads:archive:docs' })
+  await panel.redraw()
+  await panel.press({ key: 'threads:delete:design' })
+  await panel.redraw()
+  await panel.press({ key: 'threads:delete-yes' })
   expect(await filterOf(pane)).toEqual(['ops *'])
   expect((kept['session:session-1'] as { viewThreads?: unknown }).viewThreads).toEqual(['ops'])
 })

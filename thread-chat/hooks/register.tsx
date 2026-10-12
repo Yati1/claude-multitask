@@ -98,7 +98,7 @@ import {
   withUsage,
 } from './summaries'
 import type { LineInput } from './summaries'
-import { argumentHint, descriptionOf, runSwitch } from './command'
+import { argumentHint, askAmong, descriptionOf, runSwitch, statusOf, usageOf, valueOf, wordsOf } from './command'
 import type { Names, Session, State } from './command'
 import { watchSwitch } from './ui-switch'
 import { welcome } from './welcome'
@@ -108,8 +108,9 @@ const choice = atom({ plugin: 'thread-chat', key: 'choice' } as const, null)
 const isOnByDefault = atom({ plugin: 'thread-chat', key: 'isOnByDefault' } as const, false)
 const threads = atom({ plugin: 'thread-chat', key: 'threads' } as const, [])
 const aliases = atom({ plugin: 'thread-chat', key: 'aliases' } as const, {})
-// The menu's agent and filter switches, kept with the session's record for its next run;
-// a session that never flipped one starts with the agent kept out and the chat unfiltered.
+// The agent and filter settings (`/threads agent`, `/threads filter`), kept with the
+// session's record for its next run; a session that never set one starts with the agent
+// kept out and the chat unfiltered.
 const agentMayCreate = atom({ plugin: 'thread-chat', key: 'agentMayCreate' } as const, false)
 const filtersChat = atom({ plugin: 'thread-chat', key: 'filtersChat' } as const, false)
 const snaps = atom({ plugin: 'thread-chat', key: 'snaps' } as const, {})
@@ -127,15 +128,14 @@ const viewRows = atom({ plugin: 'thread-chat', key: 'viewRows' } as const, [])
 const picturesRead = atom({ plugin: 'thread-chat', key: 'picturesRead' } as const, 0)
 const viewFrom = atom({ plugin: 'thread-chat', key: 'viewFrom' } as const, null)
 const viewThreads = atom({ plugin: 'thread-chat', key: 'viewThreads' } as const, [])
-const menuOpen = atom({ plugin: 'thread-chat', key: 'menuOpen' } as const, false)
+const bandNaming = atom({ plugin: 'thread-chat', key: 'bandNaming' } as const, false)
 const pickerOpen = atom({ plugin: 'thread-chat', key: 'pickerOpen' } as const, false)
-const menuMode = atom({ plugin: 'thread-chat', key: 'menuMode' } as const, '')
+const manageModes = atom({ plugin: 'thread-chat', key: 'manageModes' } as const, {})
 const tokenPos = atom({ plugin: 'thread-chat', key: 'tokenPos' } as const, START_POS)
 const summaries = atom({ plugin: 'thread-chat', key: 'summaries' } as const, {})
 const summaryLines = atom({ plugin: 'thread-chat', key: 'summaryLines' } as const, {})
 const summaryUsage = atom({ plugin: 'thread-chat', key: 'summaryUsage' } as const, NO_USAGE)
 const summaryCalls = atom({ plugin: 'thread-chat', key: 'summaryCalls' } as const, NO_CALLS)
-const summariesOn = atom({ plugin: 'thread-chat', key: 'summariesOn' } as const, true)
 const readToolOffered = atom({ plugin: 'thread-chat', key: 'readToolOffered' } as const, false)
 const hasStarted = atom({ plugin: 'thread-chat', key: 'hasStarted' } as const, false)
 const summaryLineShown = atom({ plugin: 'thread-chat', key: 'summaryLineShown' } as const, false)
@@ -146,20 +146,13 @@ const reactIsOn = atom({ plugin: 'react', key: 'isOn' } as const, false)
 const reactReactions = atom({ plugin: 'react', key: 'reactions' } as const, [])
 
 const CREATE_TOOL = 'mcp__thread-chat__create_thread'
-// Thread-chat's menu in the band: a "Threads" button, and a row per switch, which a
-// press flips: threads on in this chat, and, while on, whether the agent may start them
-// and whether the chat is filtered to the picked thread. On the desktop the rows are a
-// card shown while the pointer is on the button or it has the focus; on the terminal a
-// press on the button shows or hides them in the band.
-const MENU = 'threads'
-const THREADS_SWITCH = 'threads-on'
-const AGENT_SWITCH = 'agent-threads'
-const FILTER_SWITCH = 'filter-chat'
-const SUMMARIES_SWITCH = 'thread-summaries'
-const LINE_SWITCH = 'summary-line'
-// A switch's hit area over its picture, keyed by this and the switch's key.
-const SWITCH_HIT = 'switch:'
-// The thread view's pane id, which is also its command's name and its menu row's key.
+// Thread-chat's buttons in the band, after the thread picker: `+`, which swaps itself for
+// a field to name a new thread, and `☰`, which opens the thread view (its key is VIEW).
+// On the desktop each is drawn as the desktop draws a Select, under a hit area keyed by
+// BAND_HIT and its key; elsewhere it is a Button.
+const NEW_BUTTON = 'threads:new'
+const BAND_HIT = 'band:'
+// The thread view's pane id, which is also its command's name and its band button's key.
 const VIEW = 'thread-view'
 const VIEW_TITLE = 'Thread view'
 
@@ -242,11 +235,11 @@ function withoutGone(sections: Section[], isGoneName: (name: string) => boolean)
   return sections.map(s => (s.thread !== null && isGoneName(s.thread) ? { thread: null, text: s.text } : s))
 }
 
-// Threads are on in a session as the person last chose there with /threads (or the
-// menu's switch), else as the default (`/threads default`), off until they set it. Off,
-// the mod leaves the session be: nothing beside the person's messages, whose `#`
-// headings are plain text, no tags or "+ thread" round the chat's rows, no band (so no
-// menu: /threads alone turns them on), no thread view, no tool, nothing kept on disk.
+// Threads are on in a session as the person last chose there with /threads, else as the
+// default (`/threads default`), off until they set it. Off, the mod leaves the session
+// be: nothing beside the person's messages, whose `#` headings are plain text, no tags
+// or "+ thread" round the chat's rows, no band (/threads alone turns them on), no
+// thread view, no tool, nothing kept on disk.
 // Turned off, the session keeps its threads for coming on again.
 const OFF_TEXT = 'Threads are off in this chat; /threads turns them on.'
 
@@ -321,34 +314,39 @@ async function offerCreateTool($: EngineInterface) {
   }
 }
 
-// Flips whether the agent may start threads, offering it the tool as it comes on, and
-// keeps the switch for the session's next run.
-async function flipAgentSwitch($: EngineInterface) {
-  let now = false
-  await update($, agentMayCreate, may => (now = !may))
+// Sets whether the agent may start threads (set while threads are on), offering it the
+// tool as it comes on, and keeps the setting for the session's next run.
+async function setAgentMayCreate($: EngineInterface, now: boolean) {
+  await update($, agentMayCreate, () => now)
   if (now) await offerCreateTool($)
   await save($)
 }
 
-// Flips whether the chat is filtered to the picked thread, and keeps it for the
-// session's next run.
-async function flipFilter($: EngineInterface) {
-  await update($, filtersChat, is => !is)
+// Sets whether the chat is filtered to the picked thread, and keeps it for the session's
+// next run.
+async function setFilter($: EngineInterface, now: boolean) {
+  await update($, filtersChat, () => now)
+  await save($)
+}
+
+// Shows or hides the line under the band's controls with a thread's one-line summary, and
+// keeps the setting for the session's next run.
+async function setSummaryLine($: EngineInterface, now: boolean) {
+  await update($, summaryLineShown, () => now)
   await save($)
 }
 
 // Turns threads on or off where they are not already. Coming on where the agent may start
-// threads, it is offered its tool. Going off, the band goes, its menu shut for coming on
-// again, and the thread view closes.
+// threads, it is offered its tool. Going off, the band goes, its field for a new thread's
+// name shut for coming on again, and the thread view closes.
 async function setThreads($: EngineInterface, now: boolean) {
   if ((await read($, isOn)) === now) return
   await update($, isOn, () => now)
   redescribe($)
   if (now && (await read($, agentMayCreate))) await offerCreateTool($)
   if (!now) {
-    await update($, menuOpen, () => false)
+    await update($, bandNaming, () => false)
     await update($, pickerOpen, () => false)
-    await update($, menuMode, () => '')
     await update($, picking, () => '')
     await update($, naming, () => false)
     // a hook's refusal leaves it open
@@ -364,19 +362,13 @@ async function chooseThreads($: EngineInterface, now: boolean) {
   await save($)
 }
 
-// Flips threads, as the menu's switch does; whether they are now on.
-async function flipThreads($: EngineInterface): Promise<boolean> {
-  const now = !(await read($, isOn))
-  await chooseThreads($, now)
-  return now
-}
-
-// What /threads says as it turns threads off, and the transcript as the menu does.
+// What /threads says as it turns threads on or off.
 const OFF_NOTE = 'Threads are off. They are kept for when /threads turns them on again.'
 const ON_TEXT = 'Threads are on: start or reply to one with a # name heading (or + thread in the desktop app).'
 
-// `/threads` and its arguments, as every mod's switch takes them (command.ts).
-const NAMES: Names = { command: 'threads', noun: 'Threads', be: 'are' }
+// `/threads` and its arguments, as every mod's switch takes them (command.ts), and beside
+// them `manage` and the settings by name (SETTINGS).
+const NAMES: Names = { command: 'threads', noun: 'Threads', be: 'are', extraUsage: 'manage|agent|filter|summaries [on|off]' }
 
 async function stateOf($: EngineInterface): Promise<State> {
   return { isOnHere: await read($, isOn), choiceHere: await read($, choice), isOnByDefault: await read($, isOnByDefault), detail: '' }
@@ -404,41 +396,96 @@ function redescribe($: EngineInterface) {
   }
 }
 
-// Threads turned off from the menu, which goes with the band: the transcript says how
-// to turn them on again, as a notice the model never reads; a line drawn like one where
-// the row is refused.
-async function noteOff($: EngineInterface) {
-  try {
-    const appended = await $.session.append({ message: { type: 'system', content: [{ type: 'text', text: OFF_NOTE }] } })
-    if (appended.deny !== undefined) $.ui.log(OFF_NOTE)
-  } catch {
-    $.ui.log(OFF_NOTE)
+// A setting of the chat's that `/threads <word> [on|off]` sets, or with no value asks
+// about: its label (as `/threads status` lists it), the question and the dialog's chip
+// (12 characters at most), and what is said as it comes on or goes off; it is read by
+// isSettingOn and set by setSetting. Each is off at first and kept with the session's record.
+type Setting = {
+  word: 'agent' | 'filter' | 'summaries'
+  label: string
+  question: string
+  header: string
+  onText: string
+  offText: string
+}
+
+const SETTINGS: readonly Setting[] = [
+  {
+    word: 'agent',
+    label: 'Agent may start threads',
+    question: 'May the agent start threads in this chat?',
+    header: 'Agent',
+    onText: 'The agent may now start threads in this chat.',
+    offText: 'The agent may no longer start threads in this chat.',
+  },
+  {
+    word: 'filter',
+    label: 'Filter the chat',
+    question: 'Filter the chat to the picked thread?',
+    header: 'Filter',
+    onText: "The chat is now filtered to the picked thread: it shows that thread's messages, and those since your last message in no thread.",
+    offText: 'The chat is no longer filtered: it shows every message.',
+  },
+  {
+    word: 'summaries',
+    label: 'Show thread summary',
+    question: "Show the picked thread's one-line summary above the prompt?",
+    header: 'Summary',
+    onText: "The picked thread's one-line summary now shows above the prompt (the latest thread's, with none picked).",
+    offText: 'The thread summary no longer shows above the prompt.',
+  },
+]
+
+// Whether a setting is on, by its word. (The engine reads only the atoms a call names and
+// lets `$` reach only functions declared here, so a Setting holds neither.)
+async function isSettingOn($: EngineInterface, word: Setting['word']): Promise<boolean> {
+  if (word === 'agent') return read($, agentMayCreate)
+  if (word === 'filter') return read($, filtersChat)
+  return read($, summaryLineShown)
+}
+
+// Sets a setting, by its word.
+async function setSetting($: EngineInterface, word: Setting['word'], now: boolean) {
+  if (word === 'agent') await setAgentMayCreate($, now)
+  else if (word === 'filter') await setFilter($, now)
+  else await setSummaryLine($, now)
+}
+
+const onOff = (isOn: boolean) => (isOn ? 'on' : 'off')
+
+// How the settings are: `Agent may start threads: off · Filter the chat: on · ...`.
+async function settingsText($: EngineInterface): Promise<string> {
+  const parts: string[] = []
+  for (const s of SETTINGS) parts.push(`${s.label}: ${onOff(await isSettingOn($, s.word))}`)
+  return parts.join(' · ')
+}
+
+// `/threads status`: how threads are, here and in new chats, then the settings.
+async function statusText($: EngineInterface): Promise<string> {
+  return `${statusOf(NAMES, await stateOf($))}\n\n${await settingsText($)}`
+}
+
+// `/threads <word> [on|off]` for a setting: sets it to the value given, or with none asks,
+// its current value marked. Already so, or not answered, changes nothing. Off, threads have
+// no settings to set: it says how to turn them on, as /thread-view does.
+async function runSetting($: EngineInterface, setting: Setting, words: readonly string[]): Promise<string> {
+  const [, given, ...rest] = words
+  const wanted = given === undefined ? undefined : valueOf(given)
+  if (rest.length > 0 || (given !== undefined && wanted === undefined)) return usageOf(NAMES)
+  if (!(await read($, isOn))) return OFF_TEXT
+  const was = await isSettingOn($, setting.word)
+  if (wanted === was) return `${setting.label}: already ${onOff(was)}.`
+  let now = wanted
+  if (now === undefined) {
+    const session = sessionOf($)
+    if (!(await session.canAsk())) return `${setting.label}: ${onOff(was)}.`
+    const picked = await askAmong(session.ask, setting.question, setting.header, ['On', 'Off'], was ? 0 : 1)
+    const is = await isSettingOn($, setting.word)
+    if (picked === undefined || (picked === 0) === is) return `No change. ${setting.label}: ${onOff(is)}.`
+    now = picked === 0
   }
-}
-
-// Flips whether the chat's threads are summarised and the agent caught up on them, and
-// keeps the switch for the session's next run. Off, no summary call is made.
-async function flipSummaries($: EngineInterface) {
-  await update($, summariesOn, is => !is)
-  await save($)
-}
-
-// Flips a switch of the band's menu. The agent's switch, the filter's or the summaries'
-// while threads are off (a press drawn before) leaves things be.
-async function flipMenuSwitch($: EngineInterface, key: string) {
-  if (key === THREADS_SWITCH) {
-    if (!(await flipThreads($))) await noteOff($)
-  } else if (key === AGENT_SWITCH && (await read($, isOn))) await flipAgentSwitch($)
-  else if (key === FILTER_SWITCH && (await read($, isOn))) await flipFilter($)
-  else if (key === SUMMARIES_SWITCH && (await read($, isOn))) await flipSummaries($)
-  else if (key === LINE_SWITCH && (await read($, isOn))) await flipSummaryLine($)
-}
-
-// Shows or hides the line under the band's controls with a thread's one-line summary, and
-// keeps the switch for the session's next run.
-async function flipSummaryLine($: EngineInterface) {
-  await update($, summaryLineShown, is => !is)
-  await save($)
+  await setSetting($, setting.word, now)
+  return now ? setting.onText : setting.offText
 }
 
 // What a heading means, by one rule for sending and drawing alike: `+name` a new
@@ -561,7 +608,7 @@ type Saved = {
   // the person's own choice (null: none, so the session follows the default); absent
   // from a record kept before /threads default
   choice?: boolean | null
-  // the menu's agent and filter switches; absent from a record kept before they were kept
+  // the agent and filter settings; absent from a record kept before they were kept
   agentMayCreate?: boolean
   filtersChat?: boolean
   threads: Thread[]
@@ -582,7 +629,6 @@ type Saved = {
   viewThreads: string[]
   // absent from a record kept before thread summaries
   tokenPos?: TokenPos
-  summariesOn?: boolean
   summaryLineShown?: boolean
   activeThread?: string
 }
@@ -608,7 +654,6 @@ async function save($: EngineInterface) {
     briefed: await read($, briefed),
     viewThreads: await read($, viewThreads),
     tokenPos: await read($, tokenPos),
-    summariesOn: await read($, summariesOn),
     summaryLineShown: await read($, summaryLineShown),
     activeThread: await read($, activeThread),
   }
@@ -718,9 +763,9 @@ function toolCallIds(content: readonly { type: string; [field: string]: unknown 
   return content.flatMap(block => (block.type === 'tool_use' && typeof block.id === 'string' ? [block.id] : []))
 }
 
-// The keys of the threads the chat is filtered to: the picked thread while the menu's
-// filter is on, else none, and the chat shows every row. Read while a row draws, so a
-// flip or a new pick draws it again.
+// The keys of the threads the chat is filtered to: the picked thread while the chat's
+// filter (`/threads filter`) is on, else none, and the chat shows every row. Read while a
+// row draws, so a change or a new pick draws it again.
 async function chatFilterKeys($: EngineInterface): Promise<Set<string>> {
   if (!(await read($, filtersChat))) return new Set()
   const cur = await read($, current)
@@ -916,37 +961,18 @@ async function offNote($: EngineInterface): Promise<string | undefined> {
   return 'The user turned conversation threads off. Reply without thread headings; a level-1 heading in their messages is plain text now.'
 }
 
-// The SVG of a slide switch: a rounded track with the knob to the right when on.
-function switchPicture(isOn: boolean): string {
-  const track = isOn ? '#3b82f6' : '#8c8c8c'
-  const knob = isOn ? 23 : 11
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="34" height="20" viewBox="0 0 34 20"><rect x="1" y="2" width="32" height="16" rx="8" fill="${track}"/><circle cx="${knob}" cy="10" r="6" fill="#ffffff"/></svg>`
-}
-
-// The desktop's Select caret, a chevron 14px square in the secondary text colour of
-// the theme, after a 6px gap: the picture is the gap and the caret.
-const CARET_GAP = 6
-const CARET_SIZE = 14
-const CARET_PICTURE = [
-  `<svg xmlns="http://www.w3.org/2000/svg" width="${CARET_GAP + CARET_SIZE}" height="${CARET_SIZE}"`,
-  ` viewBox="${-CARET_GAP * (16 / CARET_SIZE)} 0 ${(CARET_GAP + CARET_SIZE) * (16 / CARET_SIZE)} 16">`,
-  '<style>.c{stroke:#c3c2b7}@media (prefers-color-scheme: light){.c{stroke:#52514e}}</style>',
-  '<path class="c" d="M4 6l4 4 4-4" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>',
-  '</svg>',
-].join('')
-
-// The menu button's settings cog, 14px square in the theme's text colour: the desktop
-// draws an Svg as an image, so it takes no colour from the text around it.
-const COG_PICTURE = [
-  `<svg xmlns="http://www.w3.org/2000/svg" width="${CARET_SIZE}" height="${CARET_SIZE}" viewBox="0 0 16 16">`,
-  '<style>.g{fill:#faf9f5}@media (prefers-color-scheme: light){.g{fill:#141413}}</style>',
-  '<path class="g" fill-rule="evenodd" d="M6.81 2.84L6.86 0.79L9.14 0.79L9.19 2.84A5.3 5.3 0 0 1 10.81 3.51L12.29 2.09',
-  'L13.91 3.71L12.49 5.19A5.3 5.3 0 0 1 13.16 6.81L15.21 6.86L15.21 9.14L13.16 9.19A5.3 5.3 0 0 1 12.49 10.81L13.91 12.29',
-  'L12.29 13.91L10.81 12.49A5.3 5.3 0 0 1 9.19 13.16L9.14 15.21L6.86 15.21L6.81 13.16A5.3 5.3 0 0 1 5.19 12.49L3.71 13.91',
-  'L2.09 12.29L3.51 10.81A5.3 5.3 0 0 1 2.84 9.19L0.79 9.14L0.79 6.86L2.84 6.81A5.3 5.3 0 0 1 3.51 5.19L2.09 3.71L3.71 2.09',
-  'L5.19 3.51A5.3 5.3 0 0 1 6.81 2.84ZM5.7 8a2.3 2.3 0 1 0 4.6 0a2.3 2.3 0 1 0 -4.6 0Z"/>',
-  '</svg>',
-].join('')
+// The band buttons' icons, 14px square in the theme's text colour, as the desktop's
+// Select draws its text: the desktop draws an Svg as an image, so it takes no colour from
+// the text around it, and centres it on the button exactly, where a glyph sits wherever
+// its font puts it in the line. `+` starts a thread; `☰`, three lines, opens the thread view.
+const ICON_SIZE = 14
+const iconPicture = (path: string) =>
+  `<svg xmlns="http://www.w3.org/2000/svg" width="${ICON_SIZE}" height="${ICON_SIZE}" viewBox="0 0 16 16">` +
+  '<style>.g{stroke:#faf9f5}@media (prefers-color-scheme: light){.g{stroke:#141413}}</style>' +
+  `<path class="g" d="${path}" fill="none" stroke-width="1.5" stroke-linecap="round"/>` +
+  '</svg>'
+const NEW_PICTURE = iconPicture('M8 3v10M3 8h10')
+const VIEW_PICTURE = iconPicture('M2.5 4h11M2.5 8h11M2.5 12h11')
 
 const CHIP_HEIGHT = 20
 
@@ -1493,50 +1519,15 @@ function drawAddThread(
   )
 }
 
-type MenuSwitch = { key: string; label: string; isOn: boolean }
-
-// The switches of the band's menu, drawn while threads are on: threads on in this chat
-// (a press turns them off, and the band with it), whether the agent may start them,
-// whether the chat is filtered to the picked thread, and the summaries' switches.
-async function menuSwitches($: EngineInterface): Promise<MenuSwitch[]> {
-  return [
-    { key: THREADS_SWITCH, label: 'On in this chat', isOn: await read($, isOn) },
-    { key: AGENT_SWITCH, label: 'Agent may start threads', isOn: await read($, agentMayCreate) },
-    { key: FILTER_SWITCH, label: 'Filter the chat', isOn: await read($, filtersChat) },
-    { key: SUMMARIES_SWITCH, label: 'Thread summaries', isOn: await read($, summariesOn) },
-    ...((await read($, summariesOn)) ? [{ key: LINE_SWITCH, label: 'Show thread summary', isOn: await read($, summaryLineShown) }] : []),
-  ]
-}
-
-// A row of the desktop's menu card: its label, a Button that flips it, then its slide
-// switch, a picture with a hit area laid over it that flips it too.
-function drawMenuRow($: EngineInterface, elements: Elements['desktop'], s: MenuSwitch): RenderElement {
-  const { Box, Button, Svg, Client } = elements
-  return (
-    <Box flexDirection="row" alignItems="center" justifyContent="space-between" columnGap={2}>
-      <Button key={s.key} label={s.label} plain onPress={() => flipMenuSwitch($, s.key)} />
-      <Box flexShrink={0}>
-        <Svg source={switchPicture(s.isOn)} alt={`${s.label}: ${s.isOn ? 'on' : 'off'}`} width={34} height={CHIP_HEIGHT} />
-        <Box position="absolute" top={0} left={0} width="100%" height="100%">
-          <Client key={SWITCH_HIT + s.key} module="./switch.tsx" props={{ isOn: s.isOn }} width="100%" height="100%" />
-        </Box>
-      </Box>
-    </Box>
-  )
-}
-
 // The thread view's filter: one thread (by its key) picked, or left out where it was.
 const toggleViewThread = ($: EngineInterface, key: string) => filterView($, (keys, list) => toggledShown(list, keys, key))
 
-// The desktop's hit area over a thread's tag in the thread view's filter, as over a menu
-// switch: a click on it posts, and the post toggles the thread.
+// The desktop's hit area over a thread's tag in the thread view's filter, as over a band
+// button: a click on it posts, and the post toggles the thread.
 const filterHitOf = (elements: Elements['desktop']) => (key: string, isPicked: boolean) => {
   const { Client } = elements
   return <Client key={FILTER_THREAD_KEY + key} module="./switch.tsx" props={{ isOn: isPicked }} width="100%" height="100%" />
 }
-
-// The menu's row that opens the thread view, as /thread-view does; only while threads are on.
-const VIEW_ROW = 'Open thread view'
 
 // The fill of the desktop's Select field: white at 5% over the band in the dark theme
 // (no theme colour names it). The light theme's is white at 50%, over a near-white band.
@@ -1544,74 +1535,82 @@ const FIELD_FILL = 'rgba(255,255,255,0.05)'
 // The Select's 6px either side of its text and caret, from its outer edge: 5px inside
 // the Box's 1px border, in the band's ch.
 const FIELD_PADDING = 0.7
-// The gap between the rows of the menu's card, in the desktop's half lines: a quarter of
-// the band's line, about 5px, so a row (one line, about 19px, or a 20px slide switch)
-// comes about 24px after the last, as the options of the desktop's Select do.
-const MENU_ROW_GAP = 0.5
 
-// The band's threads menu, a settings cog, drawn while threads are on: its switches, then
-// the thread actions (opening the thread view, starting a thread, managing the threads),
-// which take the switches' place past their first rows. On the desktop, a button drawn
-// as the desktop draws a Select (as the thread picker and Multitask's dropdown beside
-// it): the field's fill and its ring, stronger under the pointer, the radius, the
-// padding, one line high, the cog, the caret. The keyed Box it is holds them in a card
-// the desktop lifts over the band while the pointer is on the button or the card, or the
-// focus is in them. Elsewhere, a Button that shows or hides them beside it.
-async function drawMenu($: EngineInterface, e: Parameters<EngineInterface['ui']['resolve']>[0]): Promise<RenderElement> {
-  // past its first rows (a new thread's name, managing the threads), the thread actions alone
-  const mode = await read($, menuMode)
-  const switches = mode === '' ? await menuSwitches($) : []
-  const ui = $.ui.resolve(e)
-  const menuUi = { Box: ui.Box, Text: ui.Text, Button: ui.Button, Input: 'Input' in ui ? ui.Input : undefined }
-  const actions = drawThreadActions($, menuUi, e.surface, await read($, threads), mode)
+type BandButton = { key: string; glyph: string; label: string; picture: string }
+const NEW_THREAD_BUTTON: BandButton = { key: NEW_BUTTON, glyph: '+', label: 'New thread', picture: NEW_PICTURE }
+const VIEW_BUTTON: BandButton = { key: VIEW, glyph: '☰', label: 'Open thread view', picture: VIEW_PICTURE }
+
+// A press on a band button, by its key: `+` shows the field for a new thread's name in its
+// place, `☰` opens the thread view, as /thread-view does. Threads off (a press drawn
+// before), neither.
+async function pressBand($: EngineInterface, key: string) {
+  if (!(await read($, isOn))) return
+  if (key === NEW_BUTTON) await update($, bandNaming, () => true)
+  else if (key === VIEW) await openView($)
+}
+
+// A band button. On the desktop, a keyed Box drawn as the desktop draws a Select (as the
+// thread picker and Multitask's dropdown beside it): the field's fill and its ring,
+// stronger under the pointer, the radius, one line high, its icon, and a hit area over the
+// icon and its padding, so a click anywhere in the ring presses it; its label shows in a
+// card the desktop lifts over the band while the pointer is on it. The ring's own side
+// padding is none, as the desktop gives a bordered Box 12px either side unless told
+// otherwise: the Box inside it pads. Elsewhere, a Button of its glyph.
+function drawBandButton($: EngineInterface, e: Parameters<EngineInterface['ui']['resolve']>[0], button: BandButton): RenderElement {
   if (e.surface === 'desktop') {
-    const desktop = $.ui.resolve(e)
-    const { Box, Svg } = desktop
+    const { Box, Text, Svg, Client } = $.ui.resolve(e)
     return (
       <Box
-        key={MENU}
+        key={button.key}
         flexDirection="row"
         alignItems="center"
+        flexShrink={0}
         height={1}
-        paddingX={FIELD_PADDING}
         paddingY={0}
+        paddingLeft={0}
+        paddingRight={0}
         borderStyle="single"
         backgroundColor={FIELD_FILL}
         hover={{ borderColor: 'promptBorder' }}
       >
-        <Svg source={COG_PICTURE} alt="Threads menu" width={CARET_SIZE} height={CARET_SIZE} />
-        <Svg source={CARET_PICTURE} alt="menu" width={CARET_GAP + CARET_SIZE} height={CARET_SIZE} />
-        <Box position="absolute" display="none" hover={{ display: 'flex' }} flexDirection="column" rowGap={MENU_ROW_GAP}>
-          {switches.map(s => drawMenuRow($, desktop, s))}
-          {actions}
+        <Box flexShrink={0} paddingX={FIELD_PADDING}>
+          <Svg source={button.picture} alt={button.label} width={ICON_SIZE} height={ICON_SIZE} />
+          <Box position="absolute" top={0} left={0} width="100%" height="100%">
+            <Client key={BAND_HIT + button.key} module="./switch.tsx" props={{ isOn: false }} width="100%" height="100%" />
+          </Box>
+        </Box>
+        <Box position="absolute" display="none" hover={{ display: 'flex' }}>
+          <Text>{button.label}</Text>
         </Box>
       </Box>
     )
   }
-  const { Box, Text, Button } = $.ui.resolve(e)
-  const isOpen = await read($, menuOpen)
+  const { Button } = $.ui.resolve(e)
+  return <Button key={button.key} label={button.glyph} variant="secondary" onPress={() => pressBand($, button.key)} />
+}
+
+// The band's buttons after the thread picker, while threads are on: `+`, or once it is
+// pressed the field for a new thread's name and the `×` that shuts it; then `☰`. None in
+// the mobile app, which draws no field or pane: `/threads manage` and /thread-view are there.
+async function drawBandButtons($: EngineInterface, e: Parameters<EngineInterface['ui']['resolve']>[0]): Promise<RenderElement | undefined> {
+  if (e.surface === 'mobile') return undefined
+  const ui = $.ui.resolve(e)
+  const Input = 'Input' in ui ? ui.Input : undefined
+  const field =
+    Input !== undefined && (await read($, bandNaming))
+      ? drawNameField(
+          { Input, Button: ui.Button },
+          { field: NAME_FIELD, cancel: NAME_CANCEL },
+          'start',
+          value => startFromBand($, value),
+          () => update($, bandNaming, () => false),
+        )
+      : undefined
+  const { Box } = ui
   return (
-    <Box flexDirection="row" alignItems="center" columnGap={2}>
-      <Button
-        key={MENU}
-        label={isOpen ? '⚙ ▴' : '⚙ ▾'}
-        variant="secondary"
-        onPress={() => toggleMenu($)}
-      />
-      {isOpen &&
-        switches.map(s => (
-          <Box flexDirection="row" columnGap={1}>
-            <Text dimColor>{s.label}</Text>
-            <Button
-              key={s.key}
-              label={s.isOn ? '( ●)' : '(● )'}
-              variant={s.isOn ? 'primary' : 'secondary'}
-              dimColor={!s.isOn}
-              onPress={() => flipMenuSwitch($, s.key)}
-            />
-          </Box>
-        ))}
-      {isOpen && actions}
+    <Box flexDirection="row" alignItems="center" columnGap={1} flexShrink={0}>
+      {field ?? drawBandButton($, e, NEW_THREAD_BUTTON)}
+      {drawBandButton($, e, VIEW_BUTTON)}
     </Box>
   )
 }
@@ -1627,7 +1626,7 @@ async function setNaming($: EngineInterface, isNaming: boolean) {
 }
 
 // The field a new thread's name is typed in, focused as it shows, and the "×" beside it
-// that goes back: the move picker's and the Threads menu's alike, under keys of each's own.
+// that goes back: the move picker's and the band's alike, under keys of each's own.
 function drawNameField(
   ui: { Input: Elements['terminal']['Input']; Button: Elements['terminal']['Button'] },
   keys: { field: string; cancel: string },
@@ -2431,26 +2430,12 @@ const PICKER = 'thread-picker'
 const THREAD_OPTION = 'thread:'
 const NO_THREAD = 'none'
 
-// The field in the Threads menu for a new thread's name; the menu's thread actions are
-// keyed under `threads:`.
+// The band's field for a new thread's name, and the `×` that shuts it.
 const NAME_FIELD = 'threads:name'
-
-// The elements the Threads menu's thread actions are drawn with, alike on every surface.
-type MenuUi = Pick<Elements['terminal'], 'Box' | 'Text' | 'Button'> & { Input?: Elements['terminal']['Input'] }
-
-async function setMenuMode($: EngineInterface, mode: string) {
-  await update($, menuMode, () => mode)
-}
-
-// Opens or closes the Threads menu where a press does (the terminal), at its first rows.
-async function toggleMenu($: EngineInterface) {
-  await update($, menuMode, () => '')
-  await update($, menuOpen, open => !open)
-}
+const NAME_CANCEL = 'threads:name-cancel'
 
 // Opens or closes the mobile app's picker, at its list of threads.
 async function togglePickerOpen($: EngineInterface) {
-  await update($, menuMode, () => '')
   await update($, pickerOpen, open => !open)
 }
 
@@ -2460,25 +2445,82 @@ async function pickFromList($: EngineInterface, key: string) {
   await pickThread($, key)
 }
 
-// Starts the thread named in the menu's field, as a heading would (the next colour), and
-// picks it; the menu goes back to its first rows. A name already a thread's picks that
-// one; an empty or long one does nothing.
-async function startFromMenu($: EngineInterface, typed: string) {
+// Starts the thread named in the band's field, as a heading would (the next colour), and
+// picks it; the field shuts. A name already a thread's picks that one; an empty or long
+// one does nothing.
+async function startFromBand($: EngineInterface, typed: string) {
   const name = nameOf(typed.replace(/^#+/, ''))
   if (name === '' || name.length > 48) return
   await addThreads($, [name], 'user')
-  await setMenuMode($, '')
+  await update($, bandNaming, () => false)
   await pickThread($, keyOf(name))
 }
 
-// The Threads menu's thread actions while threads are on, as `mode` (menuMode) has them:
-// at first, rows that open the thread view, start a thread (where a field can be drawn)
-// and manage the threads; then the field for a new thread's name, or each thread's merge,
-// archive and delete. Rows are Boxes of no key, as a keyed Box in the desktop's card would
-// start a hover scope of its own; on the desktop the first rows are plain, as the card's
-// switches are, and elsewhere they are Buttons in the band's row.
-function drawThreadActions($: EngineInterface, ui: MenuUi, surface: RenderSurface, list: Thread[], mode: string): RenderElement[] {
-  const { Box, Text, Button, Input } = ui
+// `/threads manage`: its output row is the threads' management panel (drawManage) where a
+// surface draws it, and elsewhere the threads as they were, as text. Off, it says how to
+// turn threads on. The next output row of /threads manage drawn takes the panel up
+// (isManageRow): one drawn before, or of an earlier run of the app, stays text.
+async function runManage($: EngineInterface, words: readonly string[]): Promise<string> {
+  if (words.length > 1) return usageOf(NAMES)
+  if (!(await read($, isOn))) return OFF_TEXT
+  isManageDue = true
+  return threadsText(await read($, threads))
+}
+
+// The threads as text: `Threads: design, perf; archived: docs.`
+function threadsText(list: readonly Thread[]): string {
+  if (list.length === 0) return 'No threads yet: start one with a # name heading.'
+  const active = list.filter(t => t.isArchived !== true).map(t => t.name)
+  const archived = list.filter(t => t.isArchived === true).map(t => t.name)
+  return `Threads: ${active.join(', ') || 'none'}${archived.length === 0 ? '' : `; archived: ${archived.join(', ')}`}.`
+}
+
+// The output rows of /threads manage that draw the panel, by their requestId, and those
+// drawn as text; and whether a run waits for its row (left waiting where nothing draws it,
+// as in a `-p` run, until the next run's row takes it). Kept for this run of the app: after
+// a reload or a restart every row is text. The panel's state, per row, is manageModes'.
+const MANAGE_ROWS = new Set<string>()
+const TEXT_ROWS = new Set<string>()
+let isManageDue = false
+// A row's state once `done` is pressed: text again.
+const MANAGE_DONE = 'done'
+
+// Whether a /threads manage output row draws the panel: one taken up, or the first drawn
+// since a run that was never drawn before.
+function isManageRow(requestId: string): boolean {
+  if (MANAGE_ROWS.has(requestId)) return true
+  if (!isManageDue || TEXT_ROWS.has(requestId)) {
+    TEXT_ROWS.add(requestId)
+    return false
+  }
+  isManageDue = false
+  MANAGE_ROWS.add(requestId)
+  return true
+}
+
+// Acts on the threads from the panel, where threads are on and each thread named still
+// stands (for a merge, not archived): a press drawn before acts on the threads as they
+// are now, or not at all.
+async function manageAct($: EngineInterface, keys: readonly string[], act: () => Promise<unknown>, isMerge = false) {
+  if (!(await read($, isOn))) return
+  const list = await read($, threads)
+  const stands = (key: string) => list.some(t => keyOf(t.name) === key && (!isMerge || t.isArchived !== true))
+  if (keys.every(stands)) await act()
+}
+
+// The panel /threads manage draws in its output row, as `mode` (the row's state in
+// manageModes) has it: each thread's merge, archive and delete, the archived threads apart,
+// and `done`, which leaves the row as text; or the threads one can merge into, or the
+// question whether to delete one. It is drawn from the threads as they stand, so it is
+// never out of date. Its Buttons are pressed with the pointer: no hotkey reaches a row.
+function drawManage(
+  $: EngineInterface,
+  ui: Pick<Elements['terminal'], 'Box' | 'Text' | 'Button'>,
+  list: Thread[],
+  mode: string,
+  setMode: (mode: string) => Promise<unknown>,
+): RenderElement {
+  const { Box, Text, Button } = ui
   const active = list.filter(t => t.isArchived !== true)
   const archived = list.filter(t => t.isArchived === true)
   const dot = (t: Thread) => <Text color={t.color}>●</Text>
@@ -2493,116 +2535,79 @@ function drawThreadActions($: EngineInterface, ui: MenuUi, surface: RenderSurfac
     </Box>
   )
   const byKey = (key: string) => list.find(t => keyOf(t.name) === key)
-
-  if (mode === '') {
-    const action = (key: string, label: string, onPress: () => unknown) =>
-      surface === 'desktop' ? (
-        row([<Button key={key} label={label} plain onPress={() => void onPress()} />])
-      ) : (
-        <Button key={key} label={label} variant="secondary" onPress={() => void onPress()} />
-      )
-    return [
-      action(VIEW, VIEW_ROW, () => openView($)),
-      ...(Input === undefined ? [] : [action('threads:new', 'New thread', () => setMenuMode($, 'name'))]),
-      ...(list.length === 0 ? [] : [action('threads:manage', 'Manage threads', () => setMenuMode($, 'manage'))]),
-    ]
-  }
-
-  if (mode === 'name' && Input !== undefined) {
-    return [
-      column([
-        <Text dimColor>new thread</Text>,
-        row(
-          drawNameField(
-            { Input, Button },
-            { field: NAME_FIELD, cancel: 'threads:name-cancel' },
-            'start',
-            value => startFromMenu($, value),
-            () => setMenuMode($, ''),
-          ),
-        ),
-      ]),
-    ]
-  }
+  const cancel = <Button key="threads:cancel" label="cancel" plain dimColor onPress={() => setMode('')} />
 
   const merging = mode.startsWith('merge:') ? byKey(mode.slice('merge:'.length)) : undefined
-  if (merging !== undefined) {
+  if (merging !== undefined && merging.isArchived !== true) {
     const from = keyOf(merging.name)
-    return [
-      column([
-        <Text dimColor>{`merge ${merging.name} into`}</Text>,
-        ...active
-          .filter(t => keyOf(t.name) !== from)
-          .map(t =>
-            row([
-              dot(t),
-              <Button
-                key={`threads:merge-into:${keyOf(t.name)}`}
-                label={t.name}
-                plain
-                onPress={async () => {
-                  await mergeThreads($, from, keyOf(t.name))
-                  await setMenuMode($, 'manage')
-                }}
-              />,
-            ]),
-          ),
-        <Button key="threads:cancel" label="cancel" plain dimColor onPress={() => setMenuMode($, 'manage')} />,
-      ]),
-    ]
+    return column([
+      <Text dimColor>{`merge ${merging.name} into`}</Text>,
+      ...active
+        .filter(t => keyOf(t.name) !== from)
+        .map(t =>
+          row([
+            dot(t),
+            <Button
+              key={`threads:merge-into:${keyOf(t.name)}`}
+              label={t.name}
+              plain
+              onPress={async () => {
+                await manageAct($, [from, keyOf(t.name)], () => mergeThreads($, from, keyOf(t.name)), true)
+                await setMode('')
+              }}
+            />,
+          ]),
+        ),
+      cancel,
+    ])
   }
 
   const deleting = mode.startsWith('delete:') ? byKey(mode.slice('delete:'.length)) : undefined
   if (deleting !== undefined) {
     const key = keyOf(deleting.name)
-    return [
-      column([
-        <Text>{`delete ${deleting.name}?`}</Text>,
-        <Text dimColor>Its messages stay, without its tag.</Text>,
-        row([
-          <Button
-            key="threads:delete-yes"
-            label="delete"
-            variant="primary"
-            onPress={async () => {
-              await deleteThread($, key)
-              await setMenuMode($, 'manage')
-            }}
-          />,
-          <Button key="threads:cancel" label="cancel" plain dimColor onPress={() => setMenuMode($, 'manage')} />,
-        ]),
+    return column([
+      <Text>{`delete ${deleting.name}?`}</Text>,
+      <Text dimColor>Its messages stay, without its tag.</Text>,
+      row([
+        <Button
+          key="threads:delete-yes"
+          label="delete"
+          variant="primary"
+          onPress={async () => {
+            await manageAct($, [key], () => deleteThread($, key))
+            await setMode('')
+          }}
+        />,
+        cancel,
       ]),
-    ]
+    ])
   }
 
-  // Each thread's merge, archive and delete, the archived threads apart (also where the
-  // thread a mode named has gone).
+  // Each thread's merge, archive and delete (also where the thread a mode named has gone).
   const actions = (t: Thread) => {
     const key = keyOf(t.name)
     const isArchived = t.isArchived === true
     return [
       !isArchived && active.length > 1 && (
-        <Button key={`threads:merge:${key}`} label="merge" plain dimColor onPress={() => setMenuMode($, `merge:${key}`)} />
+        <Button key={`threads:merge:${key}`} label="merge" plain dimColor onPress={() => setMode(`merge:${key}`)} />
       ),
       <Button
         key={`threads:${isArchived ? 'unarchive' : 'archive'}:${key}`}
         label={isArchived ? 'unarchive' : 'archive'}
         plain
         dimColor
-        onPress={() => setArchived($, key, !isArchived)}
+        onPress={() => manageAct($, [key], () => setArchived($, key, !isArchived))}
       />,
-      <Button key={`threads:delete:${key}`} label="delete" plain dimColor onPress={() => setMenuMode($, `delete:${key}`)} />,
+      <Button key={`threads:delete:${key}`} label="delete" plain dimColor onPress={() => setMode(`delete:${key}`)} />,
     ]
   }
-  return [
-    column([
-      row([<Text dimColor>threads</Text>, <Button key="threads:done" label="done" plain dimColor onPress={() => setMenuMode($, '')} />]),
-      ...(active.length === 0 ? [<Text dimColor>none</Text>] : active.map(t => row([dot(t), <Text>{t.name}</Text>, ...actions(t)]))),
-      ...(archived.length === 0
-        ? []
-        : [<Text dimColor>archived</Text>, ...archived.map(t => row([dot(t), <Text dimColor>{t.name}</Text>, ...actions(t)]))]),
-    ]),
-  ]
+  return column([
+    row([<Text dimColor>threads</Text>, <Button key="threads:done" label="done" plain dimColor onPress={() => setMode(MANAGE_DONE)} />]),
+    ...(active.length === 0 ? [<Text dimColor>none</Text>] : active.map(t => row([dot(t), <Text>{t.name}</Text>, ...actions(t)]))),
+    ...(archived.length === 0
+      ? []
+      : [<Text dimColor>archived</Text>, ...archived.map(t => row([dot(t), <Text dimColor>{t.name}</Text>, ...actions(t)]))]),
+  ])
 }
 
 // The opacity of the desktop's tint behind the thread picker, as two hex digits added to
@@ -2687,9 +2692,8 @@ async function drawThreadControls(
     )
   }
 
-  // The mobile app: a Button that opens the choices in the band, then the threads' actions.
+  // The mobile app: a Button that opens the choices in the band.
   const isOpen = await read($, pickerOpen)
-  const mode = await read($, menuMode)
   const choice = (t: Thread | undefined) => {
     const key = t === undefined ? '' : keyOf(t.name)
     return (
@@ -2706,14 +2710,7 @@ async function drawThreadControls(
       </Box>
     )
   }
-  const choices =
-    mode === ''
-      ? [
-          ...active.map(t => choice(t)),
-          choice(undefined),
-          <Button key="threads:manage" label="Manage threads" plain dimColor onPress={() => setMenuMode($, 'manage')} />,
-        ]
-      : drawThreadActions($, { Box, Text, Button }, e.surface, list, mode)
+  const choices = [...active.map(t => choice(t)), choice(undefined)]
   return (
     <Box flexDirection="row" alignItems="flex-start" flexGrow={1} flexShrink={1} minWidth={0}>
       <Box key={PICKER} flexDirection="column" flexShrink={0}>
@@ -2986,7 +2983,7 @@ async function logUnparsed($: EngineInterface, n: number | undefined) {
 // RETRY_MS's length of times.
 async function runSummary($: EngineInterface, job: SummaryJob) {
   try {
-    if (summariesStopped !== undefined || !(await read($, isOn)) || !(await read($, summariesOn))) return
+    if (summariesStopped !== undefined || !(await read($, isOn))) return
     const how = { trigger: job.trigger, tries: job.tries }
     const answer = job.kind === 'pack' ? await makePack($, job.key, how) : await makeLines($, job.sections, how)
     if (answer?.kind !== 'retry') return
@@ -3117,7 +3114,7 @@ async function makeLines($: EngineInterface, sections: Record<string, string>, h
 // Queues the one-line summaries of the threads the turn that just ended touched (its rows
 // since the person's last message), and notes the last of them as the active thread.
 async function queueTurnLines($: EngineInterface) {
-  if (summariesStopped !== undefined || !(await read($, isOn)) || !(await read($, summariesOn))) return
+  if (summariesStopped !== undefined || !(await read($, isOn))) return
   const stems = new Set((await read($, recent)).map(stemOf))
   const { entries } = await allEntries($)
   const isTurnRow = (id: string) => stems.has(stemOf(id))
@@ -3195,9 +3192,9 @@ async function takeKeptSummaries($: EngineInterface, id: string, onlyRows?: Read
 // Queues the packs due: as a turn ends, each thread (not archived) near catching up, or
 // past it, whose pack is not current; as a compaction starts (`isEvery`), each whose pack
 // is not current, as every thread will be past catching up once it is done. While threads
-// and their summaries are on.
+// are on.
 async function queueDuePacks($: EngineInterface, isEvery = false) {
-  if (summariesStopped !== undefined || !(await read($, isOn)) || !(await read($, summariesOn))) return
+  if (summariesStopped !== undefined || !(await read($, isOn))) return
   const all = await read($, summaries)
   const list = await read($, threads)
   const isArchived = new Set(list.filter(t => t.isArchived === true).map(t => keyOf(t.name)))
@@ -3236,9 +3233,9 @@ async function offerReadTool($: EngineInterface) {
 
 // What the agent is told beside the person's message of the threads it goes to (`names`)
 // that are past catching up: a note each for the first three, a pointer for any more.
-// While threads and their summaries are on.
+// While threads are on.
 async function catchUpNotes($: EngineInterface, names: readonly string[]): Promise<string[]> {
-  if (names.length === 0 || !(await read($, summariesOn))) return []
+  if (names.length === 0) return []
   const { inputs, entries } = await allEntries($)
   const gaps = threadGaps(entries, inputs.known, await read($, tokenPos), inputs.list)
   const keys = new Set(names.map(keyOf))
@@ -3253,7 +3250,7 @@ const MAX_NOTES = 3
 
 // What read_thread answers for the thread a name means (as a heading would mean it): its
 // summary and its messages since, made now (within READ_TIMEOUT_MS) where it has no current
-// one and more messages than are told whole, while its summaries are on.
+// one and more messages than are told whole.
 async function readThread($: EngineInterface, raw: unknown): Promise<string> {
   const typed = typeof raw === 'string' ? nameOf(raw.replace(/^#+/, '')) : ''
   if (typed === '') return 'Name the thread to read: {"thread": "<name>"}.'
@@ -3267,7 +3264,7 @@ async function readThread($: EngineInterface, raw: unknown): Promise<string> {
   let summary = (await read($, summaries))[key]
   const lastRow = entries.findLast(entry => entry.thread !== undefined && keyOf(entry.thread.name) === key)?.id
   const isLong = verbatimOf(entries, key, summary?.coversRow, TOOL_TAIL_CHARS).isCut
-  if (!isCurrent(summary, lastRow) && isLong && summariesStopped === undefined && (await read($, summariesOn))) {
+  if (!isCurrent(summary, lastRow) && isLong && summariesStopped === undefined) {
     await makePack($, key, { trigger: 'read_thread', tries: 0 }, READ_TIMEOUT_MS)
     summary = (await read($, summaries))[key]
   }
@@ -3298,7 +3295,7 @@ async function summaryTraceText($: EngineInterface): Promise<string> {
         `${all[g.key]?.line === undefined ? '' : `\n    ${all[g.key]?.line}`}`,
     ),
     `  model ${modelInUse ?? summaryConfig.model}; ${usageText(await read($, summaryUsage))}` +
-      `${(await read($, summariesOn)) ? '' : '; off in this chat'}${(await read($, readToolOffered)) ? '; read_thread offered' : ''}`,
+      `${(await read($, readToolOffered)) ? '; read_thread offered' : ''}`,
     ...(summariesStopped === undefined ? [] : [`  stopped: ${summariesStopped}`]),
     ...(summaryJobs.size + summaryRunning.size === 0 ? [] : [`  calls running: ${[...summaryRunning].join(', ') || 'none'}; waiting: ${[...summaryJobs.keys()].join(', ') || 'none'}`]),
     ...summaryLog.map(line => `  ${line}`),
@@ -3321,7 +3318,7 @@ export const register: Register = (on, options) => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'threads',
-      description: 'Turn conversation threads on or off in this chat, or by default in new chats',
+      description: 'Turn conversation threads on or off in this chat or by default, manage them, or set their options',
       argumentHint: argumentHint(NAMES),
     })
     await $.command.register({ name: VIEW, description: 'Read the threads you pick, without tool rows, in a pane' })
@@ -3387,19 +3384,17 @@ export const register: Register = (on, options) => {
     if (keptMayCreate !== undefined) await update($, agentMayCreate, () => keptMayCreate)
     const keptFilters = saved?.filtersChat
     if (keptFilters !== undefined) await update($, filtersChat, () => keptFilters)
-    const keptSummariesOn = saved?.summariesOn
-    if (keptSummariesOn !== undefined) await update($, summariesOn, () => keptSummariesOn)
     const keptLineShown = saved?.summaryLineShown
     if (keptLineShown !== undefined) await update($, summaryLineShown, () => keptLineShown)
     const keptActive = saved?.activeThread
     if (keptActive !== undefined && (await read($, activeThread)) === '') await update($, activeThread, () => keptActive)
     // With threads and the agent switch on, after a reload or a restart, its tool is offered again.
     if ((await read($, isOn)) && (await read($, agentMayCreate))) await offerCreateTool($)
-    // read_thread is offered as a run starts with threads and their summaries on, never
-    // later, so the tools the model is sent stay the same all session (a change would have
-    // the main model write its whole prompt cache again); a reload offers it again.
+    // read_thread is offered as a run starts with threads on, never later, so the tools the
+    // model is sent stay the same all session (a change would have the main model write its
+    // whole prompt cache again); a reload offers it again.
     const isReload = await read($, hasStarted)
-    const isReadDue = !isReload && (await read($, isOn)) && (await read($, summariesOn))
+    const isReadDue = !isReload && (await read($, isOn))
     if ((await read($, readToolOffered)) || isReadDue) await offerReadTool($)
     await update($, hasStarted, () => true)
     // Rows kept by an earlier version count from now: none is past catching up at once.
@@ -3416,8 +3411,31 @@ export const register: Register = (on, options) => {
   })
 
   // `/threads` asks whether threads are on in this chat, `/threads default` whether in new
-  // chats; its arguments set either, or say how they are (command.ts).
-  on('command.run', { command: 'threads' }, async ($, e) => ({ text: await runSwitch(sessionOf($), NAMES, e.args) }))
+  // chats; its arguments set either, or say how they are (command.ts), `status` with the
+  // settings. `/threads manage` draws the threads' panel, and `/threads agent`, `filter`
+  // and `summaries` set or ask about a setting (SETTINGS).
+  on('command.run', { command: 'threads' }, async ($, e) => {
+    const words = wordsOf(e.args)
+    const setting = SETTINGS.find(s => s.word === words[0])
+    if (setting !== undefined) return { text: await runSetting($, setting, words) }
+    if (words[0] === 'manage') return { text: await runManage($, words) }
+    if (words.length === 1 && words[0] === 'status') return { text: await statusText($) }
+    return { text: await runSwitch(sessionOf($), NAMES, e.args) }
+  })
+
+  // The output row of `/threads manage` that took the panel up draws it, from the threads
+  // as they stand, until its `done`; every other one, and any while threads are off, is the
+  // engine's drawing of its text. Once done, the text says where the threads stand now.
+  on('ui.render', { component: 'CommandOutput', props: { command: 'threads' } }, async ($, e, next) => {
+    if (wordsOf(e.props.args).join(' ') !== 'manage' || e.props.isErrored) return next(e)
+    const modes: Record<string, string> = await read($, manageModes)
+    if (!isManageRow(e.requestId) || !(await read($, isOn))) return next(e)
+    const list = await read($, threads)
+    if (modes[e.requestId] === MANAGE_DONE) return next({ ...e, props: { ...e.props, text: threadsText(list) } })
+    const id = e.requestId
+    const setMode = (mode: string) => update($, manageModes, all => ({ ...all, [id]: mode }))
+    return drawManage($, $.ui.resolve(e), list, modes[id] ?? '', setMode)
+  })
 
   // The menu's line for /threads says whether threads are on here and in new chats.
   on('command.describe', { command: 'threads' }, async ($, e, next) => next({ ...e, description: descriptionOf(NAMES, await stateOf($)) }))
@@ -3655,9 +3673,9 @@ export const register: Register = (on, options) => {
       // the newest sections, or from the first the person had drawn as they scrolled up
       const from = await read($, viewFrom)
       const near = viewNearOf(e.props.scroll.offset, e.props.scroll.bodyRows)
-      // the threads' one-line summaries while they are on, which the pointer on a tag shows;
+      // the threads' one-line summaries, which the pointer on a tag shows;
       // read here, so a new line draws the view again
-      const lines = (await read($, summariesOn)) ? await read($, summaryLines) : {}
+      const lines = await read($, summaryLines)
       const now = await $.clock.now().catch(() => Date.now())
       const summaryOf = (key: string) => {
         const made = lines[key]
@@ -3729,8 +3747,8 @@ export const register: Register = (on, options) => {
   // memory extraction) that are offered the main loop's tools, carries its loop's
   // agentId and is refused: the engine's own refusal of a fork's call lies beneath
   // next(e), which this hook, answering itself, never calls.
-  // read_thread, offered as a run starts with threads and their summaries on: for the main
-  // conversation alone, as create_thread is, so no hidden fork has a summary made.
+  // read_thread, offered as a run starts with threads on: for the main conversation alone,
+  // as create_thread is, so no hidden fork has a summary made.
   on('tool.call', { tool: READ_TOOL }, async ($, e) => {
     if (e.agentId !== undefined) return { deny: 'Only the main conversation reads threads; this call came from another agent.' }
     if (!(await read($, isOn))) return { deny: 'The user turned conversation threads off.' }
@@ -3773,11 +3791,11 @@ export const register: Register = (on, options) => {
     return result
   })
 
-  // The menu's switches, the thread view's filter and the one open move picker's pills post
-  // here when clicked: the only Clients, so their count stays a few times the threads'.
+  // The desktop's band buttons, the thread view's filter and the one open move picker's
+  // pills post here when clicked: the only Clients, so their count stays a few times the threads'.
   on('ui.message', async ($, e, next) => {
     if ((e.data as { flip?: unknown } | null)?.flip !== true) return next(e)
-    if (e.element.startsWith(SWITCH_HIT)) await flipMenuSwitch($, e.element.slice(SWITCH_HIT.length))
+    if (e.element.startsWith(BAND_HIT)) await pressBand($, e.element.slice(BAND_HIT.length))
     else if (e.element.startsWith(FILTER_THREAD_KEY)) await toggleViewThread($, e.element.slice(FILTER_THREAD_KEY.length))
     else if (await read($, isOn)) {
       if (e.element.startsWith('pick:')) await moveTo($, e.element.slice('pick:'.length))
@@ -4014,20 +4032,20 @@ export const register: Register = (on, options) => {
   })
 
   // The band above the prompt: while threads are on, the thread picker, giving way first,
-  // then thread-chat's menu right after it. They sit before what other mods draw there,
-  // which keeps its width. The mobile app draws no menu: /threads and
-  // /thread-view are there. With the menu's `Show thread summary` on, a line under them
-  // holds a thread's one-line summary. Off, the band is the others' alone.
+  // then thread-chat's `+` and `☰` right after it. They sit before what other mods draw
+  // there, which keeps its width. The mobile app draws no buttons: /threads manage and
+  // /thread-view are there. With `/threads summaries` on, a line under them holds a
+  // thread's one-line summary. Off, the band is the others' alone.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const below = await next(e)
     if (e.props.hasSurvey || !(await read($, isOn))) return below
 
     const { Box } = $.ui.resolve(e)
-    const menu = e.surface === 'mobile' ? undefined : await drawMenu($, e)
+    const buttons = await drawBandButtons($, e)
     const mine = (
       <Box flexDirection="row" alignItems="center" columnGap={1} flexGrow={1} flexShrink={1} minWidth={0}>
         {await drawThreadControls($, e)}
-        {menu !== undefined && <Box flexShrink={0}>{menu}</Box>}
+        {buttons}
       </Box>
     )
     const controls =
@@ -4057,13 +4075,13 @@ export const register: Register = (on, options) => {
 // terminal's rows are whole lines, so it has none.
 const SUMMARY_LINE_GAP = 0.5
 
-// The band's line of a thread's one-line summary, under its controls, while the menu's
-// `Show thread summary` is on: the picked thread's, or with none picked the thread the
+// The band's line of a thread's one-line summary, under its controls, while
+// `/threads summaries` is on: the picked thread's, or with none picked the thread the
 // latest turn touched last; its line alone, dim, cut to one row, from the band's left
 // edge, where the picker's tint starts. None where that thread has no line yet; where
 // the summaries stopped this run, why.
 async function drawSummaryLine($: EngineInterface, e: Parameters<EngineInterface['ui']['resolve']>[0]): Promise<RenderElement | undefined> {
-  if (!(await read($, summaryLineShown)) || !(await read($, summariesOn))) return undefined
+  if (!(await read($, summaryLineShown))) return undefined
   const { Box, Text } = $.ui.resolve(e)
   if (summariesStopped !== undefined) {
     return (
