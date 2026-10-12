@@ -28,6 +28,7 @@ import {
   drawViewFailure,
   fingerprintOf,
   grownOffsetOf,
+  hashOf,
   hasToolCall,
   imagePathsOf,
   imageSizeOf,
@@ -1111,22 +1112,37 @@ const isOnRightOf = (surface: RenderSurface) => surface === 'desktop' || surface
 
 // The row of thread tags above a person's message, at the side the surface puts the
 // message; `side` ("+ thread", or an open move picker) on the side away from the
-// edge the tags keep to, so showing it moves none. The thread view draws a person's
-// section's tag so too.
+// edge the tags keep to, so showing it moves none; `ends` (the tags' filter buttons)
+// at the row's other end. The thread view draws a person's section's tag so too.
 function drawTagRow(
   $: EngineInterface,
   e: Parameters<EngineInterface['ui']['resolve']>[0],
   tags: RenderElement[],
   side?: RenderElement,
   fit: BoxProps = {},
+  ends: RenderElement[] = [],
 ): RenderElement {
   const { Box } = $.ui.resolve(e)
   const isOnRight = isOnRightOf(e.surface)
+  // the ends take the row's spare room, against the edge away from the tags
+  const far = ends.length > 0 && (
+    <Box
+      flexDirection="row"
+      columnGap={e.surface === 'desktop' ? 0 : 1}
+      alignItems="center"
+      flexGrow={1}
+      justifyContent={isOnRight ? 'flex-start' : 'flex-end'}
+    >
+      {ends}
+    </Box>
+  )
   return (
     <Box flexDirection="row" columnGap={2} justifyContent={isOnRight ? 'flex-end' : 'flex-start'} {...fit}>
+      {isOnRight && far}
       {isOnRight && side}
       {tags}
       {!isOnRight && side}
+      {!isOnRight && far}
     </Box>
   )
 }
@@ -1270,7 +1286,7 @@ async function moveToNewThread($: EngineInterface, typed: string) {
 }
 
 // The glyph of a tag's filter button, a hollow funnel-like triangle unlike the
-// move picker's "▾" beside it; a Button's label is text, so no picture.
+// move picker's "▾" beside the tag; a Button's label is text, so no picture.
 const TAG_FILTER_GLYPH = '▽'
 const TAG_FILTER_KEY = 'tag-filter:'
 
@@ -1281,11 +1297,19 @@ async function viewThreadAlone($: EngineInterface, key: string) {
   await openView($)
 }
 
-// A part's thread tag with small buttons beside it: one opens the move picker, the
-// other the thread view on that thread alone; with no thread, a "+ thread" button.
-// Buttons, never Clients: every Client of a plugin shares one frame on the desktop,
-// and one per tag of a long transcript overran its render deadline, which tore the
-// frame down for every Client.
+// How a tag's buttons are drawn: chromeless and faint on the desktop, bright under the pointer.
+const tagButtonLook = (surface: RenderSurface) =>
+  surface === 'desktop' ? ({ plain: true, dimColor: true } as const) : ({ variant: 'secondary' } as const)
+
+// The hover group of a row's tag and its buttons: the pointer on any of them lights
+// both buttons, though the filter button sits at the far end of the tag's line. A
+// scope is at most 64 characters, so the row and the place go in hashed.
+const tagScope = (row: string, place: string) => `tag:${hashOf(`${row}|${place}`)}`
+
+// A part's thread tag with its move picker's "▾" beside it; with no thread, a
+// "+ thread" button. Buttons, never Clients: every Client of a plugin shares one
+// frame on the desktop, and one per tag of a long transcript overran its render
+// deadline, which tore the frame down for every Client.
 function drawMovableTag(
   $: EngineInterface,
   e: Parameters<EngineInterface['ui']['resolve']>[0] & { requestId: string },
@@ -1296,31 +1320,48 @@ function drawMovableTag(
   const row = e.requestId
   const place = thread === undefined ? '' : keyOf(thread.name)
   const { Box, Button } = $.ui.resolve(e)
-  // The desktop draws them chromeless and faint, bright under the pointer.
-  const look = e.surface === 'desktop' ? ({ plain: true, dimColor: true } as const) : ({ variant: 'secondary' } as const)
   // With the pointer anywhere on the tag, its name included, the buttons light in the
-  // thread's colour, showing where to press; the cursor stays the surface's own. An
-  // archived thread, which the view's filter does not offer, has no filter button.
+  // thread's colour, showing where to press; the cursor stays the surface's own.
+  const scope = thread === undefined ? undefined : tagScope(row, place)
   return (
-    <Box key={`tagbox:${place}`} flexDirection="row" columnGap={e.surface === 'desktop' ? 0 : 1} alignItems="center">
+    <Box
+      key={`tagbox:${place}`}
+      flexDirection="row"
+      columnGap={e.surface === 'desktop' ? 0 : 1}
+      alignItems="center"
+      {...(scope === undefined ? {} : { hover: { scope } })}
+    >
       {thread !== undefined && drawTag($, e, thread, align, inset)}
       <Button
         key={`tag:${place}`}
         label={thread === undefined ? '+ thread' : '▾'}
-        {...look}
-        hover={{ color: thread?.color ?? 'text' }}
+        {...tagButtonLook(e.surface)}
+        hover={{ color: thread?.color ?? 'text', ...(scope === undefined ? {} : { scope }) }}
         onPress={() => togglePicker($, row, place)}
       />
-      {thread !== undefined && thread.isArchived !== true && (
-        <Button
-          key={TAG_FILTER_KEY + place}
-          label={TAG_FILTER_GLYPH}
-          {...look}
-          hover={{ color: thread.color }}
-          onPress={() => viewThreadAlone($, place)}
-        />
-      )}
     </Box>
+  )
+}
+
+// A tag's filter button, which opens the thread view on that thread alone, drawn as
+// its "▾" is and lit with it, at the far end of the tag's line. An archived thread,
+// which the view's filter does not offer, has none.
+function drawTagFilter(
+  $: EngineInterface,
+  e: Parameters<EngineInterface['ui']['resolve']>[0] & { requestId: string },
+  thread: Thread,
+): RenderElement | undefined {
+  if (thread.isArchived === true) return undefined
+  const place = keyOf(thread.name)
+  const { Button } = $.ui.resolve(e)
+  return (
+    <Button
+      key={TAG_FILTER_KEY + place}
+      label={TAG_FILTER_GLYPH}
+      {...tagButtonLook(e.surface)}
+      hover={{ color: thread.color, scope: tagScope(e.requestId, place) }}
+      onPress={() => viewThreadAlone($, place)}
+    />
   )
 }
 
@@ -3734,7 +3775,14 @@ export const register: Register = (on, options) => {
     return (
       <Box key="message" flexDirection="column">
         {(tags.length > 0 || side !== undefined) &&
-          drawTagRow($, e, tags.map(t => drawMovableTag($, e, t, align)), side, rowFit)}
+          drawTagRow(
+            $,
+            e,
+            tags.map(t => drawMovableTag($, e, t, align)),
+            side,
+            rowFit,
+            tags.flatMap(t => drawTagFilter($, e, t) ?? []),
+          )}
         {message}
       </Box>
     )
@@ -3831,7 +3879,7 @@ export const register: Register = (on, options) => {
       const tagInset = e.surface === 'desktop' && isDrawnByEngine ? REPLY_TAG_INSET : 0
       const tag = isFirstOfPlace ? drawMovableTag($, e, thread, 'start', tagInset) : drawTag($, e, thread, 'start', tagInset)
       // an open picker sits beside the tag it opened from
-      const head = isPicking ? (
+      const start = isPicking ? (
         <Box flexDirection="row" flexWrap="wrap" columnGap={2} alignItems="center">
           {tag}
           {drawPicker($, e, list, place, 'start', isNaming)}
@@ -3839,6 +3887,19 @@ export const register: Register = (on, options) => {
       ) : (
         tag
       )
+      // the tag's filter button at the line's far end, the tag and picker taking the room before it
+      const filter = isFirstOfPlace ? drawTagFilter($, e, thread) : undefined
+      const head =
+        filter === undefined ? (
+          start
+        ) : (
+          <Box flexDirection="row" alignItems="center" columnGap={1}>
+            <Box flexDirection="row" flexGrow={1} flexShrink={1} minWidth={0}>
+              {start}
+            </Box>
+            {filter}
+          </Box>
+        )
       parts.push(drawThreadPart($, e, thread, head, body))
     }
     if (parts.length === 0) return <Box display="none" />

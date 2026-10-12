@@ -354,7 +354,7 @@ export const isKeptView = (value: unknown): value is KeptView =>
   (value as { chunks: unknown[] }).chunks.every(chunk => typeof chunk === 'string')
 
 // A 32-bit FNV-1a hash, in hex.
-function hashOf(text: string) {
+export function hashOf(text: string) {
   let hash = 0x811c9dc5
   for (let i = 0; i < text.length; i++) {
     hash ^= text.charCodeAt(i)

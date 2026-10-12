@@ -936,25 +936,45 @@ test("a thread tag's filter button opens the view on that thread alone; none whi
 
   for (const surface of ['terminal', 'desktop'] as const) {
     opened.length = 0
-    // beside each tag's "▾" in its keyed Box, drawn as the "▾" is (dim, chromeless on the
-    // desktop), in the thread's colour with the pointer on the tag
+    // drawn as the tag's "▾" is (dim, chromeless on the desktop), and in the thread's
+    // colour with the pointer on the tag, its "▾" or itself: the three share a hover group
     const mine = await $.ui.mount({ plugin: 'thread-chat', surface, ...userRow('# design\nhi\n# perf\nfast?', `u-${surface}`) })
     const drawn = await mine.drawn()
-    const button = keyedIn(drawn, 'tag-filter:perf')
-    const move = keyedIn(drawn, 'tag:perf')
+    const button = keyedIn(drawn, 'tag-filter:perf') as (Drawn & { hover?: { color?: unknown; scope?: unknown } }) | undefined
+    const move = keyedIn(drawn, 'tag:perf') as (Drawn & { hover?: { scope?: unknown } }) | undefined
     expect(button?.type).toBe('Button')
     expect(button?.props?.label).toBe('▽')
-    expect(button?.hover).toEqual({ color: PALETTE[1] })
+    expect(button?.hover?.color).toBe(PALETTE[1])
+    expect(typeof button?.hover?.scope).toBe('string')
+    expect(move?.hover).toEqual(button?.hover)
+    expect(keyedIn(drawn, 'tagbox:perf')?.hover).toEqual({ scope: button?.hover?.scope })
+    expect((keyedIn(drawn, 'tag-filter:design')?.hover as { scope?: unknown }).scope).not.toBe(button?.hover?.scope)
     const { key: _k, label: _l, ...look } = button?.props ?? {}
     const { key: _mk, label: _ml, ...moveLook } = move?.props ?? {}
     expect(look).toEqual(moveLook)
-    const box = parentIn(drawn, child => child.props?.key === 'tag-filter:perf')
-    expect(box?.props?.key).toBe('tagbox:perf')
-    expect((box?.children as Drawn[]).map(child => child.props?.key ?? child.type)).toEqual([
-      ...(surface === 'desktop' ? ['Svg'] : ['Text']),
-      'tag:perf',
-      'tag-filter:perf',
-    ])
+    // the tag keeps its "▾" beside it; the filter buttons sit at the far end of the tags'
+    // line from them: left where the person's messages are on the right, right on the terminal
+    const keysOf = (box: Drawn | undefined) =>
+      ((box?.children ?? []) as unknown[]).flatMap(child =>
+        typeof child === 'object' && child !== null ? [(child as Drawn).props?.key ?? (child as Drawn).type] : [],
+      )
+    expect(keysOf(keyedIn(drawn, 'tagbox:perf'))).toEqual([surface === 'desktop' ? 'Svg' : 'Text', 'tag:perf'])
+    const ends = parentIn(drawn, child => child.props?.key === 'tag-filter:perf')
+    expect(keysOf(ends)).toEqual(['tag-filter:design', 'tag-filter:perf'])
+    expect(ends?.props?.flexGrow).toBe(1)
+    const line = parentIn(drawn, child => child.props?.key === 'tagbox:perf')
+    const tagKeys = ['tagbox:design', 'tagbox:perf']
+    expect(keysOf(line)).toEqual(surface === 'desktop' ? ['Box', ...tagKeys] : [...tagKeys, 'Box'])
+
+    // a reply's at the far right of its line, at the top of its thread's border
+    const replied = await (
+      await $.ui.mount({ plugin: 'thread-chat', surface, ...replyRow('# design\nuse a queue', `r-line-${surface}`) })
+    ).drawn()
+    const head = parentIn(replied, child => child.props?.key === 'tag-filter:design')
+    expect(keysOf(head)).toEqual(['Box', 'tag-filter:design'])
+    expect(keyedIn((head?.children as Drawn[])[0], 'tagbox:design')).toBeDefined()
+    expect((head?.children as Drawn[])[0]?.props?.flexGrow).toBe(1)
+    expect(parentIn(replied, child => child === head)?.props?.borderStyle).toBe('round')
 
     // pressed, it opens the view, its filter picking that thread and no other
     await mine.press({ key: 'tag-filter:perf' })
