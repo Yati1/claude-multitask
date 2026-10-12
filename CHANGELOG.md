@@ -7,6 +7,11 @@ Notable changes to the thread-chat, multitask and react mods. The format is base
 ### Added
 
 - Added a warning to thread-chat, multitask and react when an older Claude Code hides their controls.
+- Added a note to the chat, on turning threads off from thread-chat's menu, that `/threads` turns them on.
+
+### Changed
+
+- Changed thread-chat to show nothing above the prompt, and close its thread view, while threads are off.
 
 ## 0.4.0 - 2026-10-11
 

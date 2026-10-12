@@ -42,6 +42,7 @@ const VIEWS = '/config/plugins/data/thread-chat-inline/views'
 // (`runs`): PowerShell makes each picture it is given smaller, a JPEG (`THUMB`).
 function engine(on: On, store: Record<string, unknown> = {}, seed: Record<string, string> = {}) {
   const opened: string[] = []
+  const closed: string[] = []
   const transcript: SessionMessage[] = []
   const kept: Record<string, unknown> = { ...store }
   const files: Record<string, string> = { ...seed }
@@ -108,6 +109,10 @@ function engine(on: On, store: Record<string, unknown> = {}, seed: Record<string
     opened.push(e.id)
     return { value: { isPlaced: true as const } }
   })
+  on('ui.close', ($, e) => {
+    closed.push(e.id)
+    return { value: undefined }
+  })
   on('ui.scroll', ($, e) => {
     scrolls.push(e)
     return {}
@@ -128,7 +133,7 @@ function engine(on: On, store: Record<string, unknown> = {}, seed: Record<string
     }
     return next(e)
   })
-  return { opened, transcript, kept, files, bytes, writes, runs, scrolls }
+  return { opened, closed, transcript, kept, files, bytes, writes, runs, scrolls }
 }
 
 // The rows a session's files hold, as the store notes them.
@@ -871,27 +876,26 @@ test("a person's message takes react's newest reaction by its row id or stem, el
   expect(reactionOn([], 'p1', long, stemOf)).toBeUndefined()
 })
 
-test("/thread-view and the Threads menu's row open the view, once threads are on", async ($, on) => {
-  const { opened } = engine(on)
+test("/thread-view and the Threads menu's row open the view, once threads are on; off closes it", async ($, on) => {
+  const { opened, closed } = engine(on)
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
   const view = () => $.command.run({ command: 'thread-view', args: '', origin: { kind: 'composer' }, presentation: {} as never })
   expect((await view()).text).toBe('Threads are off in this chat; /threads turns them on.')
-  // the terminal's menu, opened by a press on it, stays open from here on
-  const terminal = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...BAND })
-  await terminal.press({ key: 'threads' })
-  await terminal.unmount()
 
   for (const surface of ['terminal', 'desktop'] as const) {
-    // off, the menu holds its switch and no row for the view
+    // off, no menu, so no row for the view
     const band = await $.ui.mount({ plugin: 'thread-chat', surface, ...BAND })
-    expect(await band.find({ key: 'threads-on' })).toBeDefined()
-    expect(await band.find({ key: 'thread-view' })).toBeUndefined()
+    expect(await band.drawn()).toEqual({ type: 'engine', ref: 0 })
     await band.unmount()
   }
   expect(opened).toEqual([])
   await flipThreads($)
   expect((await view()).text).toBe('Thread view opened.')
   expect(opened).toEqual(['thread-view'])
+  // the terminal's menu, opened by a press on it, stays open from here on
+  const terminal = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...BAND })
+  await terminal.press({ key: 'threads' })
+  await terminal.unmount()
 
   for (const surface of ['terminal', 'desktop'] as const) {
     // on, the menu's row opens it, before any thread starts
@@ -901,6 +905,17 @@ test("/thread-view and the Threads menu's row open the view, once threads are on
     await band.unmount()
   }
   expect(opened).toEqual(['thread-view', 'thread-view', 'thread-view'])
+
+  // threads off, by /threads or the menu's switch, close the view
+  expect(closed).toEqual([])
+  await flipThreads($)
+  expect(closed).toEqual(['thread-view'])
+  await flipThreads($)
+  const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...BAND })
+  await band.press({ key: 'threads' })
+  await band.redraw()
+  await band.press({ key: 'threads-on' })
+  expect(closed).toEqual(['thread-view', 'thread-view'])
 })
 
 // A drawing that throws leaves the engine to draw its own pane, which for the thread
