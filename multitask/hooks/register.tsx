@@ -1577,9 +1577,9 @@ export const register: Register = (on, options) => {
     const enabled = await isEnabled($)
     const all = await read($, thoughts)
     await read($, bandTick)
-    // In Focus, or off, with no thoughts left, the band has no `thoughts`; an idle or
-    // failed one keeps it up.
-    const showsThoughts = on_ || all.some(t => t.status !== 'stopped')
+    // In Focus with no thoughts left, the band has no `thoughts`; an idle or failed one
+    // keeps it up. Off, only a running one does.
+    const showsThoughts = on_ || all.some(t => (enabled ? t.status !== 'stopped' : t.status === 'running'))
     const ui = $.ui.resolve(e)
     // On the desktop, the hit areas over the parts of `thoughts` (band.tsx draws them there).
     const hitOf =

@@ -16,7 +16,7 @@ Notable changes to the thread-chat, multitask and react mods. The format is base
 
 - Changed thread-chat to show nothing above the prompt, and close its thread view, while threads are off.
 - Changed `/multitask` to turn multitask on or off in a chat, starting in Multitask mode.
-- Changed multitask to show nothing above the prompt while off, unless thoughts it started are left.
+- Changed multitask to show nothing above the prompt while off, unless a thought it started is running.
 
 ## 0.4.0 - 2026-10-11
 
