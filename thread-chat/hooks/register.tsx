@@ -99,6 +99,8 @@ import type { LineInput } from './summaries'
 import { watchSwitch } from './ui-switch'
 
 const isOn = atom({ plugin: 'thread-chat', key: 'isOn' } as const, false)
+const choice = atom({ plugin: 'thread-chat', key: 'choice' } as const, null)
+const isOnByDefault = atom({ plugin: 'thread-chat', key: 'isOnByDefault' } as const, false)
 const threads = atom({ plugin: 'thread-chat', key: 'threads' } as const, [])
 const aliases = atom({ plugin: 'thread-chat', key: 'aliases' } as const, {})
 // The menu's agent and filter switches, kept with the session's record for its next run;
@@ -235,19 +237,62 @@ function withoutGone(sections: Section[], isGoneName: (name: string) => boolean)
   return sections.map(s => (s.thread !== null && isGoneName(s.thread) ? { thread: null, text: s.text } : s))
 }
 
-// Threads are on in a session from the person's /threads until they run it again. Off,
+// Threads are on in a session as the person last chose there with /threads (or the
+// menu's switch), else as the default (`/threads default`), off until they set it. Off,
 // the mod leaves the session be: nothing beside the person's messages, whose `#`
 // headings are plain text, no tags or "+ thread" round the chat's rows, no band (so no
 // menu: /threads alone turns them on), no thread view, no tool, nothing kept on disk.
 // Turned off, the session keeps its threads for coming on again.
 const OFF_TEXT = 'Threads are off in this chat; /threads turns them on.'
 
-// Whether a session kept by a version of this mod from before /threads used threads:
-// it had one (or a merge), or the person let the agent start them. It counts as on.
+// Whether a session kept by an earlier version of this mod used threads: it had one (or
+// a merge), or the person let the agent start them.
 async function wasInUse($: EngineInterface): Promise<boolean> {
   const list = await read($, threads)
   const merged = await read($, aliases)
   return list.length > 0 || Object.keys(merged).length > 0 || (await read($, agentMayCreate))
+}
+
+// The person's choice a session kept (null: none, so it follows the default), its
+// threads already taken up. A record kept before choices were (off was then the default)
+// chose on if it was on, and off if it was off with threads in use, which only the
+// person turning them off leaves; one kept before /threads, or none, on where it used them.
+async function choiceOf($: EngineInterface, saved: Partial<Saved> | undefined): Promise<boolean | null> {
+  if (saved?.choice !== undefined) return saved.choice
+  if (saved?.isOn === true) return true
+  const isInUse = await wasInUse($)
+  if (saved?.isOn === false) return isInUse ? false : null
+  return isInUse ? true : null
+}
+
+// Whether threads are on in new sessions, and in those whose person never chose: the
+// person's choice for every session, kept under its own key; off until they choose.
+const DEFAULT_KEY = 'isOnByDefault'
+
+async function takeUpDefault($: EngineInterface) {
+  const chosen = await $.store.get(DEFAULT_KEY).catch(() => undefined)
+  if (typeof chosen === 'boolean') await update($, isOnByDefault, () => chosen)
+}
+
+// Sets threads to the session's own choice, else the default.
+async function settle($: EngineInterface) {
+  const chosen = await read($, choice)
+  await setThreads($, chosen ?? (await read($, isOnByDefault)))
+}
+
+// `/threads default`: flips the default, which this session follows too unless the person
+// chose here; says what the default now is.
+async function flipDefault($: EngineInterface): Promise<string> {
+  let now = false
+  await update($, isOnByDefault, was => (now = !was))
+  await $.store.set(DEFAULT_KEY, now).catch(() => undefined)
+  await settle($)
+  await save($)
+  const word = now ? 'on' : 'off'
+  const said = `New chats now start with threads ${word}, as do chats where you have not turned them on or off.`
+  const chosen = await read($, choice)
+  if (chosen === null || chosen === now) return said
+  return `${said} This chat keeps them ${chosen ? 'on' : 'off'}; /threads turns them ${chosen ? 'off' : 'on'} here.`
 }
 
 const CREATE_SPEC = {
@@ -287,12 +332,12 @@ async function flipFilter($: EngineInterface) {
   await save($)
 }
 
-// Turns threads on or off, as /threads does, and keeps the switch for the session's
-// next run. Coming on where the agent may start threads, it is offered its tool. Going
-// off, the band goes, its menu shut for coming on again, and the thread view closes.
-async function flipThreads($: EngineInterface): Promise<boolean> {
-  let now = false
-  await update($, isOn, was => (now = !was))
+// Turns threads on or off where they are not already. Coming on where the agent may start
+// threads, it is offered its tool. Going off, the band goes, its menu shut for coming on
+// again, and the thread view closes.
+async function setThreads($: EngineInterface, now: boolean) {
+  if ((await read($, isOn)) === now) return
+  await update($, isOn, () => now)
   if (now && (await read($, agentMayCreate))) await offerCreateTool($)
   if (!now) {
     await update($, menuOpen, () => false)
@@ -303,6 +348,14 @@ async function flipThreads($: EngineInterface): Promise<boolean> {
     // a hook's refusal leaves it open
     await $.ui.close({ id: VIEW }).catch(() => undefined)
   }
+}
+
+// Turns threads on or off, as /threads does, as the person's choice in this session over
+// the default, and keeps the switch for the session's next run.
+async function flipThreads($: EngineInterface): Promise<boolean> {
+  const now = !(await read($, isOn))
+  await update($, choice, () => now)
+  await setThreads($, now)
   await save($)
   return now
 }
@@ -464,6 +517,9 @@ const storeKey = (sessionId: string) => `session:${sessionId}`
 type Saved = {
   // absent from a record kept before /threads
   isOn: boolean
+  // the person's own choice (null: none, so the session follows the default); absent
+  // from a record kept before /threads default
+  choice?: boolean | null
   // the menu's agent and filter switches; absent from a record kept before they were kept
   agentMayCreate?: boolean
   filtersChat?: boolean
@@ -495,6 +551,7 @@ type Saved = {
 async function save($: EngineInterface) {
   const saved: Saved = {
     isOn: await read($, isOn),
+    choice: await read($, choice),
     agentMayCreate: await read($, agentMayCreate),
     filtersChat: await read($, filtersChat),
     threads: await read($, threads),
@@ -3074,7 +3131,11 @@ export const register: Register = (on, options) => {
   summaryConfig.model = typeof options.summaryModel === 'string' && options.summaryModel.trim() !== '' ? options.summaryModel.trim() : SUMMARY_MODEL
 
   on('session.start', async ($, e, next) => {
-    await $.command.register({ name: 'threads', description: 'Turn conversation threads on or off in this chat' })
+    await $.command.register({
+      name: 'threads',
+      description: 'Turn conversation threads on or off in this chat, or by default in new chats',
+      argumentHint: '[default]',
+    })
     await $.command.register({ name: VIEW, description: 'Read the threads you pick, without tool rows, in a pane' })
     // A restarted or resumed session takes up the rows its thread view kept; a reloaded
     // one, which holds its rows, the pictures' files noted in them since.
@@ -3124,9 +3185,14 @@ export const register: Register = (on, options) => {
     }
     await takeKeptCalls($, id)
     if (saved?.threads !== undefined) await takeUp($, saved)
-    // Threads held on (a reload) stay on; else they are as the session, or the one it
-    // came from, kept them. A record kept before /threads, or none, is on where it used them.
-    if (!(await read($, isOn)) && (saved?.isOn ?? (await wasInUse($)))) await update($, isOn, () => true)
+    // Threads held on (a reload) stay on; else they are as the person chose in the session,
+    // or the one it came from (a choice already held, by a reload, stays), and where they
+    // never chose, as the default.
+    const chosen = await choiceOf($, saved)
+    if (chosen !== null) await update($, choice, was => was ?? chosen)
+    await takeUpDefault($)
+    const isDue = (await read($, choice)) ?? (await read($, isOnByDefault))
+    if (isDue) await update($, isOn, () => true)
     // The agent and filter switches are as the record kept them (each flip keeps them, so
     // a reload's held ones match it); a record without them leaves them as they stand.
     const keptMayCreate = saved?.agentMayCreate
@@ -3160,7 +3226,9 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
-  on('command.run', { command: 'threads' }, async $ => {
+  // `/threads` flips threads on or off in this chat; `/threads default` flips the default.
+  on('command.run', { command: 'threads' }, async ($, e) => {
+    if (e.args.trim().toLowerCase() === 'default') return { text: await flipDefault($) }
     const now = await flipThreads($)
     return {
       text: now
