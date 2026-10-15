@@ -442,8 +442,7 @@ async function closeIfOff($: EngineInterface) {
 }
 
 // Switches to the mode picked with the band's mode control; the mode the chat is in already
-// (a control drawn before a switch), anything else, or a pick while the mod is off (a
-// control drawn before), leaves it be.
+// (a stale control), anything else, or a pick while the mod is off, leaves it be.
 async function pickMode($: EngineInterface, value: string) {
   const wantsOn = value === MULTITASK_MODE ? true : value === FOCUS_MODE ? false : undefined
   if (wantsOn !== undefined && (await isEnabled($))) await setMode($, wantsOn)
@@ -1637,9 +1636,9 @@ export const register: Register = (on, options) => {
   // thoughts left, `thoughts` with a dot for each running thought (band.tsx); then
   // Multitask's mode control: a button in the terminal, a dropdown elsewhere. Off, the band
   // is the other mods' alone, whatever thoughts run. They sit after what other mods draw
-  // there, keeping their width while the others give way. The mobile app draws no mode control: /multitask mode is there. The dots' timed
-  // changes, and a dot's blink, draw the band afresh by a write of `bandTick`, which it
-  // alone reads.
+  // there, keeping their width while the others give way. The mobile app draws no mode
+  // control: /multitask mode is there. The dots' timed changes, and a dot's blink, draw the
+  // band afresh by a write of `bandTick`, which it alone reads.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const below = await next(e)
     if (e.props.hasSurvey) return below

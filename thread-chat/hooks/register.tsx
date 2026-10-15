@@ -1578,7 +1578,7 @@ async function pressBand($: EngineInterface, key: string) {
 }
 
 // A band button. On the desktop, a keyed Box drawn as the desktop draws a Select (as the
-// thread picker beside it): the field's fill and its ring,
+// thread picker and Multitask's dropdown beside it): the field's fill and its ring,
 // stronger under the pointer, the radius, one line high, its icon, and a hit area over the
 // icon and its padding, so a click anywhere in the ring presses it; its label shows in a
 // card the desktop lifts over the band while the pointer is on it. The ring's own side
@@ -2717,7 +2717,7 @@ async function drawThreadControls(
             key={PICKER}
             options={[...active.map(t => ({ value: THREAD_OPTION + keyOf(t.name), label: t.name })), { value: NO_THREAD, label: 'No thread' }]}
             value={picked === undefined ? NO_THREAD : THREAD_OPTION + keyOf(picked.name)}
-            {...(!isNaming && { autoFocus: true })}
+            {...(isNaming ? {} : { autoFocus: true })}
             onSelect={value => pickThread($, value.startsWith(THREAD_OPTION) ? value.slice(THREAD_OPTION.length) : '')}
           />
         </Box>

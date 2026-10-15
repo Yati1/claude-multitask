@@ -2126,7 +2126,7 @@ const worker = ($: Engine, agentId: string) => async (uuid: string) => {
   })
 }
 
-test('the `thoughts` button, left of the dropdown, has a dot for each running thought that blinks white as it works, swells at each note and fades out as its turn ends', async ($, on) => {
+test('the `thoughts` button, left of the mode control, has a dot for each running thought that blinks white as it works, swells at each note and fades out as its turn ends', async ($, on) => {
   engine($, on)
   const clock = mock.clock(on, { now: 1_000_000 })
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
@@ -2137,17 +2137,17 @@ test('the `thoughts` button, left of the dropdown, has a dot for each running th
   const dot = async () => dotIn(await band.drawn(), 'agent-1')
   const color = '#4fa3e0'
 
-  // In the `thoughts` button, after its word, left of the dropdown in the band's own
+  // In the `thoughts` button, after its word, left of the mode control in the band's own
   // controls: a still disc in the thought's colour.
   const tree = await band.drawn()
   const toDot = pathTo(tree, n => n.props?.key === 'dot:agent-1')
-  const toDropdown = pathTo(tree, n => n.props?.key === MODE_CONTROL)
+  const toModeControl = pathTo(tree, n => n.props?.key === MODE_CONTROL)
   let at = 0
-  while (toDot?.[at] === toDropdown?.[at]) at++
+  while (toDot?.[at] === toModeControl?.[at]) at++
   const row = toDot?.[at - 1]?.children ?? []
   expect(toDot?.[at]?.props?.key).toBe('open-thoughts')
   expect(row.indexOf(toDot?.[at])).toBeGreaterThanOrEqual(0)
-  expect(row.indexOf(toDot?.[at])).toBeLessThan(row.indexOf(toDropdown?.[at]))
+  expect(row.indexOf(toDot?.[at])).toBeLessThan(row.indexOf(toModeControl?.[at]))
   expect(await thoughtsShown(band)).toBe('thoughts ●')
   expect(pictureIn(await dot())).toContain(`fill="${color}"`)
   expect(pictureIn(await dot())).not.toContain('<animate')
