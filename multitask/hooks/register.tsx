@@ -63,7 +63,7 @@ const PANE = 'multitask-thoughts'
 // mode the chat is in, Multitask or Focus (Multitask mode off). In the terminal it is a
 // button: a press, or its hotkey while the band has the keyboard and thread-chat's picker
 // does not, switches to the other mode. ctrl+x tab lands on that picker when there are
-// threads; Tab moves on to this button. Elsewhere it is a dropdown: picking the other mode
+// threads; Tab moves along the band. Elsewhere it is a dropdown: picking the other mode
 // switches to it.
 const MODE_CONTROL = 'multitask'
 const MODE_HOTKEY = 'm'
