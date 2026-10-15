@@ -29,7 +29,9 @@ Install any or all of them. Once installed, a line above the prompt names each n
 
 ## Use
 
-In the band above the prompt, Multitask, while it is on, has a dropdown, and thread-chat, while threads are on, a thread picker followed by `+`, which starts a thread, and `☰`, which opens the thread view. The mobile app shows only the thread picker: use the commands there. React has no control in the band: `/react` is its switch.
+In the band above the prompt, Multitask, while it is on, has a mode control (a button in the terminal, a dropdown in the desktop app and VS Code), and thread-chat, while threads are on, a thread picker followed by `+`, which starts a thread, and `☰`, which opens the thread view. The mobile app shows only the thread picker: use the commands there. React has no control in the band: `/react` is its switch.
+
+In the terminal, `ctrl+x tab` moves from the prompt to the band, onto the thread picker when there are threads. `Tab` moves along the band. From any band button, `m` presses Multitask's mode button, as does `Enter` on that button. `Esc` goes back to the prompt.
 
 The three commands, `/multitask`, `/threads` and `/react`, work alike:
 
@@ -41,10 +43,10 @@ The three commands, `/multitask`, `/threads` and `/react`, work alike:
 ### Multitask
 
 - Multitask is off in a new chat, unless you change the default (below). `/multitask on` turns it on in that chat, and `/multitask off` turns it off. The choice is per chat, and kept when the chat is restarted.
-- While it is on, the chat is in one of two modes. It starts in `Multitask` mode, where the chat becomes the voice and hands all work to thoughts. In `Focus` you work with the agent as usual. Multitask's dropdown shows the mode; pick the other to switch. `/multitask mode` asks which mode, and `/multitask mode multitask` or `/multitask mode focus` switches to it: the way to switch in the mobile app, which has no dropdown.
+- While it is on, the chat is in one of two modes. It starts in `Multitask` mode, where the chat becomes the voice and hands all work to thoughts. In `Focus` you work with the agent as usual. Multitask's mode control shows the mode. In the terminal it is a button: press it, or `m` (keys above), to switch to the other mode. In the desktop app and VS Code it is a dropdown: pick the other mode to switch. `/multitask mode` asks which mode, and `/multitask mode multitask` or `/multitask mode focus` switches to it: the way to switch in the mobile app, which has no mode control.
 - While it is off, Multitask shows nothing above the prompt and closes its Thoughts pane, and the chat stays in Focus. Thoughts it started run on unseen. Turning it off in Multitask mode switches to Focus.
 - `/multitask default on` or `off` sets whether Multitask is on by default: in new chats, and in chats where you have not used `/multitask`. A chat's own `/multitask` choice wins over the default. A new chat it is on in starts in Multitask mode; a chat already open that it turns on starts in Focus. The default applies to every chat and is kept across restarts.
-- Left of the dropdown, the `thoughts` button holds a dot in its colour for each running thought, which blinks as the thought works, swells a little at each of its notes, and fades out as it ends, as a check, or a cross if it failed. In the desktop app, hover a dot for the thought's name, latest note and its age.
+- Left of the mode control, the `thoughts` button holds a dot in its colour for each running thought, which blinks as the thought works, swells a little at each of its notes, and fades out as it ends, as a check, or a cross if it failed. In the desktop app, hover a dot for the thought's name, latest note and its age.
 - `/thoughts`, or a click anywhere on the `thoughts` button (a dot included), opens the Thoughts pane: what each thought is doing and how long since its last note, its report, `tell` to send it a message yourself, and `stop`. It lists the 16 most recently ended thoughts (`N more` shows the rest). The thoughts are per chat, and kept when the chat is restarted.
 - The `voiceEffort` setting (Voice effort, in `/config`) sets how hard the voice thinks: `low` (default), `medium`, `high`, or `session` to match the session. Thoughts keep the session's setting.
 

@@ -179,6 +179,34 @@ test('the terminal draws `+` and `☰` as Buttons; `+` swaps for a field, `×` g
   expect(await band.find({ key: NEW })).toBeDefined()
 })
 
+test('ctrl+x tab lands on the thread picker, ahead of what another mod drew before it, save while the field for a new name is open', async ($, on) => {
+  // another mod's line drawn before thread-chat's controls, as a welcome line with its Dismiss is
+  on('ui.render', { component: 'AbovePrompt' }, ($, e) => {
+    const { Button } = $.ui.resolve(e)
+    return Button({ key: 'dismiss', label: 'Dismiss', onPress: () => {} })
+  })
+  engine(on)
+  await $.session.start({ cwd: '.', surface: 'terminal', isInteractive: true })
+  await threads($, 'on')
+  const band = await $.ui.mount({ plugin: 'thread-chat', surface: 'terminal', ...BAND })
+  await band.press({ key: NEW })
+  await band.input({ key: NAME_FIELD, text: 'ideas' })
+  await band.redraw()
+  const autoFocused = async () => (await band.findAll({})).filter(n => n.props.autoFocus === true).map(n => n.key)
+
+  // at rest, the picker alone takes the focus, the other mod's Dismiss drawn before it
+  expect(await band.find({ key: 'dismiss' })).toBeDefined()
+  expect(await autoFocused()).toEqual(['thread-picker'])
+  // the field for a new name takes it while open, the picker giving it up
+  await band.press({ key: NEW })
+  await band.redraw()
+  expect(await autoFocused()).toEqual([NAME_FIELD])
+  // and the picker takes it back once the field shuts
+  await band.press({ key: NAME_CANCEL })
+  await band.redraw()
+  expect(await autoFocused()).toEqual(['thread-picker'])
+})
+
 test('the mobile app, which draws no field or pane, shows the thread picker alone while threads are on', async ($, on) => {
   engine(on)
   await $.session.start({ cwd: '.', surface: 'mobile', isInteractive: true })
