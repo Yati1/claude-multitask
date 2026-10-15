@@ -25,7 +25,7 @@ Also:
 
 Also:
 
-- The chat becomes the voice: it talks with you and hands the work to thoughts. The dropdown above the prompt switches to `Focus`, where you work with the agent as usual; `/multitask mode` does the same.
+- The chat becomes the voice: it talks with you and hands the work to thoughts. The mode control above the prompt switches to `Focus`, where you work with the agent as usual; `/multitask mode` does the same. In the terminal it is a button (`ctrl+x tab`, `Tab` to it, then `m` or `Enter`); in the desktop app, a dropdown.
 - `voiceEffort`, in `/config`, sets how hard the voice thinks.
 
 ## react: emoji instead of "done" replies

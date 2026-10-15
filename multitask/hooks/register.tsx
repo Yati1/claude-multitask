@@ -59,10 +59,14 @@ const colorTurn = atom({ plugin: 'multitask', key: 'colorTurn' } as const, 0)
 const showsAllEnded = atom({ plugin: 'multitask', key: 'showsAllEnded' } as const, false)
 
 const PANE = 'multitask-thoughts'
-// Multitask's dropdown in the band, drawn while the mod is on in the chat. Its face is the
-// mode the chat is in, Multitask or Focus (Multitask mode off); picking the other mode
+// Multitask's mode control in the band, drawn while the mod is on in the chat; it shows the
+// mode the chat is in, Multitask or Focus (Multitask mode off). In the terminal it is a
+// button: a press, or its hotkey while the band has the keyboard and thread-chat's picker
+// does not, switches to the other mode. ctrl+x tab lands on that picker when there are
+// threads; Tab moves on to this button. Elsewhere it is a dropdown: picking the other mode
 // switches to it.
-const DROPDOWN = 'multitask'
+const MODE_CONTROL = 'multitask'
+const MODE_HOTKEY = 'm'
 // The keys of the hit areas over the parts of the desktop's `thoughts` button: this, then the part.
 const THOUGHTS_HIT = 'thoughts-hit:'
 const MULTITASK_MODE = 'multitask'
@@ -131,7 +135,7 @@ const SESSIONS_KEPT_CHARS = 2 * 1024 * 1024
 const HANDBACK = '[Subagent hand-back]'
 
 const OFF = {
-  deny: 'Multitask mode is off. The user switches to it with the dropdown above the prompt or /multitask mode, or, where Multitask is off in the chat, turns it on with /multitask.',
+  deny: 'Multitask mode is off. The user switches to it with the mode control above the prompt or /multitask mode, or, where Multitask is off in the chat, turns it on with /multitask.',
 }
 const NOT_VOICE = { deny: 'Only the voice starts, steers or lists thoughts; this call came from another agent.' }
 
@@ -378,8 +382,8 @@ async function toggleTell($: EngineInterface, id: string) {
 // nothing of it shown, not above the prompt nor in a pane, Focus mode, no tool of the
 // voice's offered; a thought it started runs on unseen, the voice hearing of it as news
 // once the mod is on again. On, the chat is in Multitask mode (isOn),
-// where it is the voice, or in Focus, as off but with the band's dropdown; the dropdown or
-// `/multitask mode` switches between them. Turned on with /multitask, or on by default in
+// where it is the voice, or in Focus, as off but with the band's mode control; that control
+// or `/multitask mode` switches between them. Turned on with /multitask, or on by default in
 // a new chat, it starts in Multitask mode; an open chat the default turns on stays in
 // Focus. Multitask mode is only for a chat the mod is on in: off, it is left (settleMode).
 async function isEnabled($: EngineInterface): Promise<boolean> {
@@ -437,15 +441,16 @@ async function closeIfOff($: EngineInterface) {
   if (!(await isEnabled($))) await $.ui.close({ id: PANE }).catch(() => undefined)
 }
 
-// Switches to the mode picked in the band's dropdown; the mode the chat is in already,
-// anything else, or a pick while the mod is off (a press drawn before), leaves it be.
+// Switches to the mode picked with the band's mode control; the mode the chat is in already
+// (a control drawn before a switch), anything else, or a pick while the mod is off (a
+// control drawn before), leaves it be.
 async function pickMode($: EngineInterface, value: string) {
   const wantsOn = value === MULTITASK_MODE ? true : value === FOCUS_MODE ? false : undefined
   if (wantsOn !== undefined && (await isEnabled($))) await setMode($, wantsOn)
 }
 
 // `/multitask mode [multitask|focus]`: switches between Multitask and Focus, as the band's
-// dropdown does (the mobile app draws none); alone, it asks which. Says which the chat is
+// mode control does (the mobile app draws none); alone, it asks which. Says which the chat is
 // now in; already in it, or not answered, changes nothing. Off, it says how to turn it on.
 async function runMode($: EngineInterface, words: readonly string[]): Promise<string> {
   const [, picked, ...rest] = words
@@ -468,7 +473,7 @@ async function runMode($: EngineInterface, words: readonly string[]): Promise<st
 
 // What /multitask says.
 const ON_TEXT =
-  'Multitask is on in this chat, in Multitask mode: this chat is now the voice and hands all work to thoughts. Pick Focus above the prompt, or use `/multitask mode`, to work with the agent as usual.'
+  'Multitask is on in this chat, in Multitask mode: this chat is now the voice and hands all work to thoughts. Switch to Focus above the prompt, or use `/multitask mode`, to work with the agent as usual.'
 const OFF_TEXT = 'Multitask is off in this chat; `/multitask on` turns it on.'
 const MULTITASK_TEXT = 'Multitask mode: this chat is now the voice and hands all work to thoughts.'
 const FOCUS_TEXT = 'Focus mode: this chat does its work itself again.'
@@ -1630,9 +1635,9 @@ export const register: Register = (on, options) => {
 
   // The band above the prompt, while the mod is on in the chat: in Multitask mode, or with
   // thoughts left, `thoughts` with a dot for each running thought (band.tsx); then
-  // Multitask's dropdown. Off, the band is the other mods' alone, whatever thoughts run.
-  // They sit after what other mods draw there, keeping their width while the others give
-  // way. The mobile app draws no dropdown: /multitask mode is there. The dots' timed
+  // Multitask's mode control: a button in the terminal, a dropdown elsewhere. Off, the band
+  // is the other mods' alone, whatever thoughts run. They sit after what other mods draw
+  // there, keeping their width while the others give way. The mobile app draws no mode control: /multitask mode is there. The dots' timed
   // changes, and a dot's blink, draw the band afresh by a write of `bandTick`, which it
   // alone reads.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
@@ -1661,12 +1666,23 @@ export const register: Register = (on, options) => {
     bandTimer?.cancel()
     bandTimer = redrawIn === undefined ? undefined : $.clock.after(redrawIn, () => void update($, bandTick, n => n + 1))
     const { Box } = ui
-    let dropdown: RenderElement | undefined
-    if (enabled && e.surface !== 'mobile') {
+    let modeControl: RenderElement | undefined
+    if (enabled && e.surface === 'terminal') {
+      const { Button } = $.ui.resolve(e)
+      modeControl = (
+        <Button
+          key={MODE_CONTROL}
+          label={on_ ? 'Multitask' : 'Focus'}
+          hotkey={MODE_HOTKEY}
+          variant="secondary"
+          onPress={() => void pickMode($, on_ ? FOCUS_MODE : MULTITASK_MODE)}
+        />
+      )
+    } else if (enabled && e.surface !== 'mobile') {
       const { Select } = $.ui.resolve(e)
-      dropdown = (
+      modeControl = (
         <Select
-          key={DROPDOWN}
+          key={MODE_CONTROL}
           options={[
             { value: MULTITASK_MODE, label: 'Multitask' },
             { value: FOCUS_MODE, label: 'Focus' },
@@ -1676,12 +1692,12 @@ export const register: Register = (on, options) => {
         />
       )
     }
-    if (dropdown === undefined && button === undefined) return below
+    if (modeControl === undefined && button === undefined) return below
 
     const mine = (
       <Box flexDirection="row" alignItems="center" columnGap={1} flexShrink={0}>
         {button}
-        {dropdown}
+        {modeControl}
       </Box>
     )
     if (below.type === 'engine') return mine

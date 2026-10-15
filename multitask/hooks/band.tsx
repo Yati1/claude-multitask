@@ -4,7 +4,7 @@ import type { Thought } from '../types'
 import { agoOf } from './pane'
 import { oneLine } from './prompts'
 
-// The band's `thoughts` button, left of Multitask's dropdown, which opens the Thoughts
+// The band's `thoughts` button, left of Multitask's mode control, which opens the Thoughts
 // pane, with the thoughts' dots after its word: one for each running thought, in its
 // colour, in the order they started, DOTS_SHOWN at most and `+N` for the rest. A dot
 // blinks white as its thought works, at each new row in its conversation (BLINK_MS apart

@@ -4,6 +4,11 @@ Notable changes to the thread-chat, multitask and react mods. The format is base
 
 ## Unreleased
 
+### Changed
+
+- Changed multitask's mode dropdown in the terminal to a button, pressed by `m` or `Enter` once it has the focus.
+- Changed thread-chat's thread picker to take the focus when `ctrl+x tab` focuses the band above the prompt.
+
 ## 0.5.0 - 2026-10-13
 
 ### Added

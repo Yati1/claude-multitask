@@ -72,7 +72,7 @@ const HERE = 'Multitask in this chat?'
 const NEW = 'Multitask in new chats?'
 const MODE = 'Which mode for this chat?'
 const ON_TEXT =
-  'Multitask is on in this chat, in Multitask mode: this chat is now the voice and hands all work to thoughts. Pick Focus above the prompt, or use `/multitask mode`, to work with the agent as usual.'
+  'Multitask is on in this chat, in Multitask mode: this chat is now the voice and hands all work to thoughts. Switch to Focus above the prompt, or use `/multitask mode`, to work with the agent as usual.'
 const OFF_TEXT = 'Multitask is off in this chat; `/multitask on` turns it on.'
 const MULTITASK_TEXT = 'Multitask mode: this chat is now the voice and hands all work to thoughts.'
 const FOCUS_TEXT = 'Focus mode: this chat does its work itself again.'
