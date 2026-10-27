@@ -15,6 +15,8 @@ export type Thought = {
   notes: string[]
   // whether it wrote a note after its latest report, which the Thoughts pane then no longer shows
   notedSinceReport?: boolean
+  // the actions auto mode refused it in its latest turn, oldest first, each with why
+  denied?: string[]
   // the turn it is running now, from its latest model request
   turnId: string | null
   // a message to hand over once the interrupted turn has ended
@@ -35,6 +37,7 @@ export type Thought = {
 // voice's messages waited for it (pending), and whether they have reached the thought
 // since; a note about such messages still pending is isPending, dropped once they reach it.
 // isFromPerson: not the thought's but the person's own message to it, from the Thoughts pane.
+// isDenied: an action of the thought's that auto mode refused, with why.
 export type Update = {
   thought: string
   text: string
@@ -43,6 +46,7 @@ export type Update = {
   isHandedOver?: boolean
   isPending?: boolean
   isFromPerson?: boolean
+  isDenied?: boolean
 }
 
 // A session's thoughts as kept in the store between runs of the app: when they were kept,

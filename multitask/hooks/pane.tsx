@@ -8,8 +8,9 @@ import { oneLine } from './prompts'
 // ENDED_SHOWN most recently ended alone until `N more` shows them all. A card sets
 // each kind of line apart by a label at its left: the task, the progress notes (the
 // latest at full strength with its age, in the warning colour once the thought has
-// been quiet a while), the report, and the messages queued for its turn's end. A card's
-// `tell` opens a field at its foot to send the thought a message of the person's own.
+// been quiet a while), the actions auto mode refused it, the report, and the messages
+// queued for its turn's end. A card's `tell` opens a field at its foot to send the
+// thought a message of the person's own.
 //
 // It is drawn as the thread view is (thread-chat's pane.tsx): plain functions here,
 // every hook and every call on `$` in register.tsx, which hands them what they draw
@@ -250,8 +251,8 @@ function drawSection(draw: ThoughtsDrawing, label: string, lines: RenderElement[
   )
 }
 
-// A thought's card: its name, status and controls; then its task, its notes, its
-// report and its queue, each kind under its label.
+// A thought's card: its name, status and controls; then its task, its notes, what was
+// denied it, its report and its queue, each kind under its label.
 function drawCard(draw: ThoughtsDrawing, t: Thought, tint: Tint): RenderElement {
   const { Box, Text, Button, Markdown } = draw.ui
   const Input = t.status === 'stopped' ? undefined : tellFieldOf(draw)
@@ -268,6 +269,12 @@ function drawCard(draw: ThoughtsDrawing, t: Thought, tint: Tint): RenderElement 
   const control = { plain: true, dimColor: true, hover: tint } as const
 
   const notes = (t.notes ?? []).slice(isOpened ? -NOTES_OPENED : -NOTES_FOLDED)
+  // What auto mode refused it in its latest turn, in the warning colour.
+  const denied = (t.denied ?? []).map((line, i) => (
+    <Text key={`denied:${t.id}:${i}`} color="warning" wrap={isOpened ? 'wrap' : 'truncate-end'}>
+      {line}
+    </Text>
+  ))
   const quiet = isRunning ? quietFor(t, draw.now) : undefined
   const isQuiet = quiet !== undefined && quiet >= QUIET_MS
   const noteAge = agoSince(t.notedAt, draw.now)
@@ -398,6 +405,7 @@ function drawCard(draw: ThoughtsDrawing, t: Thought, tint: Tint): RenderElement 
         gap,
       )}
       {noteLines.length > 0 && drawSection(draw, 'notes', noteLines, gap)}
+      {denied.length > 0 && drawSection(draw, 'denied', denied, gap, { color: 'warning' })}
       {report !== false && drawSection(draw, 'report', [report], gap, tint)}
       {queued.length > 0 && drawSection(draw, 'queued', queued, gap)}
       {isTelling &&

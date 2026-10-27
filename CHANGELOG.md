@@ -9,6 +9,10 @@ Notable changes to the thread-chat, multitask and react mods. The format is base
 - Changed multitask's mode dropdown in the terminal to a button, pressed by `m` from any button in the band.
 - Changed thread-chat's thread picker to take the focus when `ctrl+x tab` focuses the band above the prompt.
 
+### Fixed
+
+- Fixed issue where auto mode refusing a thought's action never reached multitask's voice or Thoughts pane.
+
 ## 0.5.0 - 2026-10-13
 
 ### Added

@@ -13,6 +13,7 @@ import type {
 import type { KeptThoughts, Thought, ThoughtStatus, Update } from '../types'
 import type { HookStream, TurnStepChunk, TurnStepResult } from 'claude-code'
 import {
+  DENIED_KEPT,
   NO_RESPONSE,
   QUIET,
   RELAY_NOTES,
@@ -21,6 +22,7 @@ import {
   VOICE_OFF,
   VOICE_REMINDER,
   WAKE,
+  deniedLine,
   describeThoughts,
   formatNews,
   formatUpdates,
@@ -757,6 +759,16 @@ async function blinkThought($: EngineInterface, id: string) {
   await update($, bandTick, n => n + 1)
 }
 
+// An action auto mode refused a thought is kept on it, for its card in the Thoughts pane,
+// and relayed to the voice at once, notes relayed or not: the refusal reached only the
+// thought, which may go on without a word of it.
+async function relayDenied($: EngineInterface, id: string, line: string) {
+  const t = (await read($, thoughts)).find(one => one.id === id)
+  if (t === undefined) return
+  await patchThought($, id, one => ({ ...one, denied: [...(one.denied ?? []), line].slice(-DENIED_KEPT) }))
+  await relay($, list => [...list, { thought: t.name, text: line, isDenied: true }])
+}
+
 // The end of a thought's turn reaches the voice once, as a done line. Its report replaces
 // the notes still waiting that it repeats; if it went out already as the latest note,
 // the line is a bare "done". With notes not relayed, nothing went out before it.
@@ -769,7 +781,7 @@ async function relayDone($: EngineInterface, t: Thought, report: string, isFaile
     for (let i = kept.length - 1; i >= 0; i--) {
       const u = kept[i] as Update
       if (u.thought !== t.name) continue
-      if (u.isDone === true || u.isFromPerson === true || !report.includes(u.text)) break
+      if (u.isDone === true || u.isFromPerson === true || u.isDenied === true || !report.includes(u.text)) break
       kept.splice(i, 1)
       isWaiting = true
     }
@@ -1537,6 +1549,7 @@ export const register: Register = (on, options) => {
         ...(one.status === 'stopped' ? one : asRunning(list, one, pick)),
         turnId: e.turnId,
         startedAt: now,
+        denied: [],
       }))
       // New work: the report it ends on starts folded, as every report does.
       await update($, openReports, ids => ids.filter(one => one !== id))
@@ -1558,6 +1571,13 @@ export const register: Register = (on, options) => {
       }
     }
     return result
+  })
+
+  // Auto mode refused one of a thought's calls: no dialog opens for a background agent, and
+  // the refusal reaches only the thought, so the voice is told of it here.
+  on('classic.PermissionDenied', async ($, e, next) => {
+    if (e.agent_id !== undefined) await relayDenied($, e.agent_id, deniedLine(e.tool_name, e.tool_input, e.reason))
+    return next(e)
   })
 
   // What a thought writes as it works is kept as its progress notes (and relayed, while RELAY_NOTES is on);

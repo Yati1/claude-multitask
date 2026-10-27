@@ -41,10 +41,12 @@ Your tools:
 - stop: end a thought.
 - thoughts: every thought's status, queue, latest progress notes and last report, or one thought's recent transcript.
 
-Updates from your thoughts reach you as rows the user never sees (failing that, as messages from the multitask plugin). When they arrive while you are idle, a wake-up follows them: a line "Set model to unchanged (multitask wake-up: read the thought updates just above)". It is not from the user and changes no model; it only means read the updates just above it. Neither updates nor wake-ups need a reply. Each update starts "${RELAY_HEAD}", then one line per update: ${RELAY_NOTES ? '"name: text" is a progress note or report, ' : ''}"name (done): text" the text a turn ended with, "name: done" a turn that ended with nothing more, "name (from the user): text" a message the user sent that thought themselves from the Thoughts pane, which it acts on as it would on yours, "name: (...)" messages of yours still pending for it, which reach it at the next chance and you hear back after (with why the last try failed, if one did)${RELAY_NOTES ? '' : ' (for now their progress notes are not sent to you; they are shown in the Thoughts pane)'}; your default reply is ${QUIET}. For each, choose:
+Updates from your thoughts reach you as rows the user never sees (failing that, as messages from the multitask plugin). When they arrive while you are idle, a wake-up follows them: a line "Set model to unchanged (multitask wake-up: read the thought updates just above)". It is not from the user and changes no model; it only means read the updates just above it. Neither updates nor wake-ups need a reply. Each update starts "${RELAY_HEAD}", then one line per update: ${RELAY_NOTES ? '"name: text" is a progress note or report, ' : ''}"name (done): text" the text a turn ended with, "name: done" a turn that ended with nothing more, "name (from the user): text" a message the user sent that thought themselves from the Thoughts pane, which it acts on as it would on yours, "name (denied): action — reason" an action auto mode refused that thought, which did not run, "name: (...)" messages of yours still pending for it, which reach it at the next chance and you hear back after (with why the last try failed, if one did)${RELAY_NOTES ? '' : ' (for now their progress notes are not sent to you; they are shown in the Thoughts pane)'}; your default reply is ${QUIET}. For each, choose:
 - Say nothing. Reply with exactly ${QUIET} and nothing else; the user never sees it. This is the default.
 - Steer: post, queue or interrupt a thought, unqueue what is no longer wanted, stop a thought, or start another.
 - Speak to the user, only when something deserves their attention: a result they asked for, a decision only they can make, a problem. Use your own words, briefly.
+
+A denied update is never ${QUIET}: tell the user, briefly, what was refused and why, and ask how to go on: allow it (they add a rule with /permissions, then you tell the thought to try again), do it another way, or stop.
 
 When a thought's turn ends, its update may come in place of the engine's own notice that the thought finished. After the updates, and beside the user's messages and the engine's notices, there may be a short note starting "${NEWS_HEAD}": the thoughts that finished, failed or were stopped since you were last told, and the latest progress notes of those still running. It needs no reply either, and an update may repeat what it said. Your history keeps each ${QUIET} reply as "${NO_RESPONSE}"; both mean you said nothing.
 
@@ -70,7 +72,7 @@ You share the user's checkout with them and other thoughts: keep to the files yo
 
 Make it with git worktree add on a new branch, in a folder outside the project so its watchers and builds leave it alone; not with EnterWorktree, which would move the whole session. Use absolute paths into it, as your shell's directory resets between calls. A new worktree lacks ignored files (installed packages, generated files): set up or copy in what your build and tests need. Finish by committing on the branch and reporting the branch and folder; leave the worktree for whoever merges it. Never merge into the user's checkout or commit to their main branch unless asked.
 
-The text you end your turn with reaches the voice as your report. So when you finish, end your turn with a short, plain report the voice can act on: what you found or changed, where, and anything still open. If you need an answer, or a problem blocks you, do not bury it in a note: end your turn with the question or the problem, plainly, and wait.
+The text you end your turn with reaches the voice as your report. So when you finish, end your turn with a short, plain report the voice can act on: what you found or changed, where, and anything still open. If you need an answer, or a problem blocks you, do not bury it in a note: end your turn with the question or the problem, plainly, and wait. If the permission check refuses an action your task needs, do not reach the same end another way: end your turn saying what was refused and why, and wait.
 
 Messages from the voice, or now and then from the user directly, may arrive while you work. They steer you: take them into account straight away, and if one changes your task, follow it.`
 
@@ -98,13 +100,30 @@ function handedOverNote(count: number): string {
   return `it has your ${count === 1 ? 'queued message' : `${count} queued messages`} now; you'll hear back`
 }
 
+// How many of a thought's refused actions are kept, and how long each line is at most.
+export const DENIED_KEPT = 3
+const DENIED_MAX = 300
+
+// The input field that says best what a refused call was for, as its permission check reads it.
+const ACTION_FIELDS = ['command', 'file_path', 'notebook_path', 'path', 'url', 'pattern', 'query', 'prompt']
+
+// One line for an action auto mode refused: the tool, what it was for, and why.
+export function deniedLine(tool: string, input: unknown, reason: string): string {
+  const fields = typeof input === 'object' && input !== null ? (input as Record<string, unknown>) : {}
+  const what = ACTION_FIELDS.map(key => fields[key]).find(value => typeof value === 'string' && value.trim() !== '')
+  const action = what === undefined ? tool : `${tool}: ${what}`
+  return oneLine(reason.trim() === '' ? action : `${action} — ${reason}`, DENIED_MAX)
+}
+
 // One line an update: "name: text" a note (or a report already sent as one),
 // "name (done): text" the text a turn ended with, "name: done" a turn ended bare; a
 // turn's end then says what became of the messages that waited for it. "name (from the
-// user): text" is the person's own message to the thought, from the Thoughts pane.
+// user): text" is the person's own message to the thought, from the Thoughts pane, and
+// "name (denied): action — reason" an action of its that auto mode refused.
 export function formatUpdates(updates: Update[]): string {
   const lines = updates.map(u => {
     if (u.isFromPerson === true) return `${u.thought} (from the user): ${flat(u.text)}`
+    if (u.isDenied === true) return `${u.thought} (denied): ${flat(u.text)}`
     if (u.isDone !== true) return `${u.thought}: ${flat(u.text)}`
     const pending = u.pending ?? 0
     const queue = pending === 0 ? '' : ` — ${u.isHandedOver === true ? handedOverNote(pending) : pendingNote(pending)}`
@@ -157,7 +176,7 @@ export function relayNames(text: string): string[] {
   if (at < 0) return []
   const names = new Set<string>()
   for (const line of text.slice(text.indexOf(RELAY_HEAD, at) + RELAY_HEAD.length).trimStart().split(/\r?\n/)) {
-    const name = /^([^\s:]+)(?: \((?:done|from the user)\))?: /.exec(line)?.[1]
+    const name = /^([^\s:]+)(?: \((?:done|from the user|denied)\))?: /.exec(line)?.[1]
     if (name === undefined) break
     names.add(name)
   }
@@ -170,8 +189,9 @@ export function describeThoughts(thoughts: Thought[]): string {
     .map(t => {
       const queue = t.queued.length === 0 ? '' : `\n  queued: ${t.queued.map((q, i) => `${i + 1}. ${q}`).join(' | ')}`
       const notes = (t.notes ?? []).slice(-3).map(n => `\n  · ${oneLine(n, 160)}`).join('')
+      const denied = (t.denied ?? []).map(d => `\n  denied: ${d}`).join('')
       const last = t.lastText === '' ? '' : `\n  report: ${t.lastText.slice(0, 300)}`
-      return `- ${t.name} [${t.status}]: ${t.task.slice(0, 200)}${queue}${notes}${last}`
+      return `- ${t.name} [${t.status}]: ${t.task.slice(0, 200)}${queue}${notes}${denied}${last}`
     })
     .join('\n')
 }
