@@ -8,6 +8,7 @@ import {
   VOICE,
   VOICE_REMINDER,
   WAKE,
+  deniedLine,
   formatUpdates,
   isQuiet,
   marksOf,
@@ -237,6 +238,67 @@ test('quiet is exact and updates are one line each under a short header', async 
   const told = formatUpdates([{ thought: 'ui', text: 'use the\nsame colours', isFromPerson: true }])
   expect(told).toBe('Thought updates:\nui (from the user): use the same colours')
   expect(relayNames(told)).toEqual(['ui'])
+  // an action auto mode refused a thought: the tool, what it was for, and why
+  const line = deniedLine('Bash', { command: 'git push\norigin main', description: 'Push' }, 'Pushes to a remote.')
+  expect(line).toBe('Bash: git push origin main — Pushes to a remote.')
+  expect(deniedLine('WebFetch', { url: 'https://example.com' }, '')).toBe('WebFetch: https://example.com')
+  expect(deniedLine('mcp__x__y', { count: 1 }, 'Not asked for.')).toBe('mcp__x__y — Not asked for.')
+  const denied = formatUpdates([{ thought: 'ship', text: line, isDenied: true }])
+  expect(denied).toBe('Thought updates:\nship (denied): Bash: git push origin main — Pushes to a remote.')
+  expect(relayNames(denied)).toEqual(['ship'])
+})
+
+test('an action auto mode refuses a thought reaches the voice at once and shows on its card until its next turn', async ($, on) => {
+  const seen = engine($, on)
+  on('classic.PermissionDenied', () => ({}))
+  const clock = mock.clock(on)
+  await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
+  await multitask($)
+  await $.tool.call({ tool: 'mcp__multitask__think', tool_use_id: 'c1', name: 'auth bug', task: 'Push the login fix' })
+  const prompts = seen.prompts.length
+  const deny = (agentId: string | undefined, command: string) =>
+    $.classic.PermissionDenied({
+      ...(agentId === undefined ? {} : { agent_id: agentId }),
+      tool_name: 'Bash',
+      tool_input: { command },
+      tool_use_id: `deny-${command}`,
+      reason: 'Pushing to a remote was not asked for.',
+    })
+
+  // A refusal in the voice's own loop, or another agent's, is no thought's: nothing is relayed.
+  await deny(undefined, 'git push')
+  await deny('agent-9', 'git push')
+  await clock.advance(2500)
+  expect(seen.prompts.length).toBe(prompts)
+
+  // A thought's reaches the voice while the thought still runs, notes relayed or not.
+  await deny('agent-1', 'git push origin main')
+  await clock.advance(2500)
+  expect(seen.prompts.at(-1)).toBe('Thought updates:\nauth-bug (denied): Bash: git push origin main — Pushing to a remote was not asked for.')
+
+  // Its card shows it, and so does the thoughts tool.
+  const pane = await $.ui.mount({
+    plugin: 'multitask',
+    surface: 'desktop',
+    component: 'Pane',
+    requestId: 'multitask-thoughts',
+    props: { title: 'Thoughts', isFocused: false, bodyColumns: 80, placement: 'dock', scroll: { offset: 0, bodyRows: 40 }, view: {} },
+  })
+  expect((await pane.find({ type: 'Text', text: /^Bash: git push/ }))?.text).toBe('Bash: git push origin main — Pushing to a remote was not asked for.')
+  expect(await pane.find({ type: 'Text', text: 'denied' })).toBeDefined()
+  const listed = await $.tool.call({ tool: 'mcp__multitask__thoughts', tool_use_id: 'c2' })
+  expect(String(listed.result)).toContain('denied: Bash: git push origin main')
+
+  // The turn's report that follows still goes out as its own done line.
+  await $.turn.complete({ ...finished('agent-1'), answer: 'Could not push: auto mode refused it.' })
+  await clock.advance(2500)
+  expect(seen.prompts.at(-1)).toBe('Thought updates:\nauth-bug (done): Could not push: auto mode refused it.')
+
+  // Its next turn starts with nothing denied.
+  for await (const _ of $.turn.step({ turnId: 'turn-2', index: 0, model: 'opus', messageCount: 1, agentId: 'agent-1' })) void _
+  await pane.redraw()
+  expect(await pane.find({ type: 'Text', text: /^Bash: git push/ })).toBeUndefined()
+  expect(await pane.find({ type: 'Text', text: 'denied' })).toBeUndefined()
 })
 
 test('a quiet reply draws as nothing on every surface while Multitask is on, and as the engine draws it while off', async ($, on) => {
